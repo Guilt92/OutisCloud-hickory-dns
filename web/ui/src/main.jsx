@@ -41,7 +41,9 @@ function Admin() {
       </nav>
       <Routes>
         <Route path="/admin/servers" element={<Servers />} />
-        <Route path="/admin/zones" element={<Zones />} />
+          <Route path="/admin/zones" element={<Zones />} />
+          <Route path="/admin/georules" element={<GeoRules />} />
+          <Route path="/admin/dns" element={<DnsControl />} />
       </Routes>
     </div>
   )
@@ -92,6 +94,55 @@ function Zones() {
     <div>
       <h3>Zones</h3>
       <pre>{JSON.stringify(zones, null, 2)}</pre>
+    </div>
+  )
+}
+
+function GeoRules() {
+  const [rules, setRules] = React.useState([])
+  const [zone, setZone] = React.useState('')
+  const [matchType, setMatchType] = React.useState('country')
+  const [matchValue, setMatchValue] = React.useState('US')
+  const [target, setTarget] = React.useState('origin')
+  React.useEffect(()=>{ axios.get('/api/v1/georules').then(r=>setRules(r.data)).catch(()=>{}) }, [])
+  const create = async ()=>{
+    await axios.post('/api/v1/georules', { zone_id: zone, match_type: matchType, match_value: matchValue, target })
+    const r = await axios.get('/api/v1/georules')
+    setRules(r.data)
+  }
+  return (
+    <div>
+      <h3>GeoDNS Rules</h3>
+      <div>
+        <input placeholder="zone id" value={zone} onChange={e=>setZone(e.target.value)} />
+        <select value={matchType} onChange={e=>setMatchType(e.target.value)}><option value="country">Country</option></select>
+        <input placeholder="match value" value={matchValue} onChange={e=>setMatchValue(e.target.value)} />
+        <input placeholder="target" value={target} onChange={e=>setTarget(e.target.value)} />
+        <button onClick={create}>Create Rule</button>
+      </div>
+      <pre>{JSON.stringify(rules, null, 2)}</pre>
+    </div>
+  )
+}
+
+function DnsControl() {
+  const [id, setId] = React.useState('')
+  const [bind, setBind] = React.useState('0.0.0.0:5353')
+  const start = async ()=>{
+    await axios.post('/api/v1/dns/start', { id, bind })
+    alert('started')
+  }
+  const stop = async ()=>{
+    await axios.post('/api/v1/dns/stop', { id })
+    alert('stopped')
+  }
+  return (
+    <div>
+      <h3>DNS Control</h3>
+      <input placeholder="server id" value={id} onChange={e=>setId(e.target.value)} />
+      <input placeholder="bind" value={bind} onChange={e=>setBind(e.target.value)} />
+      <button onClick={start}>Start</button>
+      <button onClick={stop}>Stop</button>
     </div>
   )
 }

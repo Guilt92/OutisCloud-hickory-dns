@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 maxminddb = "0.23"
 serde = { version = "1.0", features = ["derive"] }
-geoip2 = "0.6"
+geoip2 = "0.1"
 
 [lib]
 name = "geodns"

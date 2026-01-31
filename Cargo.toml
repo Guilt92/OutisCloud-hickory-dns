@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/net",
     "crates/proto",
+    "crates/control_api",
+    "crates/geodns",
+    "crates/agent",
     "crates/resolver",
     "crates/server",
     "bin",

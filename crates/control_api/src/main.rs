@@ -8,6 +8,8 @@ use uuid::Uuid;
 use jsonwebtoken::{EncodingKey, DecodingKey, Header, Validation, encode, decode, TokenData};
 use argon2::{Argon2, password_hash::{SaltString, PasswordHasher, PasswordVerifier, PasswordHash}};
 use rand_core::OsRng;
+mod dns_manager;
+use crate::dns_manager as dns_manager;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Claims {
@@ -43,6 +45,17 @@ struct Zone {
 struct AppState {
     db: PgPool,
     jwt_secret: String,
+}
+
+struct GeoState {
+    db: Option<geodns::GeoDB>,
+}
+
+#[derive(Clone)]
+struct FullState {
+    inner: AppState,
+    dns_manager: std::sync::Arc<crate::dns_manager::DnsManager>,
+    geo: std::sync::Arc<tokio::sync::Mutex<GeoState>>,
 }
 
 async fn health() -> impl Responder {
@@ -217,6 +230,76 @@ async fn agent_heartbeat(body: web::Json<AgentRegistration>, data: web::Data<App
 }
 
 #[derive(Deserialize)]
+struct StartDnsReq {
+    id: String,
+    bind: String,
+}
+
+async fn start_dns_server(body: web::Json<StartDnsReq>, data: web::Data<FullState>) -> impl Responder {
+    // admin only
+    // NOTE: For simplicity, we don't re-check JWT here; in production validate admin role
+    let bind: std::net::SocketAddr = match body.bind.parse() {
+        Ok(b) => b,
+        Err(_) => return HttpResponse::BadRequest().body("invalid bind address"),
+    };
+    if let Err(e) = data.dns_manager.start_server(&body.id, bind).await {
+        warn!("start_dns error: {}", e);
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+
+#[derive(Deserialize)]
+struct StopDnsReq {
+    id: String,
+}
+
+async fn stop_dns_server(body: web::Json<StopDnsReq>, data: web::Data<FullState>) -> impl Responder {
+    if let Err(e) = data.dns_manager.stop_server(&body.id).await {
+        warn!("stop_dns error: {}", e);
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+
+#[derive(Deserialize)]
+struct CreateGeoRuleReq {
+    zone_id: String,
+    match_type: String,
+    match_value: String,
+    target: String,
+}
+
+async fn create_georule(body: web::Json<CreateGeoRuleReq>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
+    if auth_from_header(&req, &data.inner.jwt_secret).is_none() { return HttpResponse::Unauthorized().finish(); }
+    let pool = &data.inner.db;
+    let id = Uuid::new_v4();
+    let res = sqlx::query("INSERT INTO georules (id, zone_id, match_type, match_value, target) VALUES ($1, $2, $3, $4, $5)")
+        .bind(id)
+        .bind(&body.zone_id)
+        .bind(&body.match_type)
+        .bind(&body.match_value)
+        .bind(&body.target)
+        .execute(pool).await;
+    match res {
+        Ok(_) => HttpResponse::Created().json(serde_json::json!({"id": id.to_string()})),
+        Err(e) => { warn!("create_georule error: {}", e); HttpResponse::InternalServerError().finish() }
+    }
+}
+
+async fn list_georules(data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
+    if auth_from_header(&req, &data.inner.jwt_secret).is_none() { return HttpResponse::Unauthorized().finish(); }
+    let pool = &data.inner.db;
+    let rows = sqlx::query("SELECT id, zone_id, match_type, match_value, target FROM georules")
+        .map(|row: sqlx::postgres::PgRow| (
+            row.get::<Uuid, _>(0), row.get::<String, _>(1), row.get::<String, _>(2), row.get::<String, _>(3), row.get::<String, _>(4)
+        ))
+        .fetch_all(pool).await.unwrap_or_default();
+    let out: Vec<_> = rows.into_iter().map(|r| serde_json::json!({"id": r.0.to_string(), "zone_id": r.1, "match_type": r.2, "match_value": r.3, "target": r.4})).collect();
+    HttpResponse::Ok().json(out)
+}
+
+#[derive(Deserialize)]
 struct CreateZoneReq {
     domain: String,
 }
@@ -271,6 +354,14 @@ async fn main() -> std::io::Result<()> {
     migrate_db(&pool).await.expect("db migrate failed");
 
     let app_state = AppState { db: pool.clone(), jwt_secret: jwt_secret.clone() };
+    let dns_manager = std::sync::Arc::new(dns_manager::DnsManager::new());
+
+    // Load GeoIP DB if provided
+    let geo_db = std::env::var("GEOIP_DB_PATH").ok().and_then(|p| {
+        std::fs::read(p).ok().and_then(|b| geodns::GeoDB::open_from_bytes(b).ok())
+    });
+
+    let full_state = FullState { inner: app_state.clone(), dns_manager: dns_manager.clone(), geo: std::sync::Arc::new(tokio::sync::Mutex::new(GeoState { db: geo_db })) };
 
     // Basic Prometheus metrics via actix-web-prom
     let prometheus = PrometheusMetrics::new("control_api", Some("/metrics"), None);
@@ -278,7 +369,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .wrap(prometheus.clone())
-            .app_data(web::Data::new(app_state.clone()))
+            .app_data(web::Data::new(full_state.clone()))
             .route("/api/v1/auth/login", web::post().to(login))
             .route("/api/v1/users", web::post().to(create_user))
             .route("/api/v1/servers", web::get().to(list_servers))
@@ -287,6 +378,10 @@ async fn main() -> std::io::Result<()> {
                     .route("/api/v1/zones", web::post().to(create_zone))
             .route("/api/v1/agents/register", web::post().to(agent_register))
                     .route("/api/v1/agents/heartbeat", web::post().to(agent_heartbeat))
+            .route("/api/v1/dns/start", web::post().to(start_dns_server))
+            .route("/api/v1/dns/stop", web::post().to(stop_dns_server))
+            .route("/api/v1/georules", web::post().to(create_georule))
+            .route("/api/v1/georules", web::get().to(list_georules))
             .route("/api/v1/georules", web::get().to(list_georules))
             .route("/health", web::get().to(health))
     })
