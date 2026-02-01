@@ -2,10 +2,15 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder, HttpRequest, http
 use serde::{Deserialize, Serialize};
 use log::{info, warn};
 use tokio_postgres::{NoTls, Client as PgClient};
+use actix_web_prom::PrometheusMetricsBuilder;
+use prometheus::{TextEncoder, Encoder, gather};
 use uuid::Uuid;
+use std::collections::HashMap;
+use std::process::Command;
 use jsonwebtoken::{EncodingKey, DecodingKey, Header, Validation, encode, decode, TokenData};
 use argon2::{Argon2, password_hash::{SaltString, PasswordHasher, PasswordVerifier, PasswordHash}};
 use rand_core::OsRng;
+use chrono::TimeZone;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Claims {
@@ -51,6 +56,7 @@ struct GeoState {
 struct FullState {
     inner: AppState,
     geo: std::sync::Arc<tokio::sync::Mutex<GeoState>>,
+    processes: std::sync::Arc<tokio::sync::Mutex<HashMap<String, std::process::Child>>>,
 }
 
 async fn health() -> impl Responder {
@@ -63,9 +69,11 @@ async fn migrate_db(client: &PgClient) -> Result<(), tokio_postgres::Error> {
          CREATE TABLE IF NOT EXISTS servers (id UUID PRIMARY KEY, name TEXT NOT NULL, address TEXT NOT NULL, region TEXT);
          CREATE TABLE IF NOT EXISTS zones (id UUID PRIMARY KEY, domain TEXT NOT NULL, owner UUID);
          CREATE TABLE IF NOT EXISTS records (id UUID PRIMARY KEY, zone_id UUID REFERENCES zones(id) ON DELETE CASCADE, name TEXT, type TEXT, value TEXT, ttl INT);
-         CREATE TABLE IF NOT EXISTS agents (id UUID PRIMARY KEY, name TEXT, addr TEXT, last_heartbeat TIMESTAMP WITH TIME ZONE DEFAULT now());
+         CREATE TABLE IF NOT EXISTS agents (id UUID PRIMARY KEY, name TEXT, addr TEXT, last_heartbeat TIMESTAMP WITH TIME ZONE DEFAULT now(), token_hash TEXT);
          CREATE TABLE IF NOT EXISTS georules (id UUID PRIMARY KEY, zone_id UUID REFERENCES zones(id) ON DELETE CASCADE, match_type TEXT, match_value TEXT, target TEXT);",
     ).await?;
+    // Backfill: ensure token_hash column exists for older DBs
+    client.batch_execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS token_hash TEXT;").await.ok();
     Ok(())
 }
 
@@ -172,12 +180,28 @@ struct AgentRegistration {
     addr: String,
 }
 
+#[derive(Serialize)]
+struct AgentRegisterResponse {
+    id: String,
+    token: String,
+}
+
 async fn agent_register(body: web::Json<AgentRegistration>, data: web::Data<AppState>) -> impl Responder {
+    // create agent id and a secure token
     let id = Uuid::new_v4();
     let id_str = id.to_string();
-    let res = (&*data.db).execute("INSERT INTO agents (id, name, addr) VALUES ($1::uuid, $2, $3)", &[&id_str, &body.name, &body.addr]).await;
+    // token: combine two UUIDs for sufficient entropy
+    let token_plain = format!("{}{}", Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let token_hash = argon2.hash_password(token_plain.as_bytes(), &salt).unwrap().to_string();
+
+    let res = (&*data.db).execute(
+        "INSERT INTO agents (id, name, addr, token_hash) VALUES ($1::uuid, $2, $3, $4)",
+        &[&id_str, &body.name, &body.addr, &token_hash]
+    ).await;
     match res {
-        Ok(_) => HttpResponse::Created().json(serde_json::json!({"id": id.to_string()})),
+        Ok(_) => HttpResponse::Created().json(AgentRegisterResponse { id: id.to_string(), token: token_plain }),
         Err(e) => {
             warn!("agent_register error: {}", e);
             HttpResponse::InternalServerError().finish()
@@ -185,17 +209,102 @@ async fn agent_register(body: web::Json<AgentRegistration>, data: web::Data<AppS
     }
 }
 
-async fn agent_heartbeat(body: web::Json<AgentRegistration>, data: web::Data<AppState>) -> impl Responder {
-    let res = (&*data.db).execute("UPDATE agents SET last_heartbeat = now() WHERE addr = $1", &[&body.addr]).await;
-    match res {
-        Ok(r) => {
-            if r == 0 {
-                return HttpResponse::NotFound().finish();
-            }
-            HttpResponse::Ok().finish()
-        }
-        Err(e) => { warn!("agent_heartbeat error: {}", e); HttpResponse::InternalServerError().finish() }
+async fn agent_heartbeat(body: web::Json<AgentRegistration>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    // require agent token in Authorization header
+    let token = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|s| s.strip_prefix("Bearer ")).map(|s| s.to_string());
+    if token.is_none() {
+        return HttpResponse::Unauthorized().finish();
     }
+    let token = token.unwrap();
+
+    // find agent by addr
+    if let Ok(row) = (&*data.db).query_one("SELECT id::text, token_hash FROM agents WHERE addr = $1", &[&body.addr]).await {
+        let id_str: String = row.get(0);
+        let token_hash: Option<String> = row.get(1);
+        if let Some(th) = token_hash {
+            if let Ok(ph) = PasswordHash::new(&th) {
+                if Argon2::default().verify_password(token.as_bytes(), &ph).is_ok() {
+                    let res = (&*data.db).execute("UPDATE agents SET last_heartbeat = now() WHERE id::text = $1", &[&id_str]).await;
+                    return match res {
+                        Ok(_) => HttpResponse::Ok().finish(),
+                        Err(e) => { warn!("agent_heartbeat error: {}", e); HttpResponse::InternalServerError().finish() }
+                    };
+                }
+            }
+        }
+        return HttpResponse::Unauthorized().finish();
+    }
+    HttpResponse::NotFound().finish()
+}
+
+// Agent fetch config (agents call this with their token)
+async fn agent_get_config(path: web::Path<String>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let agent_id = path.into_inner();
+    let token = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|s| s.strip_prefix("Bearer ")).map(|s| s.to_string());
+    if token.is_none() {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let token = token.unwrap();
+
+    if let Ok(row) = (&*data.db).query_one("SELECT token_hash FROM agents WHERE id::text = $1", &[&agent_id]).await {
+        let token_hash: Option<String> = row.get(0);
+        if let Some(th) = token_hash {
+            if let Ok(ph) = PasswordHash::new(&th) {
+                if Argon2::default().verify_password(token.as_bytes(), &ph).is_ok() {
+                    // In production, return signed config blob. For now, return zone list assigned to control plane.
+                    let zones = (&*data.db).query("SELECT id::text, domain FROM zones", &[]).await.unwrap_or_default();
+                    let z: Vec<_> = zones.into_iter().map(|r| serde_json::json!({"id": r.get::<usize, String>(0), "domain": r.get::<usize, String>(1)})).collect();
+                    return HttpResponse::Ok().json(serde_json::json!({"zones": z}));
+                }
+            }
+        }
+        return HttpResponse::Unauthorized().finish();
+    }
+    HttpResponse::NotFound().finish()
+}
+
+// Admin-only: rotate agent token
+async fn rotate_agent_token(path: web::Path<String>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    // require admin role via JWT
+    if let Some(tok) = auth_from_header(&req, &data.jwt_secret) {
+        if tok.claims.role != "admin" {
+            return HttpResponse::Forbidden().finish();
+        }
+    } else {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let agent_id = path.into_inner();
+    let token_plain = format!("{}{}", Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let token_hash = argon2.hash_password(token_plain.as_bytes(), &salt).unwrap().to_string();
+    let res = (&*data.db).execute("UPDATE agents SET token_hash = $1 WHERE id::text = $2", &[&token_hash, &agent_id]).await;
+    match res {
+        Ok(r) => if r == 0 { HttpResponse::NotFound().finish() } else { HttpResponse::Ok().json(serde_json::json!({"token": token_plain})) },
+        Err(e) => { warn!("rotate_agent_token error: {}", e); HttpResponse::InternalServerError().finish() }
+    }
+}
+
+async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    if let Some(tok) = auth_from_header(&req, &data.jwt_secret) {
+        if tok.claims.role != "admin" {
+            return HttpResponse::Forbidden().finish();
+        }
+    } else {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let rows = (&*data.db).query("SELECT id::text, name, addr, EXTRACT(EPOCH FROM last_heartbeat) as epoch FROM agents", &[]).await.unwrap_or_default();
+    let agents: Vec<_> = rows.into_iter().map(|r| {
+        let id: String = r.get(0);
+        let name: String = r.get(1);
+        let addr: String = r.get(2);
+        let epoch: f64 = r.get(3);
+        let last_dt = chrono::Utc.timestamp_opt(epoch as i64, ((epoch.fract() * 1e9) as u32)).single().unwrap_or(chrono::Utc::now());
+        let age = chrono::Utc::now().signed_duration_since(last_dt).num_seconds();
+        let online = age < 120;
+        serde_json::json!({"id": id, "name": name, "addr": addr, "last_heartbeat": last_dt.to_rfc3339(), "online": online})
+    }).collect();
+    HttpResponse::Ok().json(agents)
 }
 
 #[derive(Deserialize)]
@@ -205,8 +314,62 @@ struct StartDnsReq {
     bind: String,
 }
 
-async fn start_dns_server(_body: web::Json<StartDnsReq>, _data: web::Data<FullState>) -> impl Responder {
-    HttpResponse::NotImplemented().body("dns_manager not enabled in this build")
+async fn start_dns_server(body: web::Json<StartDnsReq>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
+    // require admin
+    if let Some(tok) = auth_from_header(&req, &data.inner.jwt_secret) {
+        if tok.claims.role != "admin" {
+            return HttpResponse::Forbidden().body("admin role required");
+        }
+    } else {
+        return HttpResponse::Unauthorized().finish();
+    }
+
+    let server_id = body.id.clone();
+    // create temp zone dir
+    let zonedir = format!("/tmp/hickory_control/{}", server_id);
+    if let Err(e) = std::fs::create_dir_all(&zonedir) {
+        warn!("failed create zonedir {}: {}", zonedir, e);
+        return HttpResponse::InternalServerError().body("failed to create zonedir");
+    }
+
+    // write zone files from DB
+    let zones = (&*data.inner.db).query("SELECT id::text, domain FROM zones", &[]).await.unwrap_or_default();
+    for z in zones.into_iter() {
+        let zid: String = z.get(0);
+        let domain: String = z.get(1);
+        let fname = format!("{}/{}.zone", zonedir, domain.replace('.', "_"));
+        if let Ok(mut f) = std::fs::File::create(&fname) {
+            use std::io::Write;
+            let soa = format!("@ 3600 IN SOA ns.{} hostmaster.{} 1 3600 3600 604800 3600\n", domain, domain);
+            let _ = f.write_all(soa.as_bytes());
+            let recs = (&*data.inner.db).query("SELECT name, type, value, ttl FROM records WHERE zone_id::text = $1", &[&zid]).await.unwrap_or_default();
+            for r in recs {
+                let name: String = r.get(0);
+                let typ: String = r.get(1);
+                let value: String = r.get(2);
+                let ttl: i32 = r.get(3);
+                let rr = format!("{} {} IN {} {}\n", if name.is_empty() { "@" } else { &name }, ttl, typ, value);
+                let _ = f.write_all(rr.as_bytes());
+            }
+        }
+    }
+
+    let bin = std::env::var("HICKORY_DNS_BIN").unwrap_or_else(|_| "./target/debug/hickory-dns".to_string());
+    let port_arg = if body.bind.is_empty() { "0".to_string() } else { body.bind.clone() };
+    let mut cmd = Command::new(bin);
+    cmd.arg("-d").arg(format!("--zonedir={}", zonedir)).arg(format!("--port={}", port_arg));
+
+    match cmd.spawn() {
+        Ok(child) => {
+            let mut procs = data.processes.lock().await;
+            procs.insert(server_id.clone(), child);
+            HttpResponse::Ok().json(serde_json::json!({"status":"started","server_id": server_id}))
+        }
+        Err(e) => {
+            warn!("failed spawning dns process: {}", e);
+            HttpResponse::InternalServerError().body("failed to spawn dns")
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -214,9 +377,29 @@ async fn start_dns_server(_body: web::Json<StartDnsReq>, _data: web::Data<FullSt
 struct StopDnsReq {
     id: String,
 }
+async fn stop_dns_server(body: web::Json<StopDnsReq>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
+    // require admin via JWT
+    if let Some(tok) = auth_from_header(&req, &data.inner.jwt_secret) {
+        if tok.claims.role != "admin" {
+            return HttpResponse::Forbidden().body("admin role required");
+        }
+    } else {
+        return HttpResponse::Unauthorized().finish();
+    }
 
-async fn stop_dns_server(_body: web::Json<StopDnsReq>, _data: web::Data<FullState>) -> impl Responder {
-    HttpResponse::NotImplemented().body("dns_manager not enabled in this build")
+    let server_id = body.id.clone();
+    let mut procs = data.processes.lock().await;
+    if let Some(mut child) = procs.remove(&server_id) {
+        match child.kill() {
+            Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status":"stopped","server_id": server_id})),
+            Err(e) => {
+                warn!("failed killing process {}: {}", server_id, e);
+                HttpResponse::InternalServerError().body("failed to stop process")
+            }
+        }
+    } else {
+        HttpResponse::NotFound().body("server not found or not running")
+    }
 }
 
 #[derive(Deserialize)]
@@ -256,7 +439,23 @@ struct CreateZoneReq {
 }
 
 async fn list_zones(data: web::Data<AppState>, _req: HttpRequest) -> impl Responder {
-    let rows = (&*data.db).query("SELECT id::text, domain FROM zones", &[]).await.unwrap_or_default();
+    // show all zones if admin, otherwise only user-owned zones
+    let mut q = "SELECT id::text, domain, owner::text FROM zones".to_string();
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    let req = _req;
+    if let Some(tok) = auth_from_header(&req, &data.jwt_secret) {
+        if tok.claims.role != "admin" {
+            q = "SELECT id::text, domain, owner::text FROM zones WHERE owner::text = $1".to_string();
+            let owner_str = tok.claims.sub.clone();
+            params.push(&owner_str);
+            let rows = (&*data.db).query(q.as_str(), params.as_slice()).await.unwrap_or_default();
+            let zones: Vec<Zone> = rows.into_iter().map(|r| Zone { id: r.get::<usize, String>(0), domain: r.get(1), records: vec![] }).collect();
+            return HttpResponse::Ok().json(zones);
+        }
+    } else {
+        return HttpResponse::Unauthorized().finish();
+    }
+    let rows = (&*data.db).query(q.as_str(), &[]).await.unwrap_or_default();
     let zones: Vec<Zone> = rows.into_iter().map(|r| Zone { id: r.get::<usize, String>(0), domain: r.get(1), records: vec![] }).collect();
     HttpResponse::Ok().json(zones)
 }
@@ -265,9 +464,11 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
     if auth_from_header(&req, &data.jwt_secret).is_none() {
         return HttpResponse::Unauthorized().finish();
     }
+    let tok = auth_from_header(&req, &data.jwt_secret).unwrap();
+    let owner = tok.claims.sub.clone();
     let id = Uuid::new_v4();
     let id_str = id.to_string();
-    let res = (&*data.db).execute("INSERT INTO zones (id, domain) VALUES ($1::uuid, $2)", &[&id_str, &body.domain]).await;
+    let res = (&*data.db).execute("INSERT INTO zones (id, domain, owner) VALUES ($1::uuid, $2, $3::uuid)", &[&id_str, &body.domain, &owner]).await;
     match res {
         Ok(_) => HttpResponse::Created().json(serde_json::json!({"id": id.to_string()})),
         Err(e) => {
@@ -389,9 +590,196 @@ async fn push_config_to_agents(
     HttpResponse::Ok().json(ConfigPushResponse {
         success: true,
         message: "config push queued".to_string(),
+
     })
 }
+    // ============================================================================
+    // RECORDS CRUD ENDPOINTS
+    // ============================================================================
 
+    #[derive(Deserialize)]
+    struct CreateRecordReq {
+        name: String,
+        record_type: String,
+        value: String,
+        ttl: u32,
+    }
+
+    #[derive(Serialize, Clone)]
+    struct RecordResponse {
+        id: String,
+        zone_id: String,
+        name: String,
+        record_type: String,
+        value: String,
+        ttl: u32,
+    }
+
+    async fn create_record(
+        zone_id: web::Path<String>,
+        body: web::Json<CreateRecordReq>,
+        data: web::Data<AppState>,
+        req: HttpRequest,
+    ) -> impl Responder {
+        if auth_from_header(&req, &data.jwt_secret).is_none() {
+            return HttpResponse::Unauthorized().finish();
+        }
+    
+        let id = Uuid::new_v4();
+        let id_str = id.to_string();
+        let zone_id_str = zone_id.into_inner();
+    
+        let res = (&*data.db).execute(
+            "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)",
+            &[&id_str, &zone_id_str, &body.name, &body.record_type, &body.value, &body.ttl.to_string()]
+        ).await;
+    
+        match res {
+            Ok(_) => HttpResponse::Created().json(serde_json::json!({"id": id.to_string()})),
+            Err(e) => {
+                warn!("create_record error: {}", e);
+                HttpResponse::InternalServerError().finish()
+            }
+        }
+    }
+
+    async fn list_records(
+        zone_id: web::Path<String>,
+        data: web::Data<AppState>,
+        req: HttpRequest,
+    ) -> impl Responder {
+        if auth_from_header(&req, &data.jwt_secret).is_none() {
+            return HttpResponse::Unauthorized().finish();
+        }
+    
+        let zone_id_str = zone_id.into_inner();
+        let rows = (&*data.db)
+            .query(
+                "SELECT id::text, zone_id::text, name, type, value, ttl FROM records WHERE zone_id::text = $1 ORDER BY name",
+                &[&zone_id_str]
+            )
+            .await
+            .unwrap_or_default();
+    
+        let records: Vec<RecordResponse> = rows.into_iter().map(|r| RecordResponse {
+            id: r.get::<usize, String>(0),
+            zone_id: r.get::<usize, String>(1),
+            name: r.get::<usize, String>(2),
+            record_type: r.get::<usize, String>(3),
+            value: r.get::<usize, String>(4),
+            ttl: r.get::<usize, i32>(5) as u32,
+        }).collect();
+    
+        HttpResponse::Ok().json(records)
+    }
+
+    #[derive(Deserialize)]
+    struct UpdateRecordReq {
+        name: Option<String>,
+        record_type: Option<String>,
+        value: Option<String>,
+        ttl: Option<u32>,
+    }
+
+    async fn update_record(
+        path: web::Path<(String, String)>,
+        body: web::Json<UpdateRecordReq>,
+        data: web::Data<AppState>,
+        req: HttpRequest,
+    ) -> impl Responder {
+        if auth_from_header(&req, &data.jwt_secret).is_none() {
+            return HttpResponse::Unauthorized().finish();
+        }
+    
+        let (zone_id, record_id) = path.into_inner();
+    
+        // Build dynamic update query
+        let mut updates = vec![];
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    
+        let mut param_idx = 1;
+        if let Some(ref name) = body.name {
+            updates.push(format!("name = ${}", param_idx));
+            params.push(name);
+            param_idx += 1;
+        }
+        if let Some(ref record_type) = body.record_type {
+            updates.push(format!("type = ${}", param_idx));
+            params.push(record_type);
+            param_idx += 1;
+        }
+        if let Some(ref value) = body.value {
+            updates.push(format!("value = ${}", param_idx));
+            params.push(value);
+            param_idx += 1;
+        }
+        let ttl_str;
+        if let Some(ttl) = body.ttl {
+            ttl_str = ttl.to_string();
+            updates.push(format!("ttl = ${}", param_idx));
+            params.push(&ttl_str);
+            param_idx += 1;
+        }
+    
+        if updates.is_empty() {
+            return HttpResponse::BadRequest().body("no fields to update");
+        }
+    
+        let query = format!(
+            "UPDATE records SET {} WHERE id::text = ${}::uuid AND zone_id::text = ${}::uuid",
+            updates.join(", "), param_idx, param_idx + 1
+        );
+    
+        params.push(&record_id);
+        params.push(&zone_id);
+    
+        let res = (&*data.db).execute(query.as_str(), params.as_slice()).await;
+    
+        match res {
+            Ok(count) => {
+                if count == 0 {
+                    HttpResponse::NotFound().finish()
+                } else {
+                    HttpResponse::Ok().finish()
+                }
+            }
+            Err(e) => {
+                warn!("update_record error: {}", e);
+                HttpResponse::InternalServerError().finish()
+            }
+        }
+    }
+
+    async fn delete_record(
+        path: web::Path<(String, String)>,
+        data: web::Data<AppState>,
+        req: HttpRequest,
+    ) -> impl Responder {
+        if auth_from_header(&req, &data.jwt_secret).is_none() {
+            return HttpResponse::Unauthorized().finish();
+        }
+    
+        let (zone_id, record_id) = path.into_inner();
+    
+        let res = (&*data.db).execute(
+            "DELETE FROM records WHERE id::text = $1 AND zone_id::text = $2",
+            &[&record_id, &zone_id]
+        ).await;
+    
+        match res {
+            Ok(count) => {
+                if count == 0 {
+                    HttpResponse::NotFound().finish()
+                } else {
+                    HttpResponse::Ok().finish()
+                }
+            }
+            Err(e) => {
+                warn!("delete_record error: {}", e);
+                HttpResponse::InternalServerError().finish()
+            }
+        }
+    }
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -415,15 +803,19 @@ async fn main() -> std::io::Result<()> {
         std::fs::read(p).ok().and_then(|b| geodns::GeoDB::open_from_bytes(b).ok())
     });
 
-    let full_state = FullState { inner: app_state.clone(), geo: std::sync::Arc::new(tokio::sync::Mutex::new(GeoState { db: geo_db })) };
+    let full_state = FullState { inner: app_state.clone(), geo: std::sync::Arc::new(tokio::sync::Mutex::new(GeoState { db: geo_db })), processes: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())) };
 
-        let app_data = web::Data::new(app_state.clone());
+    // Prometheus metrics middleware
+    let prometheus = PrometheusMetricsBuilder::new("control_api").endpoint("/metrics").build().expect("prometheus builder");
+
+    let app_data = web::Data::new(app_state.clone());
     let full_data = web::Data::new(full_state.clone());
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(app_data.clone())
-            .app_data(full_data.clone())
+        HttpServer::new(move || {
+            App::new()
+                .wrap(prometheus.clone())
+                .app_data(app_data.clone())
+                .app_data(full_data.clone())
             .route("/api/v1/auth/login", web::post().to(login))
             .route("/api/v1/users", web::post().to(create_user))
             .route("/api/v1/servers", web::get().to(list_servers))
@@ -431,7 +823,8 @@ async fn main() -> std::io::Result<()> {
                     .route("/api/v1/zones", web::get().to(list_zones))
                     .route("/api/v1/zones", web::post().to(create_zone))
             .route("/api/v1/agents/register", web::post().to(agent_register))
-                    .route("/api/v1/agents/heartbeat", web::post().to(agent_heartbeat))
+                            .route("/api/v1/agents/heartbeat", web::post().to(agent_heartbeat))
+                            .route("/api/v1/agents", web::get().to(list_agents))
             .route("/api/v1/dns/start", web::post().to(start_dns_server))
             .route("/api/v1/dns/stop", web::post().to(stop_dns_server))
             .route("/api/v1/georules", web::post().to(create_georule))
@@ -439,6 +832,20 @@ async fn main() -> std::io::Result<()> {
             .route("/api/v1/georules/resolve", web::post().to(resolve_by_geo))
             .route("/api/v1/config/push", web::post().to(push_config_to_agents))
             .route("/health", web::get().to(health))
+            .route("/api/v1/agents/{id}/config", web::get().to(agent_get_config))
+            .route("/api/v1/agents/{id}/token/rotate", web::post().to(rotate_agent_token))
+            // explicit metrics handler (in addition to middleware-exposed endpoint)
+            .route("/metrics", web::get().to(|| async move {
+                let encoder = TextEncoder::new();
+                let metric_families = gather();
+                let mut buffer = Vec::new();
+                encoder.encode(&metric_families, &mut buffer).unwrap_or(());
+                HttpResponse::Ok().content_type("text/plain; version=0.0.4").body(buffer)
+            }))
+                .route("/api/v1/zones/{id}/records", web::post().to(create_record))
+                .route("/api/v1/zones/{id}/records", web::get().to(list_records))
+                .route("/api/v1/zones/{zone_id}/records/{record_id}", web::put().to(update_record))
+                .route("/api/v1/zones/{zone_id}/records/{record_id}", web::delete().to(delete_record))
     })
     .bind(("0.0.0.0", 8080))?
     .run()

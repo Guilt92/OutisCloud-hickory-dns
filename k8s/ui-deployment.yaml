@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hickory-ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hickory-ui
+  template:
+    metadata:
+      labels:
+        app: hickory-ui
+    spec:
+      containers:
+        - name: hickory-ui
+          image: your-registry/hickory-ui:latest
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hickory-ui
+spec:
+  selector:
+    app: hickory-ui
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP

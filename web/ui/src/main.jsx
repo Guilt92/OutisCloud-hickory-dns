@@ -204,6 +204,71 @@ function Zones() {
             <tr key={z.id}>
               <td style={styles.td}>{z.id}</td>
               <td style={styles.td}>{z.domain}</td>
+              <td style={styles.td}><Link to={`/admin/zones/${z.id}/records`}>Manage Records</Link></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function Records() {
+  const { pathname } = window.location
+  const parts = pathname.split('/')
+  const zoneId = parts[3]
+  const [records, setRecords] = React.useState([])
+  const [name, setName] = React.useState('')
+  const [type, setType] = React.useState('A')
+  const [value, setValue] = React.useState('')
+  const [ttl, setTtl] = React.useState(3600)
+
+  const load = async () => {
+    try {
+      const r = await axios.get(`/api/v1/zones/${zoneId}/records`)
+      setRecords(r.data || [])
+    } catch (e) {
+      console.error('load records', e)
+    }
+  }
+
+  React.useEffect(() => { load() }, [])
+
+  const create = async () => {
+    try {
+      await axios.post(`/api/v1/zones/${zoneId}/records`, { name, record_type: type, value, ttl })
+      setName(''); setValue(''); setTtl(3600)
+      load()
+    } catch (e) { alert('create failed') }
+  }
+
+  const remove = async (rid) => {
+    try { await axios.delete(`/api/v1/zones/${zoneId}/records/${rid}`); load() } catch (e) { alert('delete failed') }
+  }
+
+  return (
+    <div style={styles.container}>
+      <h3>Records for zone {zoneId}</h3>
+      <div style={styles.form}>
+        <input style={styles.input} placeholder="name" value={name} onChange={e=>setName(e.target.value)} />
+        <input style={styles.input} placeholder="type" value={type} onChange={e=>setType(e.target.value)} />
+        <input style={styles.input} placeholder="value" value={value} onChange={e=>setValue(e.target.value)} />
+        <input style={styles.input} placeholder="ttl" value={ttl} onChange={e=>setTtl(Number(e.target.value))} />
+        <button style={styles.button} onClick={create}>Create Record</button>
+      </div>
+      <table style={styles.table}>
+        <thead>
+          <tr><th style={styles.td}>ID</th><th style={styles.td}>Name</th><th style={styles.td}>Type</th><th style={styles.td}>Value</th><th style={styles.td}>TTL</th><th style={styles.td}>Actions</th></tr>
+        </thead>
+        <tbody>
+          {records.map(r => (
+            <tr key={r.id}>
+              <td style={styles.td}>{r.id}</td>
+              <td style={styles.td}>{r.name}</td>
+              <td style={styles.td}>{r.record_type}</td>
+              <td style={styles.td}>{r.value}</td>
+              <td style={styles.td}>{r.ttl}</td>
+              <td style={styles.td}><button style={styles.button} onClick={()=>remove(r.id)}>Delete</button></td>
             </tr>
           ))}
         </tbody>
@@ -375,6 +440,7 @@ function App() {
       <Routes>
         <Route path="/login" element={<Login onLogin={() => setAuthed(true)} />} />
         <Route path="/admin/*" element={authed ? <Admin /> : <Login onLogin={() => setAuthed(true)} />} />
+        <Route path="/admin/zones/:id/records" element={authed ? <Records /> : <Login onLogin={() => setAuthed(true)} />} />
         <Route path="/user" element={authed ? <User /> : <Login onLogin={() => setAuthed(true)} />} />
         <Route path="/" element={
           <div style={styles.container}>
