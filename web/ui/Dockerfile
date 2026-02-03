@@ -1,6 +1,8 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package.json ./
+COPY tailwind.config.cjs ./
+COPY postcss.config.cjs ./
 COPY src ./src
 COPY index.html ./
 RUN npm install && npm run build
