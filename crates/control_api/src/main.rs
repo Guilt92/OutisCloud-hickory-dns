@@ -301,7 +301,8 @@ async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Respon
         let name: String = r.get(1);
         let addr: String = r.get(2);
         let epoch: f64 = r.get(3);
-        let last_dt = chrono::Utc.timestamp_opt(epoch as i64, ((epoch.fract() * 1e9) as u32)).single().unwrap_or(chrono::Utc::now());
+        // let last_dt = chrono::Utc.timestamp_opt(epoch as i64, ((epoch.fract() * 1e9) as u32)).single().unwrap_or(chrono::Utc::now());
+        let last_dt = chrono::Utc.timestamp_opt(epoch as i64, (epoch.fract() * 1e9) as u32 ).single().unwrap_or(chrono::Utc::now());
         let age = chrono::Utc::now().signed_duration_since(last_dt).num_seconds();
         let online = age < 120;
         serde_json::json!({"id": id, "name": name, "addr": addr, "last_heartbeat": last_dt.to_rfc3339(), "online": online})

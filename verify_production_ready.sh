@@ -18,7 +18,7 @@ echo ""
 
 # Build the project
 echo "[2/5] Building project (release mode)..."
-cd /workspaces/hickory-dns-test
+cd ./ry-dns-test
 cargo build --all --release 2>&1 | tail -3
 echo "✅ Build successful"
 echo ""

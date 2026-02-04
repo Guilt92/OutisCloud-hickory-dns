@@ -1,21 +1,25 @@
 import React from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
+import Notifications from '../components/Notifications'
 
 export default function Login({ onLogin }){
   const [username, setUsername] = React.useState('')
   const [password, setPassword] = React.useState('')
   const [error, setError] = React.useState('')
   const nav = useNavigate()
+  const notify = React.useContext(Notifications)
 
   const submit = async (e) => {
     e.preventDefault()
+    if (!username || !password) { setError('username and password required'); return }
     try {
       const r = await axios.post('/api/v1/auth/login', { username, password })
       const token = r.data.token
       localStorage.setItem('token', token)
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`
       onLogin()
+      notify && notify.push('Logged in')
       nav('/admin')
     } catch (e) {
       setError('Login failed')

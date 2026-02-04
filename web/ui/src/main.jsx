@@ -1,14 +1,21 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import axios from 'axios'
+import api from './api'
 import './index.css'
 import App from './App'
+import { AuthProvider } from './contexts/AuthContext'
+import { NotificationsProvider } from './components/Notifications'
 
-axios.defaults.baseURL = 'http://localhost:8080'
+const token = localStorage.getItem('token')
+if (token) api.setToken(token)
 
 createRoot(document.getElementById('root')).render(
   <BrowserRouter>
-    <App />
+    <AuthProvider>
+      <NotificationsProvider>
+        <App />
+      </NotificationsProvider>
+    </AuthProvider>
   </BrowserRouter>
 )
