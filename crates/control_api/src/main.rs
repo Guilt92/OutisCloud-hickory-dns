@@ -48,7 +48,14 @@ struct ServerInfo {
     id: String,
     name: String,
     address: String,
+    port: i32,
     region: Option<String>,
+    enabled: bool,
+    dnssec: bool,
+    enable_logging: bool,
+    max_cache_ttl: i32,
+    min_cache_ttl: i32,
+    status: Option<String>,
 }
 
 #[derive(ToSchema, Clone, Serialize, Deserialize)]
@@ -146,7 +153,13 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             id UUID PRIMARY KEY,
             name TEXT NOT NULL,
             address TEXT NOT NULL,
+            port INT DEFAULT 53,
             region TEXT,
+            enabled BOOLEAN DEFAULT true,
+            dnssec BOOLEAN DEFAULT false,
+            enable_logging BOOLEAN DEFAULT true,
+            max_cache_ttl INT DEFAULT 3600,
+            min_cache_ttl INT DEFAULT 60,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         );
@@ -194,6 +207,34 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        
+        CREATE TABLE IF NOT EXISTS acls (
+            id UUID PRIMARY KEY,
+            name TEXT NOT NULL,
+            action TEXT NOT NULL CHECK (action IN ('allow', 'deny')),
+            networks TEXT NOT NULL,
+            server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        
+        CREATE TABLE IF NOT EXISTS rate_limits (
+            id UUID PRIMARY KEY,
+            name TEXT NOT NULL,
+            queries_per_second INT DEFAULT 100,
+            burst INT DEFAULT 200,
+            server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
+            enabled BOOLEAN DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        
+        CREATE TABLE IF NOT EXISTS dns_views (
+            id UUID PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            match_clients TEXT NOT NULL,
+            server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
+            enabled BOOLEAN DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT now()
         );
         
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -476,8 +517,24 @@ async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Respo
     if auth_from_header(&req, &data.jwt_secret).is_none() {
         return HttpResponse::Unauthorized().finish();
     }
-    let rows = (&*data.db).query("SELECT id::text, name, address, region FROM servers", &[]).await.unwrap_or_default();
-    let servers: Vec<ServerInfo> = rows.into_iter().map(|r| ServerInfo { id: r.get::<usize, String>(0), name: r.get(1), address: r.get(2), region: r.get(3) }).collect();
+    let rows = (&*data.db).query(
+        "SELECT id::text, name, address, port, region, enabled, dnssec, enable_logging, max_cache_ttl, min_cache_ttl FROM servers", 
+        &[]
+    ).await.unwrap_or_default();
+    
+    let servers: Vec<ServerInfo> = rows.into_iter().map(|r| ServerInfo {
+        id: r.get(0),
+        name: r.get(1),
+        address: r.get(2),
+        port: r.get(3),
+        region: r.get(4),
+        enabled: r.get(5),
+        dnssec: r.get(6),
+        enable_logging: r.get(7),
+        max_cache_ttl: r.get(8),
+        min_cache_ttl: r.get(9),
+        status: None,
+    }).collect();
     HttpResponse::Ok().json(servers)
 }
 
@@ -485,7 +542,13 @@ async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Respo
 struct CreateServerReq {
     name: String,
     address: String,
+    port: Option<i32>,
     region: Option<String>,
+    enabled: Option<bool>,
+    dnssec: Option<bool>,
+    enable_logging: Option<bool>,
+    max_cache_ttl: Option<i32>,
+    min_cache_ttl: Option<i32>,
 }
 
 async fn create_server(body: web::Json<CreateServerReq>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
@@ -498,7 +561,17 @@ async fn create_server(body: web::Json<CreateServerReq>, data: web::Data<AppStat
     }
     let id = Uuid::new_v4();
     let id_str = id.to_string();
-    let res = (&*data.db).execute("INSERT INTO servers (id, name, address, region) VALUES ($1, $2, $3, $4)", &[&id_str, &body.name, &body.address, &body.region]).await;
+    let port = body.port.unwrap_or(53);
+    let enabled = body.enabled.unwrap_or(true);
+    let dnssec = body.dnssec.unwrap_or(false);
+    let enable_logging = body.enable_logging.unwrap_or(true);
+    let max_cache_ttl = body.max_cache_ttl.unwrap_or(3600);
+    let min_cache_ttl = body.min_cache_ttl.unwrap_or(60);
+    
+    let res = (&*data.db).execute(
+        "INSERT INTO servers (id, name, address, port, region, enabled, dnssec, enable_logging, max_cache_ttl, min_cache_ttl) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", 
+        &[&id_str, &body.name, &body.address, &port, &body.region, &enabled, &dnssec, &enable_logging, &max_cache_ttl, &min_cache_ttl]
+    ).await;
     match res {
         Ok(_) => HttpResponse::Created().json(serde_json::json!({"id": id.to_string()})),
         Err(e) => {
