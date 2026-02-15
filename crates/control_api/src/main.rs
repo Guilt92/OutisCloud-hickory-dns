@@ -214,7 +214,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             name TEXT NOT NULL,
             action TEXT NOT NULL CHECK (action IN ('allow', 'deny')),
             networks TEXT NOT NULL,
-            server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
+            server_id UUID REFERENCES servers(id) ON DELETE CASCADE,
             created_at TIMESTAMPTZ DEFAULT now()
         );
         
@@ -223,7 +223,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             name TEXT NOT NULL,
             queries_per_second INT DEFAULT 100,
             burst INT DEFAULT 200,
-            server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
+            server_id UUID REFERENCES servers(id) ON DELETE CASCADE,
             enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now()
         );
@@ -232,7 +232,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             id UUID PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             match_clients TEXT NOT NULL,
-            server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
+            server_id UUID REFERENCES servers(id) ON DELETE CASCADE,
             enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now()
         );

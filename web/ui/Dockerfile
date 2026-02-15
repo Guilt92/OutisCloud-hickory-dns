@@ -29,22 +29,14 @@ RUN apk add --no-cache \
     openssl \
     tzdata
 
-# Create non-root user for security
-RUN addgroup -g 1000 -S appgroup && \
-    adduser -u 1000 -S appuser -G appgroup
+# Create directories for logs and run files
+RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx
 
 # Copy custom nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf
 
 # Copy built assets from builder
-COPY --from=builder --chown=appuser:appgroup /app/dist /usr/share/nginx/html
-
-# Create directories for logs and run files
-RUN mkdir -p /var/cache/nginx /var/run/nginx && \
-    chown -R appuser:appgroup /var/cache/nginx /var/run /var/log/nginx
-
-# Switch to non-root user
-USER appuser
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Expose ports
 EXPOSE 8080
@@ -53,5 +45,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Start nginx
+# Start nginx - runs as root, nginx will handle dropping privileges internally
 CMD ["nginx", "-g", "daemon off;"]

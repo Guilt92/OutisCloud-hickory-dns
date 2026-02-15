@@ -67,7 +67,7 @@ services:
     environment:
       VITE_API_URL: http://localhost:8080
     ports:
-      - "3000:80"
+      - "8081:80"
     depends_on:
       - control-api
     restart: unless-stopped
@@ -83,9 +83,12 @@ services:
     environment:
       RUST_LOG: info
     ports:
-      - "53:53/udp"
-      - "53:53/tcp"
+      - "5353:53/udp"
+      - "5353:53/tcp"
       - "853:853/tcp"  # DoT
+    volumes:
+      - ./deploy/dns:/etc/hickory:ro
+    command: ["-c", "/etc/hickory/named.toml", "-p", "53"]
     depends_on:
       - control-api
     restart: unless-stopped

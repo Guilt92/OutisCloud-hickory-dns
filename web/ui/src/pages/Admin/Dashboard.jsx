@@ -193,7 +193,9 @@ export default function Dashboard() {
         try {
           const recordsRes = await api.get(`/api/v1/zones/${zone.id}/records`);
           recordCount += (recordsRes.data?.length || 0);
-        } catch (e) {}
+        } catch (e) {
+          console.warn('Failed to load records for zone:', zone.id, e);
+        }
       }
       
       setStats({
