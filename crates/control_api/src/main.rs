@@ -344,16 +344,18 @@ async fn get_current_user(req: HttpRequest, data: web::Data<AppState>) -> impl R
     };
     
     let user_id = &tok.claims.sub;
+    // users.id is a UUID column; compare text representation to avoid UUID param type issues
     match (&*data.db).query_opt(
-        "SELECT id, username, role, created_at FROM users WHERE id = $1",
+        "SELECT id::text, username, role, created_at::text FROM users WHERE id::text = $1",
         &[user_id]
     ).await {
         Ok(Some(row)) => {
+            // created_at selected as text so we can safely return it
             HttpResponse::Ok().json(serde_json::json!({
                 "id": row.get::<_, String>(0),
                 "username": row.get::<_, String>(1),
                 "role": row.get::<_, String>(2),
-                "createdAt": row.get::<_, String>(3)
+                "createdAt": row.get::<_, Option<String>>(3)
             }))
         }
         Ok(None) => {
@@ -1728,6 +1730,7 @@ async fn main() -> std::io::Result<()> {
     migrate_db(&client).await.expect("db migrate failed");
 
     // Bootstrap admin user if environment variables are set
+    let force_bootstrap = std::env::var("FORCE_BOOTSTRAP").unwrap_or_else(|_| "false".to_string()).to_lowercase() == "true";
     if let (Ok(admin_user), Ok(admin_password)) = (std::env::var("ADMIN_USERNAME"), std::env::var("ADMIN_PASSWORD")) {
         // check if a user exists with that username
         if let Ok(rows) = (&client).query("SELECT id::text, password_hash FROM users WHERE username = $1 LIMIT 1", &[&admin_user]).await {
@@ -1747,7 +1750,17 @@ async fn main() -> std::io::Result<()> {
             } else {
                 // user exists, ensure password_hash looks valid (contains $argon2)
                 let existing_hash: String = rows[0].get(1);
-                if !existing_hash.starts_with("$argon2") {
+                if force_bootstrap {
+                    // Force update password hash when explicitly requested
+                    let mut rng = OsRng;
+                    let salt = SaltString::generate(&mut rng);
+                    let argon2 = Argon2::default();
+                    let password_hash = argon2.hash_password(admin_password.as_bytes(), &salt).unwrap().to_string();
+                    match (&client).execute("UPDATE users SET password_hash = $1 WHERE username = $2", &[&password_hash, &admin_user]).await {
+                        Ok(_) => info!("Force-updated admin user '{}' password hash", admin_user),
+                        Err(e) => warn!("Failed to force-update admin user '{}': {}", admin_user, e),
+                    }
+                } else if !existing_hash.starts_with("$argon2") {
                     let mut rng = OsRng;
                     let salt = SaltString::generate(&mut rng);
                     let argon2 = Argon2::default();
@@ -1782,7 +1795,7 @@ async fn main() -> std::io::Result<()> {
     
     // Build CORS with allowed origins from environment
     let cors_origins = std::env::var("ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
+        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173,http://localhost:8081".to_string());
 
     HttpServer::new(move || {
         // Build CORS inside closure (can't be cloned)
