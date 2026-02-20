@@ -7,20 +7,11 @@ import { useAuthStore } from './store';
 import { NotificationsProvider } from './components/Notifications';
 import './index.css';
 
-// Initialize auth state from localStorage on app load
-const initializeAuth = () => {
-  const token = localStorage.getItem('token');
-  const userStr = localStorage.getItem('user');
-  
-  if (token) {
-    setAuthToken(token);
-    const user = userStr ? JSON.parse(userStr) : null;
-    useAuthStore.setState({ token, user, isAuthenticated: true });
-  }
-};
-
-// Run initialization
-initializeAuth();
+// Initialize auth state from persisted store (if any)
+const { initializeAuth } = useAuthStore.getState();
+if (typeof initializeAuth === 'function') {
+  initializeAuth();
+}
 
 const container = document.getElementById('root');
 const root = createRoot(container);

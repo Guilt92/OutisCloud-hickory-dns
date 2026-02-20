@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+// Default to relative API path so the production build works behind a reverse
+// proxy (nginx) which proxies `/api` to the control API container. During
+// local development the VITE_API_BASE_URL env var can override this.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,

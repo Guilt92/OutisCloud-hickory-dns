@@ -31,7 +31,6 @@ services:
       - ./env/api.env
     environment:
       RUST_LOG: info,control_api=debug
-      DATABASE_URL: postgres://postgres:password@db:5432/hickory
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

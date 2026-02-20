@@ -990,7 +990,7 @@ async fn dns_reload(body: web::Json<ReloadDnsReq>, data: web::Data<FullState>, r
     let server_id = body.id.clone();
     let mut procs = data.processes.lock().await;
     
-    if let Some(mut child) = procs.get_mut(&server_id) {
+    if let Some(child) = procs.get_mut(&server_id) {
         match child.kill() {
             Ok(_) => {
                 drop(procs);
@@ -1716,10 +1716,7 @@ async fn main() -> std::io::Result<()> {
         panic!("JWT_SECRET must be at least 32 characters for production security");
     }
 
-    // CORS origins - can be comma-separated list or use ALLOWED_ORIGINS env var
-    let allowed_origins = std::env::var("ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
-    let cors_origins: Vec<&str> = allowed_origins.split(',').map(|s| s.trim()).collect();
+    // CORS origins will be read later when building the server
 
     let (client, connection) = tokio_postgres::connect(&database_url, NoTls).await.expect("cannot connect to db");
     // spawn connection driver
