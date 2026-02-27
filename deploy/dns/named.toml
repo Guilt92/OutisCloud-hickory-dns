@@ -11,51 +11,11 @@ type = "file"
 zone_path = "/etc/hickory/zone.testzone123.com"
 
 [[zones]]
-zone = "newtestzone.com."
-zone_type = "Primary"
-geodns = { enabled = true, rules = [
-] }
-
-[[zones.stores]]
-type = "file"
-zone_path = "/etc/hickory/zone.newtestzone.com"
-
-[[zones]]
-zone = "manualtest.com."
-zone_type = "Primary"
-geodns = { enabled = true, rules = [
-] }
-
-[[zones.stores]]
-type = "file"
-zone_path = "/etc/hickory/zone.manualtest.com"
-
-[[zones]]
 zone = "a.com."
 zone_type = "Primary"
 [[zones.stores]]
 type = "file"
 zone_path = "/etc/hickory/zone.a.com"
-
-[[zones]]
-zone = "b.ir."
-zone_type = "Primary"
-geodns = { enabled = true, rules = [
-] }
-
-[[zones.stores]]
-type = "file"
-zone_path = "/etc/hickory/zone.b.ir"
-
-[[zones]]
-zone = "finaltest.com."
-zone_type = "Primary"
-geodns = { enabled = true, rules = [
-] }
-
-[[zones.stores]]
-type = "file"
-zone_path = "/etc/hickory/zone.finaltest.com"
 
 [[zones]]
 zone = "anothertest.com."
