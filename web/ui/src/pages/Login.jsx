@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, Navigate, useSearchParams } from 'react-router-dom';
 import { Globe, Mail, Lock, AlertCircle, Eye, EyeOff, Loader2, Shield, Zap, Database, Network } from 'lucide-react';
 import { useAuthStore } from '../store';
 import clsx from 'clsx';
@@ -12,8 +12,40 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   
-  const { login, isAuthenticated, user } = useAuthStore();
+  const { login, isAuthenticated, user, sessionExpired, sessionExpiredMessage, clearSessionExpired } = useAuthStore();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  
+  // Check if user was redirected due to session expiration
+  const sessionExpiredParam = searchParams.get('expired');
+  
+  useEffect(() => {
+    // Clear session expired state when mounting login page
+    if (sessionExpired) {
+      clearSessionExpired();
+    }
+    
+    // Prevent back button navigation after logout
+    const handlePopState = (event) => {
+      if (window.location.pathname === '/login') {
+        // Allow staying on login page
+      }
+    };
+    
+    window.history.pushState(null, '', window.location.href);
+    
+    const handleBeforeUnload = () => {
+      window.history.pushState(null, '', window.location.href);
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [sessionExpired, clearSessionExpired]);
   
   if (isAuthenticated) {
     return <Navigate to={user?.role === 'admin' ? '/admin' : '/user'} replace />;
@@ -48,6 +80,8 @@ export default function Login() {
     }
   };
 
+  const showSessionExpiredMessage = sessionExpiredParam === 'true' || sessionExpired;
+
   const features = [
     { icon: Zap, label: 'High Performance', desc: 'Lightning fast DNS queries' },
     { icon: Shield, label: 'Secure', desc: 'DNSSEC & TSIG support' },
@@ -79,7 +113,7 @@ export default function Login() {
             <div className="inline-flex items-center justify-center w-24 h-24 rounded-3xl bg-white/10 backdrop-blur-sm mb-6">
               <Globe className="w-14 h-14 text-white" />
             </div>
-            <h1 className="text-5xl font-bold mb-4">Hickory DNS</h1>
+            <h1 className="text-5xl font-bold mb-4">OutisCloud</h1>
             <p className="text-xl text-primary-100">Enterprise DNS Management Platform</p>
           </motion.div>
           
@@ -123,7 +157,7 @@ export default function Login() {
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary-100 dark:bg-primary-900/30 mb-4">
               <Globe className="w-8 h-8 text-primary-600 dark:text-primary-400" />
             </div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Hickory DNS</h1>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">OutisCloud</h1>
           </div>
           
           <motion.div 
@@ -134,6 +168,17 @@ export default function Login() {
           >
             <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Welcome back</h2>
             <p className="text-gray-500 dark:text-gray-400 mb-6">Sign in to manage your DNS infrastructure</p>
+            
+            {showSessionExpiredMessage && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="mb-6 p-4 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 flex items-start gap-3"
+              >
+                <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-amber-600 dark:text-amber-400">Your session has expired. Please log in again.</p>
+              </motion.div>
+            )}
             
             {error && (
               <motion.div 
@@ -241,7 +286,7 @@ export default function Login() {
           </motion.div>
           
           <p className="mt-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            &copy; {new Date().getFullYear()} Hickory DNS. Enterprise DNS Management.
+            &copy; {new Date().getFullYear()} OutisCloud. Enterprise DNS Management.
           </p>
         </div>
       </div>

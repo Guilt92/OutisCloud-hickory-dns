@@ -2,14 +2,14 @@ services:
   # PostgreSQL Database
   db:
     image: postgres:15-alpine
-    container_name: hickory-dns-db
+    container_name: outiscloud-db
     env_file:
       - ./env/db.env
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./crates/control_api/migrations:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "127.0.0.1:5432:5432"
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -17,7 +17,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - hickory-network
+      - outiscloud-network
     security_opt:
       - no-new-privileges:true
 
@@ -26,7 +26,7 @@ services:
     build:
       context: .
       dockerfile: crates/control_api/Dockerfile
-    container_name: hickory-dns-control-api
+    container_name: outiscloud-control-api
     env_file:
       - ./env/api.env
     environment:
@@ -34,10 +34,14 @@ services:
       # comma-separated list of authoritative nameservers used when creating zones
       PUBLIC_NAMESERVERS: "${PUBLIC_NAMESERVERS:-ns1.my-dns.com.,ns2.my-dns.com.}"
       HICKORY_DNS_DIR: "/etc/hickory"
+      GEOIP_DB_PATH: "/etc/hickory/GeoLite2-Country.mmdb"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./deploy/dns:/etc/hickory:rw
+      - /etc/group:/etc/group:ro
+      - /etc/passwd:/etc/passwd:ro
+    user: "1000:1000"
     depends_on:
       db:
         condition: service_healthy
@@ -49,7 +53,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - hickory-network
+      - outiscloud-network
     security_opt:
       - no-new-privileges:true
     tmpfs:
@@ -60,25 +64,26 @@ services:
     build:
       context: ./web/ui
       dockerfile: Dockerfile
-    container_name: hickory-dns-ui
+    container_name: outiscloud-ui
     environment:
-      VITE_API_BASE_URL: ${API_BASE_URL:-http://localhost:8080}
+      VITE_API_BASE_URL: /api
     ports:
       - "${UI_PORT:-8081}:80"
     depends_on:
       - control-api
     restart: unless-stopped
     networks:
-      - hickory-network
+      - outiscloud-network
 
   # DNS Server
   dns-server:
     build:
       context: .
       dockerfile: bin/Dockerfile
-    container_name: hickory-dns-server
+    container_name: outiscloud-dns-server
     environment:
       RUST_LOG: info
+      GEOIP_DB_PATH: /etc/outiscloud/GeoLite2-Country.mmdb
     ports:
       - "${DNS_PORT:-5353}:53/udp"
       - "${DNS_PORT:-5353}:53/tcp"
@@ -90,12 +95,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "dig", "@127.0.0.1", "-p", "53", "+short", ".", "NS"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 53 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
     networks:
-      - hickory-network
+      - outiscloud-network
     security_opt:
       - no-new-privileges:true
     cap_add:
@@ -104,7 +109,7 @@ services:
   # Prometheus (Metrics)
   prometheus:
     image: prom/prometheus:latest
-    container_name: hickory-dns-prometheus
+    container_name: outiscloud-prometheus
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -117,12 +122,12 @@ services:
       - "127.0.0.1:9090:9090"
     restart: unless-stopped
     networks:
-      - hickory-network
+      - outiscloud-network
 
   # Grafana (Optional - for visualization)
   grafana:
     image: grafana/grafana:latest
-    container_name: hickory-dns-grafana
+    container_name: outiscloud-grafana
     env_file:
       - ./env/grafana.env
     volumes:
@@ -134,7 +139,7 @@ services:
       - prometheus
     restart: unless-stopped
     networks:
-      - hickory-network
+      - outiscloud-network
 
 volumes:
   db_data:
@@ -142,5 +147,5 @@ volumes:
   grafana_data:
 
 networks:
-  hickory-network:
+  outiscloud-network:
     driver: bridge

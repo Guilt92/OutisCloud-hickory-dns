@@ -33,6 +33,7 @@ use crate::server::{Request, RequestInfo};
 
 mod auth_lookup;
 mod catalog;
+pub mod geodns;
 pub(crate) mod message_request;
 mod message_response;
 

@@ -74,7 +74,7 @@ pub struct DnsServer {
     #[clap(
         short = 'c',
         long = "config",
-        default_value = "/etc/named.toml",
+        default_value = "/etc/hickory/named.toml",
         value_name = "NAME",
         value_hint=clap::ValueHint::FilePath,
     )]

@@ -10,6 +10,11 @@ export default function GeoRules(){
   const [matchType, setMatchType] = React.useState('country')
   const [matchValue, setMatchValue] = React.useState('US')
   const [target, setTarget] = React.useState('192.0.2.1')
+  const [priority, setPriority] = React.useState(0)
+  const [enabled, setEnabled] = React.useState(true)
+  const [recordName, setRecordName] = React.useState('')
+  const [recordType, setRecordType] = React.useState('')
+  const [editingRule, setEditingRule] = React.useState(null)
   const [testIp, setTestIp] = React.useState('8.8.8.8')
   const [resolveResult, setResolveResult] = React.useState(null)
   const [loading, setLoading] = React.useState(false)
@@ -35,11 +40,23 @@ export default function GeoRules(){
 
   const create = async () => {
     if (!zone || !matchValue || !target) return
-    try { 
-      await api.post('/api/v1/georules', { zone_id: zone, match_type: matchType, match_value: matchValue, target }); 
-      setZone(''); 
-      load() 
-    } catch (e) { alert('Error creating rule') }
+    try {
+      if (editingRule) {
+        await api.put(`/api/v1/georules/${editingRule.id}`, {
+          zone_id: zone, match_type: matchType, match_value: matchValue, target,
+          priority, enabled, record_name: recordName || null, record_type: recordType || null
+        });
+      } else {
+        await api.post('/api/v1/georules', { 
+          zone_id: zone, match_type: matchType, match_value: matchValue, target,
+          priority, enabled, record_name: recordName || null, record_type: recordType || null
+        });
+      }
+      // reset form
+      setZone(''); setPriority(0); setEnabled(true); setRecordName(''); setRecordType('');
+      setEditingRule(null);
+      load()
+    } catch (e) { alert('Error saving rule') }
   }
 
   const remove = async (id)=>{ 
@@ -48,6 +65,18 @@ export default function GeoRules(){
       await api.delete(`/api/v1/georules/${id}`); 
       load() 
     } catch(e){ alert('Delete failed') } 
+  }
+
+  const startEditRule = (r) => {
+    setEditingRule(r);
+    setZone(r.zone_id);
+    setMatchType(r.match_type);
+    setMatchValue(r.match_value);
+    setTarget(r.target);
+    setPriority(r.priority || 0);
+    setEnabled(r.enabled);
+    setRecordName(r.record_name || '');
+    setRecordType(r.record_type || '');
   }
 
   const testResolve = async () => {
@@ -65,6 +94,15 @@ export default function GeoRules(){
     return z ? z.domain : zoneId
   }
 
+  const toggleEnabled = async (rule) => {
+    try {
+      await api.put(`/api/v1/georules/${rule.id}`, { enabled: !rule.enabled });
+      load();
+    } catch (e) {
+      alert('Failed to update rule');
+    }
+  }
+
   return (
     <div className="space-y-6">
       <motion.div 
@@ -79,7 +117,7 @@ export default function GeoRules(){
           <h3 className="text-xl font-bold text-gray-800">GeoDNS Rules</h3>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Zone</label>
             <select 
@@ -121,15 +159,36 @@ export default function GeoRules(){
               onChange={e=>setTarget(e.target.value)} 
             />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
+            <input type="number" min="0" className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Enabled</label>
+            <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="h-5 w-5" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Record Name</label>
+            <input className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="optional" value={recordName} onChange={e=>setRecordName(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Record Type</label>
+            <input className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="e.g., A, AAAA" value={recordType} onChange={e=>setRecordType(e.target.value)} />
+          </div>
           <div className="flex items-end">
             <button 
               className="w-full bg-gradient-to-r from-green-600 to-green-700 text-white px-4 py-2 rounded-lg hover:from-green-700 hover:to-green-800 transition-all flex items-center justify-center space-x-2 font-medium"
               onClick={create}
             >
               <Plus className="w-5 h-5" />
-              <span>Add Rule</span>
+              <span>{editingRule ? 'Update Rule' : 'Add Rule'}</span>
             </button>
           </div>
+          {editingRule && (
+            <div className="col-span-full text-right">
+              <button className="text-sm text-gray-600 hover:underline" onClick={()=>setEditingRule(null)}>Cancel</button>
+            </div>
+          )}
         </div>
       </motion.div>
 
@@ -199,9 +258,12 @@ export default function GeoRules(){
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Zone</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Match Type</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Match</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Value</th>
                   <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Target</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Pri</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Enabled</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Record</th>
                   <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -227,7 +289,20 @@ export default function GeoRules(){
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-600 font-mono">{r.target}</td>
+                    <td className="px-6 py-4 text-sm text-gray-600">{r.priority}</td>
+                    <td className="px-6 py-4">
+                      <input type="checkbox" checked={r.enabled} onChange={()=>toggleEnabled(r)} className="h-4 w-4" />
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-600">
+                      {r.record_name || '-'}{r.record_type ? `/${r.record_type}` : ''}
+                    </td>
                     <td className="px-6 py-4 text-right">
+                      <button 
+                        onClick={()=>startEditRule(r)}
+                        className="text-blue-600 hover:text-blue-800 p-1 rounded hover:bg-blue-50"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
                       <button 
                         onClick={()=>remove(r.id)}
                         className="text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50"

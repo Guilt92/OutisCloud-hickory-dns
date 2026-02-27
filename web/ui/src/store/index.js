@@ -8,24 +8,37 @@ export const useAuthStore = create(
     (set, get) => ({
       user: null,
       token: null,
+      refreshToken: null,
       isAuthenticated: false,
-      isLoading: false,
+      isLoading: true,
       error: null,
+      sessionExpired: false,
+      sessionExpiredMessage: '',
       
       login: async (username, password) => {
         set({ isLoading: true, error: null });
         try {
           const response = await authApi.login({ username, password });
-          const { token } = response.data;
+          const { token, refresh_token } = response.data;
+          
           setAuthToken(token);
+          localStorage.setItem('refreshToken', refresh_token);
+          
           const meResponse = await api.get('/api/v1/auth/me');
           const user = meResponse.data;
           
-          // Store user in localStorage for persistence
           localStorage.setItem('token', token);
           localStorage.setItem('user', JSON.stringify(user));
           
-          set({ user, token, isAuthenticated: true, isLoading: false });
+          set({ 
+            user, 
+            token, 
+            refreshToken: refresh_token,
+            isAuthenticated: true, 
+            isLoading: false,
+            sessionExpired: false,
+            sessionExpiredMessage: ''
+          });
           return user;
         } catch (error) {
           const message = error.response?.data?.error || 'Login failed';
@@ -34,33 +47,83 @@ export const useAuthStore = create(
         }
       },
       
-      logout: () => {
+      logout: async () => {
+        const token = localStorage.getItem('token');
+        set({ isLoading: true });
+        
+        try {
+          // Call logout API to invalidate token on backend
+          await authApi.logout();
+        } catch (error) {
+          // Continue with logout even if API call fails
+          console.warn('Logout API call failed:', error);
+        }
+        
+        // Clear all auth data
         setAuthToken(null);
-        set({ user: null, token: null, isAuthenticated: false });
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        localStorage.removeItem('user');
+        
+        set({ 
+          user: null, 
+          token: null, 
+          refreshToken: null,
+          isAuthenticated: false, 
+          isLoading: false,
+          sessionExpired: false,
+          sessionExpiredMessage: ''
+        });
+      },
+      
+      setSessionExpired: (message = 'Your session has expired.') => {
+        set({ 
+          sessionExpired: true, 
+          sessionExpiredMessage: message,
+          isAuthenticated: false 
+        });
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        localStorage.removeItem('user');
+        setAuthToken(null);
+      },
+      
+      clearSessionExpired: () => {
+        set({ 
+          sessionExpired: false, 
+          sessionExpiredMessage: ''
+        });
       },
       
       clearError: () => set({ error: null }),
       
       setUser: (user) => set({ user }),
       
+      setLoading: (isLoading) => set({ isLoading }),
+      
       isAdmin: () => get().user?.role === 'admin',
       
       isAgent: () => get().user?.role === 'agent',
       
-      // Initialize auth state from persisted token
+      isRegularUser: () => get().user?.role === 'user',
+      
       initializeAuth: () => {
         const state = get();
-        if (state.token && !state.isAuthenticated) {
-          const token = localStorage.getItem('token');
-          const user = localStorage.getItem('user');
-          if (token) {
-            setAuthToken(token);
-            set({ 
-              token, 
-              user: user ? JSON.parse(user) : null, 
-              isAuthenticated: true 
-            });
-          }
+        const token = localStorage.getItem('token');
+        const refreshToken = localStorage.getItem('refreshToken');
+        const user = localStorage.getItem('user');
+        
+        if (token && user) {
+          setAuthToken(token);
+          set({ 
+            token, 
+            refreshToken,
+            user: JSON.parse(user), 
+            isAuthenticated: true,
+            isLoading: false 
+          });
+        } else {
+          set({ isLoading: false });
         }
       }
     }),
@@ -69,6 +132,7 @@ export const useAuthStore = create(
       partialize: (state) => ({ 
         token: state.token, 
         user: state.user,
+        refreshToken: state.refreshToken,
         isAuthenticated: state.isAuthenticated 
       }),
     }

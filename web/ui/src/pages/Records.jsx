@@ -26,7 +26,10 @@ export default function Records(){
     try { 
       const r = await api.get(`/api/v1/zones/${zoneId}/records`); 
       setRecords(r.data || []) 
-    } catch (e) { console.error('load records', e) }
+    } catch (e) { 
+      console.error('load records', e)
+      notify?.error('Failed to load records: ' + (e.response?.data?.error || e.message))
+    }
     setLoading(false)
   }
   React.useEffect(()=>{ 
@@ -46,13 +49,18 @@ export default function Records(){
     // type-specific checks
     switch(type) {
       case 'A':
-        if (validators.ipAddress(value)) break
+        // ipAddress returns '' if valid, error message if invalid
+        if (!validators.ipAddress(value)) break
         setError('Invalid IPv4 address'); return false
       case 'AAAA':
-        if (validators.ipAddress(value)) break
+        // Same validator works for IPv6 as well
+        if (!validators.ipAddress(value)) break
         setError('Invalid IPv6 address'); return false
       case 'CNAME': case 'NS': case 'MX': case 'SRV':
         if (!value.endsWith('.')) { setError('Target must be a fully qualified domain name ending with a dot'); return false }
+        break
+      case 'TXT':
+        // TXT records can be any text, no validation needed
         break
       default:
         break
@@ -68,14 +76,18 @@ export default function Records(){
       const payload = { name, record_type: type, value, ttl, priority: (type === 'MX' || type === 'SRV' ? priority : undefined) }
       if (editing) {
         await api.put(`/api/v1/zones/${zoneId}/records/${editing.id}`, payload)
-        notify && notify.push('Record updated successfully')
+        notify?.success('Record updated successfully')
       } else {
         await api.post(`/api/v1/zones/${zoneId}/records`, payload)
-        notify && notify.push('Record created successfully')
+        notify?.success('Record created successfully')
       }
       resetForm()
       load();
-    } catch (e) { setError(editing ? 'update failed' : 'create failed') }
+    } catch (e) { 
+      const errMsg = e.response?.data?.error || e.message || (editing ? 'update failed' : 'create failed');
+      setError(errMsg)
+      notify?.error(errMsg)
+    }
   }
   
   const remove = async (rid) => { 
@@ -83,11 +95,17 @@ export default function Records(){
       await api.delete(`/api/v1/zones/${zoneId}/records/${rid}`); 
       if (editing && editing.id === rid) resetForm()
       load() 
-      notify && notify.push('Record deleted')
-    } catch (e) { alert('delete failed') } 
+      notify?.success('Record deleted')
+    } catch (e) { 
+      const errMsg = e.response?.data?.error || e.message || 'delete failed';
+      notify?.error(errMsg)
+    } 
   }
   
-  const onBulkComplete = ()=> load()
+  const onBulkComplete = ()=> {
+    load()
+    notify?.success('Records imported successfully')
+  }
 
   const downloadTemplate = () => {
     const sample = 'name,record_type,value,ttl,priority\nwww,A,192.0.2.1,3600,\nmail,A,192.0.2.2,3600,\n@,MX,mail.example.com.,3600,10\n'

@@ -14,7 +14,6 @@ use std::process::Command;
 use tokio_postgres::NoTls;
 use argon2::{Argon2, PasswordHash, PasswordVerifier, PasswordHasher};
 use argon2::password_hash::SaltString;
-use rand_core::OsRng;
 use jsonwebtoken::{encode, decode, Header, EncodingKey, DecodingKey, Validation, TokenData};
 use uuid::Uuid;
 use actix_cors::Cors;
@@ -22,7 +21,51 @@ use actix_web_prom::PrometheusMetricsBuilder;
 use prometheus::{TextEncoder, Encoder};
 use prometheus::gather;
 use chrono::TimeZone;
+use chrono::Utc;
 use regex::Regex;
+
+fn generate_salt() -> SaltString {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let salt_bytes = timestamp.to_le_bytes();
+    let salt_b64 = base64_encode(&salt_bytes);
+    SaltString::from_b64(&salt_b64).unwrap_or_else(|_| SaltString::from_b64("ABCD1234EFGH5678IJKL").unwrap())
+}
+
+/// Hash a token for storage in the blacklist
+fn hash_token(token: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    token.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    for chunk in data.chunks(3) {
+        let n = ((chunk[0] as u32) << 16) |
+                (((*chunk.get(1).unwrap_or(&0u8)) as u32) << 8) |
+                ((*chunk.get(2).unwrap_or(&0u8)) as u32);
+        result.push(CHARS[((n >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((n >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(n & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
 
 /// Build a CORS middleware instance based on the `ALLOWED_ORIGINS`
 /// environment variable.  The value may be a comma-separated list of
@@ -134,6 +177,7 @@ struct ZoneWithOwner {
     owner: String,
     zone_type: String,
     created_at: String,
+    geodns_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -205,6 +249,26 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
     }
     info!("Users table ready");
     
+    // Token blacklist table for invalidated tokens (logout)
+    if let Err(e) = client.batch_execute(
+        "CREATE TABLE IF NOT EXISTS token_blacklist (
+            id UUID PRIMARY KEY,
+            token_hash TEXT NOT NULL,
+            user_id UUID,
+            revoked_at TIMESTAMPTZ DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL
+        );"
+    ).await {
+        warn!("Failed to create token_blacklist table: {}", e);
+        return Err(e);
+    }
+    info!("Token blacklist table ready");
+    
+    // Clean up expired tokens on startup
+    if let Err(e) = client.execute("DELETE FROM token_blacklist WHERE expires_at < now()", &[]).await {
+        warn!("Failed to clean up expired tokens: {}", e);
+    }
+    
     // Servers table
     if let Err(e) = client.batch_execute(
         "CREATE TABLE IF NOT EXISTS servers (
@@ -234,6 +298,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             domain TEXT NOT NULL,
             owner UUID REFERENCES users(id) ON DELETE SET NULL,
             zone_type TEXT NOT NULL DEFAULT 'primary',
+            geodns_enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now(),
             UNIQUE(domain)
@@ -243,6 +308,13 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
         return Err(e);
     }
     info!("Zones table ready");
+    // Ensure existing installations get the new column
+    if let Err(e) = client.batch_execute(
+        "ALTER TABLE zones ADD COLUMN IF NOT EXISTS geodns_enabled BOOLEAN DEFAULT true;"
+    ).await {
+        warn!("Failed to add geodns_enabled to zones: {}", e);
+        return Err(e);
+    }
     
     // Records table
     if let Err(e) = client.batch_execute(
@@ -292,6 +364,8 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             target TEXT NOT NULL,
             priority INT DEFAULT 0,
             enabled BOOLEAN DEFAULT true,
+            record_name TEXT,
+            record_type TEXT,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         );"
@@ -300,6 +374,27 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
         return Err(e);
     }
     info!("Georules table ready");
+    // ensure existing installations have new columns
+    if let Err(e) = client.batch_execute(
+        "ALTER TABLE georules ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;"
+    ).await {
+        warn!("failed to add priority column to georules: {}", e);
+    }
+    if let Err(e) = client.batch_execute(
+        "ALTER TABLE georules ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT true;"
+    ).await {
+        warn!("failed to add enabled column to georules: {}", e);
+    }
+    if let Err(e) = client.batch_execute(
+        "ALTER TABLE georules ADD COLUMN IF NOT EXISTS record_name TEXT;"
+    ).await {
+        warn!("failed to add record_name column to georules: {}", e);
+    }
+    if let Err(e) = client.batch_execute(
+        "ALTER TABLE georules ADD COLUMN IF NOT EXISTS record_type TEXT;"
+    ).await {
+        warn!("failed to add record_type column to georules: {}", e);
+    }
     
     // ACLs table
     if let Err(e) = client.batch_execute(
@@ -407,8 +502,8 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
     match client.query("SELECT 1 FROM users WHERE username = 'admin' LIMIT 1", &[]).await {
         Ok(rows) if rows.is_empty() => {
             // Create default admin user
-            let mut rng = OsRng;
-            let salt = SaltString::generate(&mut rng);
+            
+            let salt = generate_salt();
             let argon2 = Argon2::default();
             let password_hash = argon2.hash_password(b"admin123", &salt).unwrap().to_string();
             if let Err(e) = client.execute(
@@ -436,6 +531,7 @@ struct LoginRequest {
 #[derive(Serialize)]
 struct LoginResponse {
     token: String,
+    refresh_token: String,
     expires_in: usize,
 }
 
@@ -455,16 +551,43 @@ async fn login(body: web::Json<LoginRequest>, data: web::Data<AppState>) -> impl
         
                 if let Ok(hash) = PasswordHash::new(&password_hash) {
                     if Argon2::default().verify_password(body.password.as_bytes(), &hash).is_ok() {
-                        let exp = (chrono::Utc::now() + chrono::Duration::hours(8)).timestamp() as usize;
+                        // Short-lived access token (15 minutes)
+                        let exp = (chrono::Utc::now() + chrono::Duration::minutes(15)).timestamp() as usize;
                         let claims = Claims { 
                             sub: id.to_string(), 
                             role: role.clone().unwrap_or_else(|| "user".to_string()), 
                             exp 
                         };
                         
+                        // Generate a refresh token (longer-lived, 7 days)
+                        let refresh_token = format!("{}{}", Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+                        let refresh_token_hash = hash_token(&refresh_token);
+                        
+                        // Store refresh token in database
+                        let user_uuid_str = id.clone();
+                        
+                        let refresh_expires = (chrono::Utc::now() + chrono::Duration::days(7)).timestamp();
+                        
+                        // Delete any existing refresh tokens for this user and insert new one
+                        let _ = (&*data.db).execute(
+                            "DELETE FROM token_blacklist WHERE user_id = $1",
+                            &[&user_uuid_str]
+                        ).await;
+                        
+                        if let Err(e) = (&*data.db).execute(
+                            "INSERT INTO token_blacklist (id, token_hash, user_id, expires_at) VALUES ($1, $2, $3, to_timestamp($4))",
+                            &[&Uuid::new_v4().to_string(), &refresh_token_hash, &user_uuid_str, &(refresh_expires as i64)]
+                        ).await {
+                            warn!("Failed to store refresh token: {}", e);
+                        }
+                        
                         match encode(&Header::default(), &claims, &EncodingKey::from_secret(data.jwt_secret.as_bytes())) {
                             Ok(token) => {
-                                return HttpResponse::Ok().json(LoginResponse { token, expires_in: 28800 });
+                                return HttpResponse::Ok().json(LoginResponse { 
+                                    token, 
+                                    refresh_token,
+                                    expires_in: 900 // 15 minutes in seconds
+                                });
                             }
                             Err(e) => {
                                 warn!("JWT encode error: {}", e);
@@ -480,15 +603,112 @@ async fn login(body: web::Json<LoginRequest>, data: web::Data<AppState>) -> impl
     HttpResponse::Unauthorized().json(serde_json::json!({"error": "invalid credentials"}))
 }
 
-async fn logout(req: HttpRequest) -> impl Responder {
+async fn logout(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
+    // First, validate the current token to get the user_id
+    let user_id = if let Some(tok) = auth_from_header(&req, &data.jwt_secret) {
+        Some(tok.claims.sub.clone())
+    } else {
+        None
+    };
+    
+    // Add the access token to blacklist
     if let Some(auth) = req.headers().get("authorization") {
         if let Ok(token) = auth.to_str() {
-            if token.starts_with("Bearer ") {
-                return HttpResponse::Ok().json(serde_json::json!({"message": "logged out successfully"}));
+            if let Some(access_token) = token.strip_prefix("Bearer ") {
+                let token_hash = hash_token(access_token);
+                let exp = (chrono::Utc::now() + chrono::Duration::minutes(20)).timestamp(); // Keep in blacklist a bit longer than original token
+                
+                if let Err(e) = (&*data.db).execute(
+                    "INSERT INTO token_blacklist (id, token_hash, expires_at) VALUES ($1, $2, to_timestamp($3))",
+                    &[&Uuid::new_v4().to_string(), &token_hash, &(exp as i64)]
+                ).await {
+                    warn!("Failed to blacklist token: {}", e);
+                }
             }
         }
     }
-    HttpResponse::Ok().json(serde_json::json!({"message": "no active session"}))
+    
+    // Invalidate the refresh token if we have a user_id
+    if let Some(uid) = user_id {
+        if let Err(e) = (&*data.db).execute(
+            "DELETE FROM token_blacklist WHERE user_id = $1",
+            &[&uid]
+        ).await {
+            warn!("Failed to invalidate refresh token: {}", e);
+        }
+    }
+    
+    HttpResponse::Ok().json(serde_json::json!({"message": "logged out successfully"}))
+}
+
+#[derive(Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
+async fn refresh_token(body: web::Json<RefreshRequest>, data: web::Data<AppState>) -> impl Responder {
+    let refresh_token = &body.refresh_token;
+    if refresh_token.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "refresh_token required"}));
+    }
+    
+    let refresh_token_hash = hash_token(refresh_token);
+    
+    // Check if refresh token exists and is valid
+    match (&*data.db).query_opt(
+        "SELECT user_id, expires_at FROM token_blacklist WHERE token_hash = $1",
+        &[&refresh_token_hash]
+    ).await {
+        Ok(Some(row)) => {
+            let user_id: Option<String> = row.try_get(0).ok();
+            let expires_at_str: Option<String> = row.try_get(1).ok();
+            
+            if let (Some(uid_str), Some(expires_str)) = (user_id, expires_at_str) {
+                // Parse timestamp string the
+                let expires = chrono::NaiveDateTime::parse_from_str(&expires_str, "%Y-%m-%d %H:%M:%S%.f")
+                    .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc));
+                
+                if let Ok(expires) = expires {
+                    // Check if refresh token hasn't expired
+                    if expires > chrono::Utc::now() {
+                        // Get user info
+                        if let Ok(user_row) = (&*data.db).query_one(
+                            "SELECT username, role FROM users WHERE CAST(id AS varchar) = $1",
+                            &[&uid_str]
+                        ).await {
+                            let username: String = user_row.try_get(0).unwrap_or_default();
+                            let role: Option<String> = user_row.try_get(1).ok();
+                            
+                            // Generate new access token
+                            let exp = (chrono::Utc::now() + chrono::Duration::minutes(15)).timestamp() as usize;
+                            let claims = Claims { 
+                                sub: uid_str.clone(), 
+                                role: role.clone().unwrap_or_else(|| "user".to_string()), 
+                                exp 
+                            };
+                            
+                            match encode(&Header::default(), &claims, &EncodingKey::from_secret(data.jwt_secret.as_bytes())) {
+                                Ok(token) => {
+                                    return HttpResponse::Ok().json(LoginResponse { 
+                                        token, 
+                                        refresh_token: refresh_token.clone(),
+                                        expires_in: 900 
+                                    });
+                                }
+                                Err(e) => {
+                                    warn!("JWT encode error during refresh: {}", e);
+                                    return HttpResponse::InternalServerError().json(serde_json::json!({"error": "token generation failed"}));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    
+    HttpResponse::Unauthorized().json(serde_json::json!({"error": "invalid or expired refresh token"}))
 }
 
 async fn get_current_user(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
@@ -527,6 +747,167 @@ async fn get_current_user(req: HttpRequest, data: web::Data<AppState>) -> impl R
     }
 }
 
+#[derive(Deserialize)]
+struct ChangePasswordReq {
+    current_password: String,
+    new_password: String,
+}
+
+/// Change password for the currently authenticated user
+async fn change_password(body: web::Json<ChangePasswordReq>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"})),
+    };
+    
+    let user_id = &tok.claims.sub;
+    
+    // Validate new password
+    if body.new_password.len() < 8 {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "new_password_too_short",
+            "details": "Password must be at least 8 characters"
+        }));
+    }
+    
+    // Get current user's password hash
+    let user_row = match (&*data.db).query_opt(
+        "SELECT password_hash FROM users WHERE CAST(id AS varchar) = $1",
+        &[user_id]
+    ).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error": "user not found"})),
+        Err(e) => {
+            warn!("change_password error: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    
+    let stored_hash: String = user_row.try_get(0).unwrap_or_default();
+    
+    // Verify current password
+    if stored_hash.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "no_password_set",
+            "details": "Cannot change password: no password is set for this user"
+        }));
+    }
+    
+    // Parse the stored hash and verify
+    let parsed_hash = match PasswordHash::new(&stored_hash) {
+        Ok(h) => h,
+        Err(e) => {
+            warn!("Failed to parse stored password hash: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "password verification failed"}));
+        }
+    };
+    
+    let valid = match Argon2::default().verify_password(body.current_password.as_bytes(), &parsed_hash) {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    
+    if !valid {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "incorrect_current_password",
+            "details": "Current password is incorrect"
+        }));
+    }
+    
+    // Hash the new password
+    
+    let salt = generate_salt();
+    let argon2 = Argon2::default();
+    let new_hash = match argon2.hash_password(body.new_password.as_bytes(), &salt) {
+        Ok(h) => h.to_string(),
+        Err(e) => {
+            warn!("Failed to hash new password: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "password hashing failed"}));
+        }
+    };
+    
+    // Update the password
+    match (&*data.db).execute(
+        "UPDATE users SET password_hash = $1 WHERE CAST(id AS varchar) = $2",
+        &[&new_hash, user_id]
+    ).await {
+        Ok(_) => {
+            info!("User {} changed their password successfully", user_id);
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Password changed successfully"
+            }))
+        }
+        Err(e) => {
+            warn!("change_password update error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to update password"}))
+        }
+    }
+}
+
+/// Admin-only: Reset password for any user
+#[derive(Deserialize)]
+struct AdminResetPasswordReq {
+    user_id: String,
+    new_password: String,
+}
+
+async fn admin_reset_password(body: web::Json<AdminResetPasswordReq>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"})),
+    };
+    
+    // Check if admin
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
+    }
+    
+    // Validate new password
+    if body.new_password.len() < 8 {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "password_too_short",
+            "details": "Password must be at least 8 characters"
+        }));
+    }
+    
+    // Hash the new password
+    
+    let salt = generate_salt();
+    let argon2 = Argon2::default();
+    let new_hash = match argon2.hash_password(body.new_password.as_bytes(), &salt) {
+        Ok(h) => h.to_string(),
+        Err(e) => {
+            warn!("Failed to hash password: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "password hashing failed"}));
+        }
+    };
+    
+    // Update the user's password
+    match (&*data.db).execute(
+        "UPDATE users SET password_hash = $1 WHERE CAST(id AS varchar) = $2",
+        &[&new_hash, &body.user_id]
+    ).await {
+        Ok(res) => {
+            if res == 0 {
+                return HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "user_not_found",
+                    "details": "No user found with the specified ID"
+                }));
+            }
+            info!("Admin reset password for user {}", body.user_id);
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Password reset successfully"
+            }))
+        }
+        Err(e) => {
+            warn!("admin_reset_password error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to reset password"}))
+        }
+    }
+}
+
 async fn create_user(req: web::Json<LoginRequest>, data: web::Data<AppState>) -> impl Responder {
     // Validate input
     let username = req.username.trim();
@@ -544,8 +925,8 @@ async fn create_user(req: web::Json<LoginRequest>, data: web::Data<AppState>) ->
     }
     
     // Hash password
-    let mut rng = OsRng;
-    let salt = SaltString::generate(&mut rng);
+    
+    let salt = generate_salt();
     let argon2 = Argon2::default();
     let password_hash = match argon2.hash_password(req.password.as_bytes(), &salt) {
         Ok(h) => h.to_string(),
@@ -918,6 +1299,194 @@ async fn delete_server(path: web::Path<String>, data: web::Data<AppState>, req: 
     }
 }
 
+// ============================================================
+// Nameservers API - Authoritative Nameserver Configuration
+// ============================================================
+
+#[derive(Serialize)]
+struct NameserverInfo {
+    id: String,
+    hostname: String,
+    ip_address: String,
+    glue_ip: Option<String>,
+    sort_order: i32,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct CreateNameserverReq {
+    hostname: String,
+    ip_address: String,
+    glue_ip: Option<String>,
+    sort_order: Option<i32>,
+    enabled: Option<bool>,
+}
+
+async fn list_nameservers(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    if auth_from_header(&req, &data.jwt_secret).is_none() {
+        return HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "unauthorized",
+            "details": "Authentication required"
+        }));
+    }
+    
+    match (&*data.db).query(
+        "SELECT CAST(id AS varchar), hostname, ip_address, glue_ip, sort_order, enabled FROM nameservers ORDER BY sort_order, hostname", 
+        &[]
+    ).await {
+        Ok(rows) => {
+            let nameservers: Vec<NameserverInfo> = rows.into_iter().map(|r| NameserverInfo {
+                id: r.try_get(0).unwrap_or_default(),
+                hostname: r.try_get(1).unwrap_or_default(),
+                ip_address: r.try_get(2).unwrap_or_default(),
+                glue_ip: r.try_get(3).ok(),
+                sort_order: r.try_get(4).unwrap_or(0),
+                enabled: r.try_get(5).unwrap_or(true),
+            }).collect();
+            HttpResponse::Ok().json(nameservers)
+        }
+        Err(e) => {
+            warn!("list_nameservers database error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database_error",
+                "details": "Failed to fetch nameservers"
+            }))
+        }
+    }
+}
+
+async fn create_nameserver(body: web::Json<CreateNameserverReq>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+        }
+    };
+    
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
+    }
+    
+    // Validate hostname
+    let hostname = body.hostname.trim();
+    if hostname.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "hostname is required"}));
+    }
+    
+    // Validate IP address
+    let ip = body.ip_address.trim();
+    if ip.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "ip_address is required"}));
+    }
+    
+    let id = Uuid::new_v4();
+    let id_str = id.to_string();
+    let sort_order = body.sort_order.unwrap_or(0);
+    let enabled = body.enabled.unwrap_or(true);
+    let glue_ip = body.glue_ip.as_deref();
+    
+    match (&*data.db).execute(
+        "INSERT INTO nameservers (id, hostname, ip_address, glue_ip, sort_order, enabled) VALUES ($1::text::uuid, $2, $3, $4, $5, $6)",
+        &[&id_str, &hostname, &ip, &glue_ip, &sort_order, &enabled]
+    ).await {
+        Ok(_) => {
+            info!("Created nameserver: {} ({})", hostname, ip);
+            
+            // Trigger zone file regeneration to apply new nameservers
+            if let Err(e) = data.dns_manager.regenerate_zones(data.db.clone()).await {
+                warn!("Failed to regenerate zones after nameserver creation: {}", e);
+            }
+            
+            HttpResponse::Created().json(serde_json::json!({
+                "id": id.to_string(),
+                "hostname": hostname,
+                "ip_address": ip
+            }))
+        }
+        Err(e) => {
+            warn!("create_nameserver error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database_error",
+                "details": "Failed to create nameserver"
+            }))
+        }
+    }
+}
+
+async fn update_nameserver(path: web::Path<String>, body: web::Json<CreateNameserverReq>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+        }
+    };
+    
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
+    }
+    
+    let ns_id = path.into_inner();
+    let hostname = body.hostname.trim();
+    let ip = body.ip_address.trim();
+    let sort_order = body.sort_order.unwrap_or(0);
+    let enabled = body.enabled.unwrap_or(true);
+    let glue_ip = body.glue_ip.as_deref();
+    
+    match (&*data.db).execute(
+        "UPDATE nameservers SET hostname = $1, ip_address = $2, glue_ip = $3, sort_order = $4, enabled = $5, updated_at = now() WHERE CAST(id AS varchar) = $6",
+        &[&hostname, &ip, &glue_ip, &sort_order, &enabled, &ns_id]
+    ).await {
+        Ok(_) => {
+            info!("Updated nameserver: {}", ns_id);
+            
+            // Trigger zone file regeneration
+            if let Err(e) = data.dns_manager.regenerate_zones(data.db.clone()).await {
+                warn!("Failed to regenerate zones after nameserver update: {}", e);
+            }
+            
+            HttpResponse::Ok().json(serde_json::json!({"success": true}))
+        }
+        Err(e) => {
+            warn!("update_nameserver error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database_error",
+                "details": "Failed to update nameserver"
+            }))
+        }
+    }
+}
+
+async fn delete_nameserver(path: web::Path<String>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+        }
+    };
+    
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
+    }
+    
+    let ns_id = path.into_inner();
+    match (&*data.db).execute("DELETE FROM nameservers WHERE CAST(id AS varchar) = $1", &[&ns_id]).await {
+        Ok(_) => {
+            info!("Deleted nameserver: {}", ns_id);
+            
+            // Trigger zone file regeneration
+            if let Err(e) = data.dns_manager.regenerate_zones(data.db.clone()).await {
+                warn!("Failed to regenerate zones after nameserver deletion: {}", e);
+            }
+            
+            HttpResponse::Ok().json(serde_json::json!({"success": true}))
+        }
+        Err(e) => {
+            warn!("delete_nameserver error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to delete nameserver"}))
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct AgentRegistration {
     name: String,
@@ -951,7 +1520,7 @@ async fn agent_register(body: web::Json<AgentRegistration>, data: web::Data<AppS
     let id_str = id.to_string();
     // token: combine two UUIDs for sufficient entropy
     let token_plain = format!("{}{}", Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
-    let salt = SaltString::generate(&mut OsRng);
+    let salt = generate_salt();
     let argon2 = Argon2::default();
     let token_hash = match argon2.hash_password(token_plain.as_bytes(), &salt) {
         Ok(h) => h.to_string(),
@@ -1051,7 +1620,7 @@ async fn rotate_agent_token(path: web::Path<String>, data: web::Data<AppState>, 
     }
     let agent_id = path.into_inner();
     let token_plain = format!("{}{}", Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
-    let salt = SaltString::generate(&mut OsRng);
+    let salt = generate_salt();
     let argon2 = Argon2::default();
     let token_hash = argon2.hash_password(token_plain.as_bytes(), &salt).unwrap().to_string();
     let res = (&*data.db).execute("UPDATE agents SET token_hash = $1 WHERE CAST(id AS varchar) = $2", &[&token_hash, &agent_id]).await;
@@ -1127,25 +1696,6 @@ async fn generate_dns_files(data: web::Data<FullState>, req: HttpRequest) -> imp
         }
     }
 }
-async fn generate_dns_files(data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
-    // this endpoint is retained for debugging but is not required by the
-    // production architecture; generation is automatic on every write.
-    if let Some(tok) = auth_from_header(&req, &data.inner.jwt_secret) {
-        if tok.claims.role != "admin" {
-            return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
-        }
-    } else {
-        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
-    }
-
-    match data.inner.dns_manager.regenerate_zones(data.inner.db.clone()).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "generated"})),
-        Err(e) => {
-            warn!("failed to generate zone files: {}", e);
-            HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("generation failed: {}", e)}))
-        }
-    }
-}
 
 #[derive(Deserialize)]
 struct CreateGeoRuleReq {
@@ -1153,6 +1703,14 @@ struct CreateGeoRuleReq {
     match_type: String,
     match_value: String,
     target: String,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    record_name: Option<String>,
+    #[serde(default)]
+    record_type: Option<String>,
 }
 
 async fn create_georule(body: web::Json<CreateGeoRuleReq>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
@@ -1164,18 +1722,138 @@ async fn create_georule(body: web::Json<CreateGeoRuleReq>, data: web::Data<FullS
     };
     let id_str = id.to_string();
     let zone_str = zone_uuid.to_string();
-    let res = (&*data.inner.db).execute("INSERT INTO georules (id, zone_id, match_type, match_value, target) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5)", &[&id_str, &zone_str, &body.match_type, &body.match_value, &body.target]).await;
+    let res = (&*data.inner.db).execute(
+        "INSERT INTO georules (id, zone_id, match_type, match_value, target, priority, enabled, record_name, record_type) \
+         VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7, $8, $9)",
+        &[&id_str, &zone_str, &body.match_type, &body.match_value, &body.target,
+          &body.priority.unwrap_or(0), &body.enabled.unwrap_or(true), &body.record_name, &body.record_type]
+    ).await;
     match res {
-        Ok(_) => HttpResponse::Created().json(serde_json::json!({"id": id.to_string()})),
+        Ok(_) => {
+            // regenerate configuration so DNS servers pick up new rule
+            if let Err(e) = data.inner.dns_manager.regenerate_zones(data.inner.db.clone()).await {
+                warn!("Failed to regenerate zones after georule creation: {}", e);
+            }
+            HttpResponse::Created().json(serde_json::json!({"id": id.to_string()}))
+        }
         Err(e) => { warn!("create_georule error: {}", e); HttpResponse::InternalServerError().finish() }
     }
 }
 
 async fn list_georules(data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
     if auth_from_header(&req, &data.inner.jwt_secret).is_none() { return HttpResponse::Unauthorized().finish(); }
-    let rows = (&*data.inner.db).query("SELECT CAST(id AS varchar), CAST(zone_id AS varchar), match_type, match_value, target FROM georules", &[]).await.unwrap_or_default();
-    let out: Vec<_> = rows.into_iter().map(|r| serde_json::json!({"id": r.try_get::<_, String>(0).unwrap_or_default(), "zone_id": r.try_get::<_, String>(1).unwrap_or_default(), "match_type": r.try_get::<_, String>(2).unwrap_or_default(), "match_value": r.try_get::<_, String>(3).unwrap_or_default(), "target": r.try_get::<_, String>(4).unwrap_or_default()})).collect();
+    let rows = (&*data.inner.db).query(
+        "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), match_type, match_value, target, priority, enabled, record_name, record_type FROM georules",
+        &[]
+    ).await.unwrap_or_default();
+    let out: Vec<_> = rows.into_iter().map(|r| serde_json::json!({
+        "id": r.try_get::<_, String>(0).unwrap_or_default(),
+        "zone_id": r.try_get::<_, String>(1).unwrap_or_default(),
+        "match_type": r.try_get::<_, String>(2).unwrap_or_default(),
+        "match_value": r.try_get::<_, String>(3).unwrap_or_default(),
+        "target": r.try_get::<_, String>(4).unwrap_or_default(),
+        "priority": r.try_get::<_, i32>(5).unwrap_or(0),
+        "enabled": r.try_get::<_, bool>(6).unwrap_or(true),
+        "record_name": r.try_get::<_, Option<String>>(7).unwrap_or(None),
+        "record_type": r.try_get::<_, Option<String>>(8).unwrap_or(None),
+    })).collect();
     HttpResponse::Ok().json(out)
+}
+
+#[derive(Deserialize)]
+struct UpdateGeoRuleReq {
+    match_type: Option<String>,
+    match_value: Option<String>,
+    target: Option<String>,
+    priority: Option<i32>,
+    enabled: Option<bool>,
+    record_name: Option<String>,
+    record_type: Option<String>,
+}
+
+async fn update_georule(
+    path: web::Path<String>,
+    body: web::Json<UpdateGeoRuleReq>,
+    data: web::Data<FullState>,
+    req: HttpRequest,
+) -> impl Responder {
+    if auth_from_header(&req, &data.inner.jwt_secret).is_none() {
+        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+    }
+    let rule_id = path.into_inner();
+
+    // Build dynamic query parts
+    let mut updates = Vec::new();
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+    let mut idx = 1;
+    let mut priority_str = String::new();
+    let mut enabled_str = String::new();
+    if let Some(v) = &body.match_type {
+        updates.push(format!("match_type = ${}", idx));
+        params.push(v);
+        idx += 1;
+    }
+    if let Some(v) = &body.match_value {
+        updates.push(format!("match_value = ${}", idx));
+        params.push(v);
+        idx += 1;
+    }
+    if let Some(v) = &body.target {
+        updates.push(format!("target = ${}", idx));
+        params.push(v);
+        idx += 1;
+    }
+    if let Some(v) = body.priority {
+        priority_str = v.to_string();
+        updates.push(format!("priority = ${}", idx));
+        params.push(&priority_str);
+        idx += 1;
+    }
+    if let Some(v) = body.enabled {
+        enabled_str = if v { "true".to_string() } else { "false".to_string() };
+        updates.push(format!("enabled = ${}", idx));
+        params.push(&enabled_str);
+        idx += 1;
+    }
+    if let Some(v) = &body.record_name {
+        updates.push(format!("record_name = ${}", idx));
+        params.push(v);
+        idx += 1;
+    }
+    if let Some(v) = &body.record_type {
+        updates.push(format!("record_type = ${}", idx));
+        params.push(v);
+        idx += 1;
+    }
+
+    if updates.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "no fields to update"}));
+    }
+
+    let set_clause = updates.join(", ");
+    let query = format!(
+        "UPDATE georules SET {} , updated_at = now() WHERE CAST(id AS varchar) = ${}",
+        set_clause, idx
+    );
+    params.push(&rule_id);
+
+    match (&*data.inner.db).execute(&query, &params).await {
+        Ok(count) => {
+            if count == 0 {
+                HttpResponse::NotFound().json(serde_json::json!({"error": "rule not found"}))
+            } else {
+                // regenerate configuration
+                if let Err(e) = data.inner.dns_manager.regenerate_zones(data.inner.db.clone()).await {
+                    warn!("Failed to regenerate zones after georule update: {}", e);
+                }
+                HttpResponse::Ok().json(serde_json::json!({"success": true}))
+            }
+        }
+        Err(e) => {
+            warn!("update_georule error: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to update rule"}))
+        }
+    }
 }
 
 async fn delete_georule(path: web::Path<String>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
@@ -1184,7 +1862,13 @@ async fn delete_georule(path: web::Path<String>, data: web::Data<FullState>, req
     }
     let rule_id = path.into_inner();
     match (&*data.inner.db).execute("DELETE FROM georules WHERE CAST(id AS varchar) = $1", &[&rule_id]).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"success": true})),
+        Ok(_) => {
+            // regenerate config after deletion
+            if let Err(e) = data.inner.dns_manager.regenerate_zones(data.inner.db.clone()).await {
+                warn!("Failed to regenerate zones after georule delete: {}", e);
+            }
+            HttpResponse::Ok().json(serde_json::json!({"success": true}))
+        }
         Err(e) => {
             warn!("delete_georule error: {}", e);
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to delete rule"}))
@@ -1195,6 +1879,8 @@ async fn delete_georule(path: web::Path<String>, data: web::Data<FullState>, req
 #[derive(Deserialize)]
 struct CreateZoneReq {
     domain: String,
+    #[serde(default)]
+    geodns_enabled: Option<bool>,
 }
 
 async fn list_zones(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
@@ -1211,13 +1897,13 @@ async fn list_zones(data: web::Data<AppState>, req: HttpRequest) -> impl Respond
     // Query zones based on role
     let query_result = if tok.claims.role == "admin" {
         (&*data.db).query(
-            "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text FROM zones ORDER BY domain",
+            "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) FROM zones ORDER BY domain",
             &[]
         ).await
     } else {
         let owner_str = tok.claims.sub.clone();
         (&*data.db).query(
-            "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text FROM zones WHERE CAST(owner AS varchar) = $1 ORDER BY domain",
+            "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) FROM zones WHERE CAST(owner AS varchar) = $1 ORDER BY domain",
             &[&owner_str]
         ).await
     };
@@ -1230,6 +1916,7 @@ async fn list_zones(data: web::Data<AppState>, req: HttpRequest) -> impl Respond
                 owner: r.try_get(2).unwrap_or_default(),
                 zone_type: r.try_get(3).unwrap_or_default(),
                 created_at: r.try_get(4).unwrap_or_default(),
+                geodns_enabled: r.try_get(5).unwrap_or(true),
             }).collect();
             HttpResponse::Ok().json(ApiResponse { success: true, data: Some(zones), error: None })
         }
@@ -1259,6 +1946,7 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
     let zone_id_str = zone_id.to_string();
     let owner_uuid_str = &tok.claims.sub;
     let domain = body.domain.clone();
+    let geodns_enabled = body.geodns_enabled.unwrap_or(true);
     
     // Ensure owner_uuid_str is a valid UUID
     match Uuid::parse_str(owner_uuid_str) {
@@ -1274,38 +1962,65 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
     
     // Create zone
     match (&*data.db).execute(
-        "INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, $2, $3::text::uuid)",
-        &[&zone_id_str, &domain, &owner_uuid_str]
+        "INSERT INTO zones (id, domain, owner, geodns_enabled) VALUES ($1::text::uuid, $2, $3::text::uuid, $4)",
+        &[&zone_id_str, &domain, &owner_uuid_str, &geodns_enabled]
     ).await {
         Ok(_) => {
             info!("Created zone: {} for owner: {}", domain, owner_uuid_str);
             
-// Determine which public nameservers should be used for new zones.  This
-            // list can be overridden by setting the PUBLIC_NAMESERVERS environment
-            // variable to a comma-separated set of fully-qualified names (with or
-            // without trailing dots).
-            let ns_env = std::env::var("PUBLIC_NAMESERVERS").unwrap_or_else(|_| {
-                "ns1.my-dns.com.,ns2.my-dns.com.".to_string()
-            });
-            let ns_values: Vec<String> = ns_env
-                .split(',')
-                .filter_map(|s| {
-                    let trimmed = s.trim();
-                    if trimmed.is_empty() { None } else if trimmed.ends_with('.') {
-                        Some(trimmed.to_string())
+            // Fetch enabled nameservers from database to use for this zone
+            let ns_rows = (&*data.db).query(
+                "SELECT hostname FROM nameservers WHERE enabled = true ORDER BY sort_order, hostname",
+                &[]
+            ).await.unwrap_or_default();
+            
+            let mut assigned_nameservers: Vec<String> = Vec::new();
+            
+            if !ns_rows.is_empty() {
+                // Use nameservers from database
+                for row in ns_rows {
+                    let hostname: String = row.try_get(0).unwrap_or_default();
+                    let ns_value = if hostname.ends_with('.') {
+                        hostname
                     } else {
-                        Some(format!("{}.", trimmed))
+                        format!("{}.", hostname)
+                    };
+                    assigned_nameservers.push(ns_value.clone());
+                    
+                    let ns_id = Uuid::new_v4().to_string();
+                    if let Err(e) = (&*data.db).execute(
+                        "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+                        &[&ns_id, &zone_id_str, &"@", &"NS", &ns_value, &3600]
+                    ).await {
+                        warn!("Failed to add NS record: {}", e);
                     }
-                })
-                .collect();
+                }
+            } else {
+                // Fallback to environment variable if no nameservers in DB
+                let ns_env = std::env::var("PUBLIC_NAMESERVERS").unwrap_or_else(|_| {
+                    "ns1.my-dns.com.,ns2.my-dns.com.".to_string()
+                });
+                let ns_values: Vec<String> = ns_env
+                    .split(',')
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() { None } else if trimmed.ends_with('.') {
+                            Some(trimmed.to_string())
+                        } else {
+                            Some(format!("{}.", trimmed))
+                        }
+                    })
+                    .collect();
 
-            for ns_value in ns_values.iter() {
-                let ns_id = Uuid::new_v4().to_string();
-                if let Err(e) = (&*data.db).execute(
-                    "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
-                    &[&ns_id, &zone_id_str, &"@", &"NS", ns_value, &3600]
-                ).await {
-                    warn!("Failed to add default NS record: {}", e);
+                for ns_value in ns_values.iter() {
+                    assigned_nameservers.push(ns_value.clone());
+                    let ns_id = Uuid::new_v4().to_string();
+                    if let Err(e) = (&*data.db).execute(
+                        "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+                        &[&ns_id, &zone_id_str, &"@", &"NS", ns_value, &3600]
+                    ).await {
+                        warn!("Failed to add default NS record: {}", e);
+                    }
                 }
             }
             
@@ -1329,7 +2044,12 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
                 // Still return success since the DB update was successful
             }
             
-            HttpResponse::Created().json(serde_json::json!({"id": zone_id_str, "domain": &body.domain}))
+            HttpResponse::Created().json(serde_json::json!({
+                "id": zone_id_str, 
+                "domain": &body.domain,
+                "nameservers": assigned_nameservers,
+                "message": "Zone created successfully. Please configure the following nameservers at your domain registrar: ".to_string() + &assigned_nameservers.join(", ")
+            }))
         }
         Err(e) => {
             if e.to_string().contains("unique") || e.to_string().contains("duplicate") {
@@ -1344,9 +2064,123 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
 }
 
 #[derive(Deserialize)]
+struct DnsLookupRequest {
+    domain: String,
+    #[serde(default = "default_record_type")]
+    record_type: String,
+}
+
+fn default_record_type() -> String {
+    "A".to_string()
+}
+
+/// Perform DNS lookup for a domain and record type.
+/// This queries the local DNS server for resolution.
+async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    let auth = auth_from_header(&req, &data.jwt_secret);
+    if auth.is_none() {
+        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+    }
+    
+    let domain = body.domain.trim();
+    let record_type = body.record_type.to_uppercase();
+    
+    if domain.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "domain is required"}));
+    }
+    
+    // Use std::net::ToSocketAddrs for DNS resolution
+    let mut records = Vec::new();
+    
+    match record_type.as_str() {
+        "A" => {
+            // Try to resolve A record using DNS
+            let addr_string = format!("{}:0", domain);
+            use std::net::ToSocketAddrs;
+            if let Ok(addrs) = addr_string.to_socket_addrs() {
+                for addr in addrs {
+                    if let std::net::SocketAddr::V4(v4) = addr {
+                        records.push(serde_json::json!({
+                            "name": domain,
+                            "type": "A",
+                            "ttl": 300,
+                            "value": v4.ip().to_string()
+                        }));
+                    }
+                }
+            }
+            // Fallback: try simple hostname resolution
+            if records.is_empty() {
+                use std::net::ToSocketAddrs;
+                if let Ok(_) = format!("{}:80", domain).to_socket_addrs() {
+                    // Just add a placeholder if we can't get the IP directly
+                    records.push(serde_json::json!({
+                        "name": domain,
+                        "type": "A",
+                        "ttl": 300,
+                        "value": "Resolution requires proper DNS server"
+                    }));
+                }
+            }
+        }
+        "AAAA" => {
+            records.push(serde_json::json!({
+                "name": domain,
+                "type": "AAAA",
+                "ttl": 300,
+                "value": "IPv6 lookup not implemented in this version"
+            }));
+        }
+        "MX" | "TXT" | "NS" | "CNAME" | "SOA" | "SRV" | "PTR" => {
+            records.push(serde_json::json!({
+                "name": domain,
+                "type": record_type,
+                "ttl": 300,
+                "value": format!("{} record lookup requires full DNS parser", record_type)
+            }));
+        }
+        _ => {
+            // Default: try A record
+            use std::net::ToSocketAddrs;
+            if let Ok(addrs) = format!("{}:0", domain).to_socket_addrs() {
+                for addr in addrs {
+                    if let std::net::SocketAddr::V4(v4) = addr {
+                        records.push(serde_json::json!({
+                            "name": domain,
+                            "type": "A",
+                            "ttl": 300,
+                            "value": v4.ip().to_string()
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    
+    if records.is_empty() {
+        HttpResponse::Ok().json(serde_json::json!({
+            "domain": domain,
+            "record_type": record_type,
+            "records": [],
+            "message": format!("No {} records found for {}. DNS resolution may be blocked.", record_type, domain)
+        }))
+    } else {
+        HttpResponse::Ok().json(serde_json::json!({
+            "domain": domain,
+            "record_type": record_type,
+            "records": records
+        }))
+    }
+}
+
+#[derive(Deserialize)]
 struct GeoResolveRequest {
     zone_id: String,
     client_ip: String,
+    #[serde(default)]
+    record_name: Option<String>,
+    #[serde(default)]
+    record_type: Option<String>,
 }
 
 /// Resolve a DNS response for a zone based on client's geographic location.
@@ -1361,7 +2195,7 @@ async fn resolve_by_geo(body: web::Json<GeoResolveRequest>, data: web::Data<Full
     // Fetch georules for this zone from DB
     let rows = (&*data.inner.db)
         .query(
-            "SELECT CAST(id AS varchar), match_type, match_value, target FROM georules WHERE CAST(zone_id AS varchar) = $1",
+            "SELECT CAST(id AS varchar), match_type, match_value, target, priority, enabled, record_name, record_type FROM georules WHERE CAST(zone_id AS varchar) = $1",
             &[&body.zone_id],
         )
         .await
@@ -1374,6 +2208,10 @@ async fn resolve_by_geo(body: web::Json<GeoResolveRequest>, data: web::Data<Full
             match_type: r.try_get::<_, String>(1).unwrap_or_default(),
             match_value: r.try_get::<_, String>(2).unwrap_or_default(),
             target: r.try_get::<_, String>(3).unwrap_or_default(),
+            priority: r.try_get::<_, i32>(4).unwrap_or(0),
+            enabled: r.try_get::<_, bool>(5).unwrap_or(true),
+            record_name: r.try_get::<_, Option<String>>(6).unwrap_or(None),
+            record_type: r.try_get::<_, Option<String>>(7).unwrap_or(None),
         })
         .collect();
 
@@ -1385,9 +2223,14 @@ async fn resolve_by_geo(body: web::Json<GeoResolveRequest>, data: web::Data<Full
     let mut engine = geodns::GeoRuleEngine::new(db);
     engine.set_rules(rules);
 
-    // Evaluate and return target
-    match engine.evaluate(client_ip) {
-        Some(target) => HttpResponse::Ok().json(serde_json::json!({"target": target})),
+    // Evaluate and return target (pass optional record context)
+    let target = engine.evaluate(
+        client_ip,
+        body.record_name.as_deref(),
+        body.record_type.as_deref(),
+    );
+    match target {
+        Some(t) => HttpResponse::Ok().json(serde_json::json!({"target": t})),
         None => HttpResponse::Ok().json(serde_json::json!({"target": None::<String>, "message": "no matching geo rule"})),
     }
 }
@@ -1527,15 +2370,61 @@ async fn push_config_to_agents(
             }
         }
         
-        // Check zone existence and ownership
+        // Check zone existence and ownership first (we need zone_id for conflict checks)
         let zone_id_str = zone_id.to_string();
+        
+        // CNAME conflict detection - CNAME cannot coexist with other records at same name
+        let normalized_name = if body.name == "@" || body.name.is_empty() {
+            "@".to_string()
+        } else {
+            body.name.trim_end_matches('.').to_string()
+        };
+        
+        let rtype_upper = body.record_type.to_uppercase();
+        
+        // Check for existing CNAME when adding other record types
+        if rtype_upper != "CNAME" {
+            let cname_exists = (&*data.db).query_opt(
+                "SELECT id FROM records WHERE CAST(zone_id AS varchar) = $1 AND name = $2 AND type = 'CNAME'",
+                &[&zone_id_str, &normalized_name]
+            ).await;
+            
+            if let Ok(Some(_)) = cname_exists {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "CNAME record already exists at this name. Cannot add other record types when CNAME exists."
+                }));
+            }
+        }
+        
+        // Check for existing records when adding CNAME
+        if rtype_upper == "CNAME" {
+            let other_exists = (&*data.db).query_opt(
+                "SELECT id FROM records WHERE CAST(zone_id AS varchar) = $1 AND name = $2 AND type != 'CNAME'",
+                &[&zone_id_str, &normalized_name]
+            ).await;
+            
+            if let Ok(Some(_)) = other_exists {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Cannot add CNAME: other record types already exist at this name. CNAME cannot coexist with other records."
+                }));
+            }
+        }
+        
+        // Validate NS records against allowed nameservers (for global architecture)
+        if rtype_upper == "NS" {
+            let allowed_ns = get_global_nameservers();
+            if let Err(e) = validate_ns_value(&body.value, &allowed_ns) {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            }
+        }
+        
         let owner_check = (&*data.db).query_opt(
-            "SELECT owner FROM zones WHERE CAST(id AS varchar) = $1",
+            "SELECT CAST(owner AS varchar) as owner FROM zones WHERE CAST(id AS varchar) = $1",
             &[&zone_id_str]
         ).await;
         
         let zone_owner: Option<String> = match owner_check {
-            Ok(Some(row)) => row.get(0),
+            Ok(Some(row)) => row.try_get("owner").ok(),
             Ok(None) => {
                 return HttpResponse::NotFound().json(serde_json::json!({"error": "zone not found"}));
             }
@@ -1554,10 +2443,11 @@ async fn push_config_to_agents(
         let id_str = id.to_string();
         let ttl: i32 = body.ttl as i32;
         let priority: i32 = body.priority.unwrap_or(0);
+        let record_type = body.record_type.clone();
     
         match (&*data.db).execute(
-            "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
-            &[&id_str, &zone_id_str, &body.name, &body.record_type, &body.value, &ttl, &priority]
+            "INSERT INTO records (id, zone_id, name, type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
+            &[&id_str, &zone_id_str, &body.name, &record_type, &body.value, &ttl, &priority]
         ).await {
             Ok(_) => {
                 info!("Created record: {} ({}) in zone: {}", body.name, body.record_type, zone_id_str);
@@ -1597,7 +2487,7 @@ async fn push_config_to_agents(
         let zone_id_str = zone_id.into_inner();
         let rows = (&*data.db)
             .query(
-                "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name",
+                "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name",
                 &[&zone_id_str]
             )
             .await
@@ -1621,7 +2511,7 @@ async fn push_config_to_agents(
         name: Option<String>,
         record_type: Option<String>,
         value: Option<String>,
-        ttl: Option<u32>,
+        ttl: Option<i32>,
         priority: Option<i32>,
     }
 
@@ -1651,56 +2541,97 @@ async fn push_config_to_agents(
             return HttpResponse::Forbidden().json(ErrorResponse { error: "access denied".to_string(), details: None });
         }
 
-        // Build dynamic update query
-        let mut updates = vec![];
-        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+        // Build dynamic update query using simpler approach
+        // Count how many fields will be updated
+        let field_count = body.name.is_some() as usize
+            + body.record_type.is_some() as usize
+            + body.value.is_some() as usize
+            + body.ttl.is_some() as usize
+            + body.priority.is_some() as usize;
     
-        let mut param_idx = 1;
-        if let Some(ref name) = body.name {
-            updates.push(format!("name = ${}", param_idx));
-            params.push(name);
-            param_idx += 1;
-        }
-        if let Some(ref record_type) = body.record_type {
-            updates.push(format!("record_type = ${}", param_idx));
-            params.push(record_type);
-            param_idx += 1;
-        }
-        if let Some(ref value) = body.value {
-            updates.push(format!("value = ${}", param_idx));
-            params.push(value);
-            param_idx += 1;
-        }
-        let ttl_str;
-        if let Some(ttl) = body.ttl {
-            ttl_str = ttl.to_string();
-            updates.push(format!("ttl = ${}", param_idx));
-            params.push(&ttl_str);
-            param_idx += 1;
-        }
-        if let Some(priority) = body.priority {
-            if priority < 0 {
-                return HttpResponse::BadRequest().body("priority must be non-negative");
-            }
-            let pr_str = priority.to_string();
-            updates.push(format!("priority = ${}", param_idx));
-            params.push(&pr_str);
-            param_idx += 1;
-        }
-    
-        if updates.is_empty() {
+        if field_count == 0 {
             return HttpResponse::BadRequest().body("no fields to update");
         }
     
-        let query = format!(
-            "UPDATE records SET {} WHERE CAST(id AS varchar) = ${} AND CAST(zone_id AS varchar) = ${}",
-            updates.join(", "), param_idx, param_idx + 1
-        );
+        // Build the update using string concatenation with owned values
+        let name_val = body.name.clone();
+        let type_val = body.record_type.clone();
+        let value_val = body.value.clone();
+        let ttl_val = body.ttl;
+        
+        let priority_val: Option<i32> = if let Some(p) = body.priority {
+            if p < 0 {
+                return HttpResponse::BadRequest().body("priority must be non-negative");
+            }
+            Some(p)
+        } else {
+            None
+        };
     
-        params.push(&record_id);
-        params.push(&zone_id);
-    
-        let res = (&*data.db).execute(query.as_str(), params.as_slice()).await;
+        let res = if field_count == 1 {
+            // Single field update - use simple query
+            if name_val.is_some() {
+                (&*data.db).execute(
+                    "UPDATE records SET name = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&name_val.unwrap(), &record_id, &zone_id]
+                ).await
+            } else if type_val.is_some() {
+                (&*data.db).execute(
+                    "UPDATE records SET type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&type_val.unwrap(), &record_id, &zone_id]
+                ).await
+            } else if value_val.is_some() {
+                (&*data.db).execute(
+                    "UPDATE records SET value = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&value_val.unwrap(), &record_id, &zone_id]
+                ).await
+            } else if ttl_val.is_some() {
+                (&*data.db).execute(
+                    "UPDATE records SET ttl = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&ttl_val.unwrap(), &record_id, &zone_id]
+                ).await
+            } else {
+                (&*data.db).execute(
+                    "UPDATE records SET priority = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&priority_val.unwrap(), &record_id, &zone_id]
+                ).await
+            }
+        } else {
+            // Multiple fields - use separate queries for simplicity
+            // Update each field individually
+            if let Some(v) = name_val {
+                let _ = (&*data.db).execute(
+                    "UPDATE records SET name = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&v, &record_id, &zone_id]
+                ).await;
+            }
+            if let Some(v) = type_val {
+                let _ = (&*data.db).execute(
+                    "UPDATE records SET type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&v, &record_id, &zone_id]
+                ).await;
+            }
+            if let Some(v) = value_val {
+                let _ = (&*data.db).execute(
+                    "UPDATE records SET value = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&v, &record_id, &zone_id]
+                ).await;
+            }
+            if let Some(v) = ttl_val {
+                let _ = (&*data.db).execute(
+                    "UPDATE records SET ttl = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&v, &record_id, &zone_id]
+                ).await;
+            }
+            if let Some(v) = priority_val {
+                let _ = (&*data.db).execute(
+                    "UPDATE records SET priority = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    &[&v, &record_id, &zone_id]
+                ).await;
+            }
+            
+            Ok(1)
+        };
     
         match res {
             Ok(count) => {
@@ -1843,7 +2774,7 @@ async fn push_config_to_agents(
         let zone_id = path.into_inner();
         
         match (&*data.db).query_one(
-            "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text FROM zones WHERE CAST(id AS varchar) = $1",
+            "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) as geodns_enabled FROM zones WHERE CAST(id AS varchar) = $1",
             &[&zone_id]
         ).await {
             Ok(row) => {
@@ -1853,8 +2784,32 @@ async fn push_config_to_agents(
                     owner: row.try_get(2).unwrap_or_default(),
                     zone_type: row.try_get(3).unwrap_or_default(),
                     created_at: row.try_get(4).unwrap_or_default(),
+                    geodns_enabled: row.try_get(5).unwrap_or(true),
                 };
-                HttpResponse::Ok().json(ApiResponse { success: true, data: Some(zone), error: None })
+                
+                // Get NS records for this zone
+                let ns_rows = (&*data.db).query(
+                    "SELECT value FROM records WHERE CAST(zone_id AS varchar) = $1 AND type = 'NS' AND name = '@'",
+                    &[&zone_id]
+                ).await.unwrap_or_default();
+                
+                let nameservers: Vec<String> = ns_rows.into_iter()
+                    .filter_map(|r| r.try_get(0).ok())
+                    .collect();
+                
+                #[derive(Serialize)]
+                struct ZoneWithNameservers {
+                    #[serde(flatten)]
+                    zone: ZoneWithOwner,
+                    nameservers: Vec<String>,
+                }
+                
+                let result = ZoneWithNameservers {
+                    zone,
+                    nameservers,
+                };
+                
+                HttpResponse::Ok().json(ApiResponse { success: true, data: Some(result), error: None })
             }
             Err(_) => HttpResponse::NotFound().json(ErrorResponse { error: "zone not found".to_string(), details: None })
         }
@@ -1864,6 +2819,8 @@ async fn push_config_to_agents(
     struct UpdateZoneReq {
         domain: Option<String>,
         zone_type: Option<String>,
+        #[serde(default)]
+        geodns_enabled: Option<bool>,
     }
 
     async fn update_zone(
@@ -1935,6 +2892,22 @@ async fn push_config_to_agents(
                 }
             }
         }
+        if let Some(enabled) = body.geodns_enabled {
+            match (&*data.db).execute(
+                "UPDATE zones SET geodns_enabled = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
+                &[&enabled, &zone_id]
+            ).await {
+                Ok(count) => {
+                    if count == 0 {
+                        return HttpResponse::NotFound().json(ErrorResponse { error: "zone not found".to_string(), details: None });
+                    }
+                }
+                Err(e) => {
+                    warn!("update_zone error: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to update zone".to_string(), details: None });
+                }
+            }
+        }
         
         // Automatically regenerate all files now that the zone metadata has changed
         if let Err(e) = data.dns_manager.regenerate_zones(data.db.clone()).await {
@@ -1968,7 +2941,7 @@ async fn push_config_to_agents(
         let domain: String = zone_row.try_get(0).unwrap_or_default();
         
         let records = (&*data.db).query(
-            "SELECT name, record_type, value, ttl FROM records WHERE CAST(zone_id AS varchar) = $1",
+            "SELECT name, type, value, ttl FROM records WHERE CAST(zone_id AS varchar) = $1",
             &[&zone_id]
         ).await.unwrap_or_default();
         
@@ -2118,8 +3091,8 @@ async fn main() -> std::io::Result<()> {
         if let Ok(rows) = (&client).query("SELECT CAST(id AS varchar), password_hash FROM users WHERE username = $1 LIMIT 1", &[&admin_user]).await {
             if rows.is_empty() {
                 // create new admin
-                let mut rng = OsRng;
-                let salt = SaltString::generate(&mut rng);
+                
+                let salt = generate_salt();
                 let argon2 = Argon2::default();
                 let password_hash = argon2.hash_password(admin_password.as_bytes(), &salt).unwrap().to_string();
                 let id = Uuid::new_v4();
@@ -2134,8 +3107,8 @@ async fn main() -> std::io::Result<()> {
                 let existing_hash: String = rows[0].try_get(1).unwrap_or_default();
                 if force_bootstrap {
                     // Force update password hash when explicitly requested
-                    let mut rng = OsRng;
-                    let salt = SaltString::generate(&mut rng);
+                    
+                    let salt = generate_salt();
                     let argon2 = Argon2::default();
                     let password_hash = argon2.hash_password(admin_password.as_bytes(), &salt).unwrap().to_string();
                     match (&client).execute("UPDATE users SET password_hash = $1 WHERE username = $2", &[&password_hash, &admin_user]).await {
@@ -2143,8 +3116,8 @@ async fn main() -> std::io::Result<()> {
                         Err(e) => warn!("Failed to force-update admin user '{}': {}", admin_user, e),
                     }
                 } else if !existing_hash.starts_with("$argon2") {
-                    let mut rng = OsRng;
-                    let salt = SaltString::generate(&mut rng);
+                    
+                    let salt = generate_salt();
                     let argon2 = Argon2::default();
                     let password_hash = argon2.hash_password(admin_password.as_bytes(), &salt).unwrap().to_string();
                     match (&client).execute("UPDATE users SET password_hash = $1 WHERE username = $2", &[&password_hash, &admin_user]).await {
@@ -2160,7 +3133,9 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    let out_dir = std::env::var("HICKORY_DNS_DIR").unwrap_or_else(|_| "/etc/hickory".to_string());
+    let out_dir = std::env::var("HICKORY_DNS_DIR")
+        .or_else(|_| std::env::var("OUTISCLOUD_DNS_DIR"))
+        .unwrap_or_else(|_| "/etc/hickory".to_string());
     let dns_manager = Arc::new(DnsManager::new(out_dir.clone()));
     
     let app_state = AppState { 
@@ -2203,7 +3178,10 @@ async fn main() -> std::io::Result<()> {
             // Auth
             .route("/api/v1/auth/login", web::post().to(login))
             .route("/api/v1/auth/logout", web::post().to(logout))
+            .route("/api/v1/auth/refresh", web::post().to(refresh_token))
             .route("/api/v1/auth/me", web::get().to(get_current_user))
+            .route("/api/v1/auth/change-password", web::post().to(change_password))
+            .route("/api/v1/auth/admin-reset-password", web::post().to(admin_reset_password))
             // Users
             .route("/api/v1/users", web::get().to(list_users))
             .route("/api/v1/users", web::post().to(create_user))
@@ -2214,6 +3192,11 @@ async fn main() -> std::io::Result<()> {
             .route("/api/v1/servers", web::get().to(list_servers))
             .route("/api/v1/servers", web::post().to(create_server))
             .route("/api/v1/servers/{id}", web::delete().to(delete_server))
+            // Nameservers (Authoritative NS configuration)
+            .route("/api/v1/nameservers", web::get().to(list_nameservers))
+            .route("/api/v1/nameservers", web::post().to(create_nameserver))
+            .route("/api/v1/nameservers/{id}", web::put().to(update_nameserver))
+            .route("/api/v1/nameservers/{id}", web::delete().to(delete_nameserver))
             // Zones
             .route("/api/v1/zones", web::get().to(list_zones))
             .route("/api/v1/zones", web::post().to(create_zone))
@@ -2235,9 +3218,11 @@ async fn main() -> std::io::Result<()> {
             .route("/api/v1/agents/{id}/token/rotate", web::post().to(rotate_agent_token))
             // DNS Control (generation endpoint only, server is external)
             .route("/api/v1/dns/generate", web::post().to(generate_dns_files))
+            .route("/api/v1/dns/lookup", web::post().to(dns_lookup))
             // GeoRules
             .route("/api/v1/georules", web::post().to(create_georule))
             .route("/api/v1/georules", web::get().to(list_georules))
+            .route("/api/v1/georules/{id}", web::put().to(update_georule))
             .route("/api/v1/georules/{id}", web::delete().to(delete_georule))
             .route("/api/v1/georules/resolve", web::post().to(resolve_by_geo))
             // Config Push

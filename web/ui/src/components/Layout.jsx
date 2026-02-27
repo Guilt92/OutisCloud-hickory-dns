@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
   Menu, 
@@ -16,7 +16,10 @@ import {
   BarChart3,
   Activity,
   Moon,
-  Sun
+  Sun,
+  Search,
+  User,
+  Lock
 } from 'lucide-react';
 import { useAuthStore, useUIStore } from '../store';
 import clsx from 'clsx';
@@ -51,37 +54,84 @@ const NavItem = ({ to, icon: Icon, label, badge, exact }) => {
 export default function Layout({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef(null);
   const { user, isAuthenticated, logout } = useAuthStore();
   const { theme, toggleTheme } = useUIStore();
   const navigate = useNavigate();
   
-  const handleLogout = () => {
-    logout();
+  // Close user menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setUserMenuOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+  
+  // Prevent back button navigation after logout
+  useEffect(() => {
+    const handlePopState = (event) => {
+      if (!isAuthenticated && window.location.pathname !== '/login') {
+        navigate('/login', { replace: true });
+      }
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isAuthenticated, navigate]);
+  
+  const handleLogout = async () => {
+    await logout();
+    // Clear browser history to prevent back button
+    window.history.replaceState(null, '', '/login');
     navigate('/login');
   };
   
   const isAdmin = user?.role === 'admin';
+  const isAgent = user?.role === 'agent';
   
   const adminNavItems = [
     { to: '/admin', icon: Home, label: 'Dashboard', exact: true },
     { to: '/admin/zones', icon: Globe, label: 'Zones' },
     { to: '/admin/records', icon: FileText, label: 'Records' },
+    { to: '/admin/nameservers', icon: Globe, label: 'Nameservers' },
+    { to: '/admin/dns-lookup', icon: Search, label: 'DNS Lookup' },
     { to: '/admin/users', icon: Users, label: 'Users' },
-    { to: '/admin/servers', icon: Server, label: 'Servers' },
+    { to: '/admin/servers', icon: Server, label: 'DNS Servers' },
     { to: '/admin/agents', icon: Server, label: 'Agents' },
     { to: '/admin/georules', icon: MapPin, label: 'GeoDNS' },
     { to: '/admin/certificates', icon: Key, label: 'SSL' },
     { to: '/admin/metrics', icon: BarChart3, label: 'Metrics' },
     { to: '/admin/audit', icon: Activity, label: 'Audit Logs' },
+    { to: '/admin/settings', icon: Settings, label: 'Settings' },
   ];
   
   const userNavItems = [
     { to: '/user', icon: Home, label: 'Dashboard', exact: true },
-    { to: '/user/zones', icon: Globe, label: 'My Zones' },
-    { to: '/user/records', icon: FileText, label: 'My Records' },
+    { to: '/user/dns-lookup', icon: Search, label: 'DNS Lookup' },
   ];
   
-  const navItems = isAdmin ? adminNavItems : userNavItems;
+  // Agents can see some admin items but not all
+  const agentNavItems = [
+    { to: '/admin', icon: Home, label: 'Dashboard', exact: true },
+    { to: '/admin/zones', icon: Globe, label: 'Zones' },
+    { to: '/admin/records', icon: FileText, label: 'Records' },
+    { to: '/admin/nameservers', icon: Globe, label: 'Nameservers' },
+    { to: '/admin/dns-lookup', icon: Search, label: 'DNS Lookup' },
+    { to: '/admin/georules', icon: MapPin, label: 'GeoDNS' },
+  ];
+  
+  let navItems;
+  if (isAdmin) {
+    navItems = adminNavItems;
+  } else if (isAgent) {
+    navItems = agentNavItems;
+  } else {
+    navItems = userNavItems;
+  }
   
   // Initialize theme
   React.useEffect(() => {
@@ -110,7 +160,7 @@ export default function Layout({ children }) {
         >
           {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
         </button>
-        <h1 className="text-lg font-semibold text-gray-900 dark:text-white">Hickory DNS</h1>
+        <h1 className="text-lg font-semibold text-gray-900 dark:text-white">OutisCloud</h1>
         <div className="flex items-center gap-2">
           <button
             onClick={toggleThemeHandler}
@@ -131,7 +181,7 @@ export default function Layout({ children }) {
         {/* Logo */}
         <div className="h-16 flex items-center px-6 border-b border-gray-200 dark:border-gray-700">
           <Globe className="w-8 h-8 text-primary-600" />
-          <span className="ml-2 text-xl font-bold text-gray-900 dark:text-white">Hickory DNS</span>
+          <span className="ml-2 text-xl font-bold text-gray-900 dark:text-white">OutisCloud</span>
         </div>
         
         {/* Navigation */}
@@ -150,7 +200,7 @@ export default function Layout({ children }) {
         
         {/* User section */}
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 dark:border-gray-700">
-          <div className="relative">
+          <div className="relative" ref={userMenuRef}>
             <button
               onClick={() => setUserMenuOpen(!userMenuOpen)}
               className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -170,13 +220,22 @@ export default function Layout({ children }) {
             {userMenuOpen && (
               <div className="absolute bottom-full left-0 right-0 mb-2 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-2 animate-fade-in z-50">
                 <Link
-                  to="/settings"
+                  to={isAdmin ? "/admin/settings" : "/user/settings"}
                   className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
                   onClick={() => setUserMenuOpen(false)}
                 >
-                  <Settings className="w-4 h-4" />
-                  Settings
+                  <User className="w-4 h-4" />
+                  Profile
                 </Link>
+                <Link
+                  to={isAdmin ? "/admin/settings" : "/user/settings"}
+                  className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  onClick={() => setUserMenuOpen(false)}
+                >
+                  <Lock className="w-4 h-4" />
+                  Change Password
+                </Link>
+                <hr className="my-2 border-gray-200 dark:border-gray-700" />
                 <button
                   onClick={handleLogout}
                   className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"

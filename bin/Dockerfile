@@ -46,6 +46,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -54,8 +55,13 @@ RUN groupadd -r app && useradd -r -g app app
 # Copy binary from builder
 COPY --from=builder /build/target/release/hickory-dns /usr/local/bin/hickory-dns
 
+# Copy wrapper script
+COPY bin/hickory-wrapper.sh /usr/local/bin/hickory-wrapper.sh
+RUN chmod +x /usr/local/bin/hickory-wrapper.sh
+
 # Set ownership
 RUN chown app:app /usr/local/bin/hickory-dns
+RUN chown app:app /usr/local/bin/hickory-wrapper.sh
 
 # Switch to non-root user
 USER app
@@ -63,5 +69,5 @@ USER app
 # Expose ports
 EXPOSE 53 853
 
-# Run the application
-ENTRYPOINT ["/usr/local/bin/hickory-dns"]
+# Run the wrapper script instead of directly running hickory-dns
+ENTRYPOINT ["/usr/local/bin/hickory-wrapper.sh"]

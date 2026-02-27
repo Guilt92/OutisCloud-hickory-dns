@@ -13,6 +13,36 @@ const api = axios.create({
   },
 });
 
+// Store for refresh token
+let refreshTokenPromise = null;
+let lastActivityTime = Date.now();
+
+// Activity tracking for session timeout
+const INACTIVITY_TIMEOUT = 15 * 60 * 1000; // 15 minutes
+
+const updateActivity = () => {
+  lastActivityTime = Date.now();
+};
+
+// Track user activity
+if (typeof window !== 'undefined') {
+  ['mousedown', 'keydown', 'scroll', 'touchstart'].forEach(event => {
+    window.addEventListener(event, updateActivity, { passive: true });
+  });
+  
+  // Check for inactivity every minute
+  setInterval(() => {
+    const token = localStorage.getItem('token');
+    if (token && Date.now() - lastActivityTime > INACTIVITY_TIMEOUT) {
+      // Session expired due to inactivity
+      localStorage.removeItem('token');
+      localStorage.removeItem('refreshToken');
+      localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('session-expired'));
+    }
+  }, 60000);
+}
+
 // Request interceptor for auth token
 api.interceptors.request.use(
   (config) => {
@@ -25,17 +55,70 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor for error handling and normalizing responses
+// Response interceptor for error handling, token refresh, and session expiration
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    
+    // Handle 401 errors - try to refresh token
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      
+      const refreshToken = localStorage.getItem('refreshToken');
+      
+      if (refreshToken) {
+        try {
+          if (!refreshTokenPromise) {
+            refreshTokenPromise = axios.post(`${API_BASE_URL}/api/v1/auth/refresh`, 
+              { refresh_token: refreshToken },
+              { headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          
+          const response = await refreshTokenPromise;
+          refreshTokenPromise = null;
+          
+          const { token, refresh_token } = response.data;
+          localStorage.setItem('token', token);
+          localStorage.setItem('refreshToken', refresh_token);
+          
+          originalRequest.headers.Authorization = `Bearer ${token}`;
+          return api(originalRequest);
+        } catch (refreshError) {
+          refreshTokenPromise = null;
+          // Refresh failed, force logout
+          localStorage.removeItem('token');
+          localStorage.removeItem('refreshToken');
+          localStorage.removeItem('user');
+          window.dispatchEvent(new CustomEvent('session-expired', { detail: { reason: 'refresh_failed' } }));
+        }
+      } else {
+        // No refresh token, force logout
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        localStorage.removeItem('user');
+        window.dispatchEvent(new CustomEvent('session-expired', { detail: { reason: 'no_refresh_token' } }));
+      }
+    }
+    
+    // Handle other auth errors
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('refreshToken');
+      localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('session-expired'));
+    }
+    
+    return Promise.reject(error);
+  }
+);
+
+// Normalize API responses - backend returns inconsistent formats
 api.interceptors.response.use(
   (response) => {
-    // Normalize API responses - backend returns inconsistent formats
-    // Some endpoints return direct arrays, some return { success, data, error }
-    // Only unwrap if it has the specific wrapped format (not token responses, etc.)
     if (response.data && typeof response.data === 'object') {
-      // Check if it's a wrapped response with success/data/error structure
-      // Must have 'success' as a boolean and 'data' field to unwrap
       if (response.data.success === true && 'data' in response.data && response.data.data !== undefined) {
-        // Return a new response object with data unwrapped
         return {
           ...response,
           data: response.data.data
@@ -45,11 +128,7 @@ api.interceptors.response.use(
     return response;
   },
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
-    }
+    // Error normalization is handled above
     return Promise.reject(error);
   }
 );
@@ -59,6 +138,9 @@ export const authApi = {
   login: (credentials) => api.post('/api/v1/auth/login', credentials),
   logout: () => api.post('/api/v1/auth/logout'),
   refreshToken: () => api.post('/api/v1/auth/refresh'),
+  changePassword: (data) => api.post('/api/v1/auth/change-password', data),
+  adminResetPassword: (data) => api.post('/api/v1/auth/admin-reset-password', data),
+  getCurrentUser: () => api.get('/api/v1/auth/me'),
 };
 
 // ==================== Users API ====================
@@ -97,6 +179,15 @@ export const serversApi = {
   stop: (id) => api.post(`/api/v1/servers/${id}/stop`),
   restart: (id) => api.post(`/api/v1/servers/${id}/restart`),
   getStatus: (id) => api.get(`/api/v1/servers/${id}/status`),
+};
+
+// ==================== Nameservers API ====================
+export const nameserversApi = {
+  list: () => api.get('/api/v1/nameservers'),
+  get: (id) => api.get(`/api/v1/nameservers/${id}`),
+  create: (nsData) => api.post('/api/v1/nameservers', nsData),
+  update: (id, nsData) => api.put(`/api/v1/nameservers/${id}`, nsData),
+  delete: (id) => api.delete(`/api/v1/nameservers/${id}`),
 };
 
 // ==================== DNS Control API ====================

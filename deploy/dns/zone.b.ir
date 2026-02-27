@@ -1,0 +1,2 @@
+b.ir. 3600 IN NS ns1.my-dns.com.
+b.ir. 3600 IN SOA ns1.b.ir. hostmaster.b.ir. 2026022700 3600 3600 604800 3600

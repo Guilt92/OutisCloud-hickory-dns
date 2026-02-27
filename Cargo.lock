@@ -1269,6 +1269,7 @@ dependencies = [
  "control_api",
  "futures-executor",
  "futures-util",
+ "geodns",
  "hex",
  "hickory-net",
  "hickory-proto",
@@ -1300,6 +1301,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "webpki-roots 1.0.5",
 ]
 
@@ -1448,6 +1450,7 @@ dependencies = [
  "data-encoding",
  "futures-executor",
  "futures-util",
+ "geodns",
  "h2 0.4.13",
  "h3",
  "h3-quinn",
@@ -1470,6 +1473,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
