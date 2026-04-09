@@ -417,7 +417,7 @@ pub fn validate_record_type(record_type: &str) -> Result<(), ValidationError> {
 /// Get global nameservers from environment
 pub fn get_global_nameservers() -> Vec<String> {
     let ns_env = std::env::var("PUBLIC_NAMESERVERS")
-        .unwrap_or_else(|_| "ns1.outiscloud.com.,ns2.outiscloud.com.".to_string());
+        .unwrap_or_else(|_| "ns1.my-dns.com.,ns1.my-dns.com.".to_string());
 
     ns_env
         .split(',')

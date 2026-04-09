@@ -7,8 +7,28 @@ use std::sync::Arc;
 use tokio_postgres::Client;
 use crate::zone_file_generator;
 
+
+
+#[derive(Debug)]
+pub enum DnsManagerError {
+    GenerationFailed(String),
+    DirectoryError(String),
+}
+
+
 pub struct DnsManager {
     config_dir: String,
+}
+
+impl std::error::Error for DnsManagerError {}
+
+impl std::fmt::Display for DnsManagerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DnsManagerError::GenerationFailed(msg) => write!(f, "Zone generation failed: {}", msg),
+            DnsManagerError::DirectoryError(msg) => write!(f, "Directory error: {}", msg),
+        }
+    }
 }
 
 impl DnsManager {
@@ -44,20 +64,3 @@ impl DnsManager {
         Path::new(&self.named_config_path()).exists()
     }
 }
-
-#[derive(Debug)]
-pub enum DnsManagerError {
-    GenerationFailed(String),
-    DirectoryError(String),
-}
-
-impl std::fmt::Display for DnsManagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DnsManagerError::GenerationFailed(msg) => write!(f, "Zone generation failed: {}", msg),
-            DnsManagerError::DirectoryError(msg) => write!(f, "Directory error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for DnsManagerError {}

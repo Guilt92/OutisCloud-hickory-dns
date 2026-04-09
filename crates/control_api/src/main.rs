@@ -325,7 +325,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             record_type TEXT NOT NULL,
             value TEXT NOT NULL,
             ttl INT NOT NULL DEFAULT 3600,
-            priority INT DEFAULT 0,
+            priority INT DEFAULT 10,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now(),
             UNIQUE(zone_id, name, record_type)
@@ -420,7 +420,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
             queries_per_second INT DEFAULT 100,
             burst INT DEFAULT 200,
             server_id UUID REFERENCES servers(id) ON DELETE CASCADE,
-            enabled BOOLEAN DEFAULT true,
+            enabled BOOLEAN DEFAULT false,
             created_at TIMESTAMPTZ DEFAULT now()
         );"
     ).await {
@@ -534,6 +534,7 @@ struct LoginResponse {
     refresh_token: String,
     expires_in: usize,
 }
+
 
 async fn login(body: web::Json<LoginRequest>, data: web::Data<AppState>) -> impl Responder {
     let username = body.username.trim();

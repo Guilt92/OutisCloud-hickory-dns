@@ -82,12 +82,12 @@ export default function Login() {
 
   const showSessionExpiredMessage = sessionExpiredParam === 'true' || sessionExpired;
 
-  const features = [
-    { icon: Zap, label: 'High Performance', desc: 'Lightning fast DNS queries' },
-    { icon: Shield, label: 'Secure', desc: 'DNSSEC & TSIG support' },
-    { icon: Database, label: 'Cloud Native', desc: 'PostgreSQL backed' },
-    { icon: Network, label: 'Geo DNS', desc: 'Global load balancing' },
-  ];
+  // const features = [
+  //   { icon: Zap, label: 'High Performance', desc: 'Lightning fast DNS queries' },
+  //   { icon: Shield, label: 'Secure', desc: 'DNSSEC & TSIG support' },
+  //   { icon: Database, label: 'Cloud Native', desc: 'PostgreSQL backed' },
+  //   { icon: Network, label: 'Geo DNS', desc: 'Global load balancing' },
+  // ];
   
   return (
     <div className="min-h-screen flex">
@@ -144,7 +144,7 @@ export default function Login() {
             transition={{ duration: 0.6, delay: 0.8 }}
             className="mt-12 text-primary-200 text-sm"
           >
-            Trusted by companies worldwide
+            {/* Trusted by companies worldwide */}
           </motion.p>
         </div>
       </div>

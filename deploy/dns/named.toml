@@ -27,3 +27,59 @@ geodns = { enabled = true, rules = [
 type = "file"
 zone_path = "/etc/hickory/zone.anothertest.com"
 
+[[zones]]
+zone = "bbb.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.bbb.com"
+
+[[zones]]
+zone = "ddddddd.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.ddddddd.com"
+
+[[zones]]
+zone = "test1.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.test1.com"
+
+[[zones]]
+zone = "test2.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.test2.com"
+
+[[zones]]
+zone = "test3.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.test3.com"
+
+[[zones]]
+zone = "test4.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.test4.com"
+
+[[zones]]
+zone = "test5.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.test5.com"
+
+[[zones]]
+zone = "test6.com."
+zone_type = "Primary"
+[[zones.stores]]
+type = "file"
+zone_path = "/etc/hickory/zone.test6.com"
+
