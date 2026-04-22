@@ -32,7 +32,7 @@ services:
     environment:
       RUST_LOG: info,control_api=debug
       # comma-separated list of authoritative nameservers used when creating zones
-      PUBLIC_NAMESERVERS: "${PUBLIC_NAMESERVERS:-ns1.my-dns.com.,ns2.my-dns.com.}"
+      # PUBLIC_NAMESERVERS: "${PUBLIC_NAMESERVERS:-ns1.my-dns.com.,ns2.my-dns.com.}"
       HICKORY_DNS_DIR: "/etc/hickory"
       GEOIP_DB_PATH: "/etc/hickory/GeoLite2-Country.mmdb"
     ports:
