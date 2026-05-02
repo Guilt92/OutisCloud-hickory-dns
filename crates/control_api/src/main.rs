@@ -6,6 +6,7 @@ use std::sync::Arc;
 mod zone_file_generator;
 mod dns_manager;
 mod validators;
+mod dns_builder;
 use zone_file_generator::generate_all;
 use dns_manager::DnsManager;
 use validators::*;

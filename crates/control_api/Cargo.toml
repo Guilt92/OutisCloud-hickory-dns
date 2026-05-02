@@ -41,6 +41,7 @@ async-trait = "0.1"
 time = "0.3"
 
 # Local workspace crates (integrate DNS core)
+hickory-proto = { path = "../proto", default-features = false, features = ["std"] }
 hickory-server = { path = "../server", default-features = false }
 hickory-resolver = { path = "../resolver", optional = true }
 geodns = { path = "../geodns" }

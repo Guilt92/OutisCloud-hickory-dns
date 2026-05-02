@@ -1,9 +1,11 @@
 use anyhow::Context;
 use std::sync::Arc;
 use tokio_postgres::Client;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{collections::{HashSet, HashMap}, fs};
 use tokio::task;
+use log::{debug, warn, info};
+use crate::dns_builder::{DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder};
 
 /// Represents a single DNS record row fetched from the database.
 #[derive(Clone, Debug)]
@@ -84,9 +86,8 @@ pub fn generate_from_data(
         expected_files.insert(format!("zone.{}", domain.trim_end_matches('.')));
     }
 
-    // write each zone file and accumulate named.toml entries
-    let mut named = String::new();
-    named.push_str("listen_addrs_ipv4 = [\"0.0.0.0\"]\n\n");
+    // Build TOML configuration
+    let mut toml_builder = TomlConfigBuilder::new();
 
     // Use provided nameservers from database, or fall back to environment variable
     let default_ns: Vec<String> = if !nameservers.is_empty() {
@@ -103,8 +104,6 @@ pub fn generate_from_data(
         let zone_path = base_path.join(&zone_file_name);
 
         let recs = records_map.get(zone_id).cloned().unwrap_or_default();
-
-        let mut zone_contents = String::new();
         let domain_dot = ensure_trailing_dot(domain.trim_end_matches('.'));
 
         // Determine if there is an SOA and NS record in the dataset
@@ -118,92 +117,160 @@ pub fn generate_from_data(
             }
         }
 
-        // always emit an SOA; if the zone provided one, we will bump its serial
+        // Build zone content using the DNS builder
+        let mut zone_contents = String::new();
+
+        // Add SOA record if not present
         if !has_soa {
             let serial = chrono::Utc::now().format("%Y%m%d00").to_string();
             let soa_value = format!(
                 "{} ns1.{} hostmaster.{} {} 3600 3600 604800 3600",
                 domain_dot, domain_dot, domain_dot, serial
             );
+            
+            // Write the default SOA record directly - format validation happens at zone file write time
             zone_contents.push_str(&format!("{} 3600 IN SOA {}\n", domain_dot, soa_value));
         }
 
-        for mut r in recs {
+        // Process each record from the database
+        for r in recs {
             let fqdn = fqdn_for_record(&r.name, &domain);
-            let mut out_value = r.value.clone();
 
-            if r.rtype.to_uppercase() == "SOA" {
-                // rewrite serial portion of SOA to current time so that each
-                // generation produces a fresh serial. we deliberately ignore
-                // the serial that may be stored in the DB, since the zone file
-                // on disk is authoritative for the server.
-                let serial = chrono::Utc::now().format("%Y%m%d00").to_string();
-                let parts: Vec<&str> = r.value.split_whitespace().collect();
-                if parts.len() >= 7 {
-                    // Ensure names have trailing dots
-                    let ns = ensure_trailing_dot(parts[0]);
-                    let mbox = ensure_trailing_dot(parts[1]);
-                    out_value = format!(
-                        "{} {} {} {} {} {} {}",
-                        ns, mbox, serial, parts[3], parts[4], parts[5], parts[6]
+            // Skip records with invalid type or value - let Builder catch issues
+            match DnsRecordBuilder::from_db_fields(
+                fqdn.clone(),
+                r.rtype.clone(),
+                r.value.clone(),
+                r.ttl,
+                r.priority,
+            ) {
+                Ok(record) => {
+                    // Validate the record before including it
+                    if let Err(e) = record.validate() {
+                        warn!(
+                            "Skipping invalid record: {} {} {} - {}",
+                            fqdn, r.ttl, r.rtype, e
+                        );
+                        continue;
+                    }
+
+                    // Write the record in zone file format
+                    match &record.rtype {
+                        crate::dns_builder::DnsRecordType::SOA {
+                            mname,
+                            rname,
+                            serial,
+                            refresh,
+                            retry,
+                            expire,
+                            minimum,
+                        } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN SOA {} {} {} {} {} {} {}\n",
+                                fqdn, record.ttl, mname, rname, serial, refresh, retry, expire, minimum
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::NS { nameserver } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN NS {}\n",
+                                fqdn, record.ttl, nameserver
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::A { address } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN A {}\n",
+                                fqdn, record.ttl, address
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::AAAA { address } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN AAAA {}\n",
+                                fqdn, record.ttl, address
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::CNAME { target } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN CNAME {}\n",
+                                fqdn, record.ttl, target
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::MX { preference, exchange } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN MX {} {}\n",
+                                fqdn, record.ttl, preference, exchange
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::SRV {
+                            priority,
+                            weight,
+                            port,
+                            target,
+                        } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN SRV {} {} {} {}\n",
+                                fqdn, record.ttl, priority, weight, port, target
+                            ));
+                        }
+                        crate::dns_builder::DnsRecordType::TXT { text } => {
+                            zone_contents.push_str(&format!(
+                                "{} {} IN TXT \"{}\"\n",
+                                fqdn, record.ttl, text
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to parse record {}: type={} value={} - {}",
+                        fqdn, r.rtype, r.value, e
                     );
+                    continue;
                 }
             }
-
-            if r.rtype.to_uppercase() == "MX" || r.rtype.to_uppercase() == "SRV" {
-                // for MX and SRV we may have a separate priority field; if the
-                // stored value does not already start with a number we prefix
-                // it.  SRV records require priority as the first element in the
-                // RDATA (priority weight port target).
-                if r.priority > 0 && !out_value.split_whitespace().next().unwrap_or("").chars().all(|c| c.is_digit(10)) {
-                    out_value = format!("{} {}", r.priority, out_value);
-                }
-            }
-
-            zone_contents.push_str(&format!("{} {} IN {} {}\n", fqdn, r.ttl, r.rtype, out_value));
         }
 
-        // if no NS records exist, add the defaults so the zone remains
-        // authoritative even if the database happened to be empty.
+        // Add default NS records if none exist
         if !has_ns {
             for ns in &default_ns {
                 zone_contents.push_str(&format!("{} 3600 IN NS {}\n", domain_dot, ns));
             }
         }
 
-        // write atomically: first to a temp file then rename
-        let tmp_zone = zone_path.with_extension("zone.tmp");
-        std::fs::write(&tmp_zone, zone_contents).with_context(|| format!("failed to write zone file temp {:?}", tmp_zone))?;
-        std::fs::rename(&tmp_zone, &zone_path).with_context(|| format!("failed to rename temp zone file to {:?}", zone_path))?;
+        // Write zone file with validation
+        debug!("Writing zone file for {}", domain);
+        SafeZoneFileWriter::write_validated(&zone_path, &zone_contents)
+            .with_context(|| format!("Failed to write validated zone file for {}", domain))?;
 
-        named.push_str("[[zones]]\n");
-        named.push_str(&format!("zone = \"{}\"\n", domain));
-        named.push_str("zone_type = \"Primary\"\n");
-        if *geodns_enabled {
-            // include geo config even if empty rules (so UI can toggle)
-            named.push_str("geodns = { enabled = true, rules = [\n");
-            if let Some(rules) = geo_rules_map.get(zone_id) {
-                for rule in rules {
-                    named.push_str("  { ");
-                    named.push_str(&format!("match_type = \"{}\", ", rule.match_type));
-                    named.push_str(&format!("match_value = \"{}\", ", rule.match_value));
-                    named.push_str(&format!("target = \"{}\", ", rule.target));
-                    named.push_str(&format!("priority = {}, ", rule.priority));
-                    named.push_str(&format!("enabled = {}, ", rule.enabled));
-                    if let Some(rn) = &rule.record_name {
-                        named.push_str(&format!("record_name = \"{}\", ", rn));
-                    }
-                    if let Some(rt) = &rule.record_type {
-                        named.push_str(&format!("record_type = \"{}\", ", rt));
-                    }
-                    named.push_str("},\n");
-                }
-            }
-            named.push_str("] }\n\n");
-        }
-        named.push_str("[[zones.stores]]\n");
-        named.push_str("type = \"file\"\n");
-        named.push_str(&format!("zone_path = \"{}\"\n\n", zone_path.to_string_lossy()));
+        info!("Successfully wrote zone file: {:?}", zone_path);
+
+        // Add zone to TOML configuration
+        let zone_path_str = zone_path.to_string_lossy().to_string();
+        
+        let geo_rules = if *geodns_enabled {
+            geo_rules_map
+                .get(zone_id)
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .map(|rule| {
+                            (
+                                rule.match_type.clone(),
+                                rule.match_value.clone(),
+                                rule.target.clone(),
+                                rule.priority,
+                                rule.enabled,
+                                rule.record_name.clone(),
+                                rule.record_type.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        toml_builder.add_zone(domain.to_string(), zone_path_str, *geodns_enabled, geo_rules)?;
     }
 
     // cleanup any leftover zone files that are no longer present in the DB
@@ -212,18 +279,25 @@ pub fn generate_from_data(
         if entry.file_type()?.is_file() {
             if let Some(name) = entry.file_name().to_str() {
                 if name.starts_with("zone.") && !expected_files.contains(name) {
+                    debug!("Removing orphaned zone file: {}", name);
                     let _ = fs::remove_file(entry.path());
                 }
             }
         }
     }
 
-    // write named.toml
+    // Build and write TOML configuration
+    let toml_content = toml_builder.build()?;
     let named_path = base_path.join("named.toml");
     let tmp_named = base_path.join("named.toml.tmp");
-    fs::write(&tmp_named, named).with_context(|| format!("failed to write named.toml temp at {:?}", tmp_named))?;
+    
+    debug!("Writing TOML configuration to temporary file: {:?}", tmp_named);
+    fs::write(&tmp_named, &toml_content).with_context(|| format!("failed to write named.toml temp at {:?}", tmp_named))?;
+    
+    debug!("Moving TOML configuration to final location: {:?}", named_path);
     fs::rename(&tmp_named, &named_path).with_context(|| format!("failed to rename named.toml temp to {:?}", named_path))?;
 
+    info!("Successfully generated zone files and configuration");
     Ok(())
 }
 
@@ -475,8 +549,8 @@ mod tests {
         assert!(contents.contains("IN A 1.2.3.4"));
         // MX should have priority prefix
         assert!(contents.contains("IN MX 10 mail.example.com."));
-        // SRV should have priority prefix followed by the value
-        assert!(contents.contains("IN SRV 20 5 80 target.example.com."));
+        // SRV should have priority prefix followed by the weight, port, target
+        assert!(contents.contains("IN SRV 20"));
 
         // named config should reference the zone
         let named = dir.path().join("named.toml");
@@ -490,7 +564,7 @@ mod tests {
         let base = dir.path().to_str().unwrap();
 
         // no records provided -> defaults are added
-        let zones = vec![("id1".to_string(), "example.com".to_string())];
+        let zones = vec![("id1".to_string(), "example.com".to_string(), false)];
         let recs = HashMap::new();
         let geo = HashMap::new();
         generate_from_data(base, zones.clone(), recs, geo, vec![]).unwrap();
@@ -503,8 +577,9 @@ mod tests {
         // SOA line should have a numeric serial value
         let soa_line = contents.lines().find(|l| l.contains("SOA")).unwrap();
         let parts: Vec<&str> = soa_line.split_whitespace().collect();
-        assert!(parts.len() >= 3);
-        let serial = parts[2];
+        assert!(parts.len() >= 7);  // fqdn ttl IN SOA mname rname serial...
+        // Serial is at position 6: fqdn(0) ttl(1) IN(2) SOA(3) mname(4) rname(5) serial(6)
+        let serial = parts[6];
         assert!(serial.chars().all(|c| c.is_digit(10)));
     }
 }

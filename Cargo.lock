@@ -616,6 +616,7 @@ dependencies = [
  "env_logger",
  "geodns",
  "governor",
+ "hickory-proto",
  "hickory-resolver",
  "hickory-server",
  "jsonwebtoken",
