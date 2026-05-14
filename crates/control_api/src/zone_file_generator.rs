@@ -5,6 +5,7 @@ use std::path::Path;
 use std::{collections::{HashSet, HashMap}, fs};
 use tokio::task;
 use log::{debug, warn, info};
+use hickory_proto::rr::domain::Name;
 use crate::dns_builder::{DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder};
 
 /// Represents a single DNS record row fetched from the database.
@@ -124,8 +125,8 @@ pub fn generate_from_data(
         if !has_soa {
             let serial = chrono::Utc::now().format("%Y%m%d00").to_string();
             let soa_value = format!(
-                "{} ns1.{} hostmaster.{} {} 3600 3600 604800 3600",
-                domain_dot, domain_dot, domain_dot, serial
+                "ns1.{} hostmaster.{} {} 3600 3600 604800 3600",
+                domain_dot, domain_dot, serial
             );
             
             // Write the default SOA record directly - format validation happens at zone file write time
@@ -154,68 +155,18 @@ pub fn generate_from_data(
                         continue;
                     }
 
-                    // Write the record in zone file format
-                    match &record.rtype {
-                        crate::dns_builder::DnsRecordType::SOA {
-                            mname,
-                            rname,
-                            serial,
-                            refresh,
-                            retry,
-                            expire,
-                            minimum,
-                        } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN SOA {} {} {} {} {} {} {}\n",
-                                fqdn, record.ttl, mname, rname, serial, refresh, retry, expire, minimum
-                            ));
+                    // Write the record in validated zone file text format.
+                    match record.to_zone_string() {
+                        Ok(text) => {
+                            zone_contents.push_str(&text);
+                            zone_contents.push('\n');
                         }
-                        crate::dns_builder::DnsRecordType::NS { nameserver } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN NS {}\n",
-                                fqdn, record.ttl, nameserver
-                            ));
-                        }
-                        crate::dns_builder::DnsRecordType::A { address } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN A {}\n",
-                                fqdn, record.ttl, address
-                            ));
-                        }
-                        crate::dns_builder::DnsRecordType::AAAA { address } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN AAAA {}\n",
-                                fqdn, record.ttl, address
-                            ));
-                        }
-                        crate::dns_builder::DnsRecordType::CNAME { target } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN CNAME {}\n",
-                                fqdn, record.ttl, target
-                            ));
-                        }
-                        crate::dns_builder::DnsRecordType::MX { preference, exchange } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN MX {} {}\n",
-                                fqdn, record.ttl, preference, exchange
-                            ));
-                        }
-                        crate::dns_builder::DnsRecordType::SRV {
-                            priority,
-                            weight,
-                            port,
-                            target,
-                        } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN SRV {} {} {} {}\n",
-                                fqdn, record.ttl, priority, weight, port, target
-                            ));
-                        }
-                        crate::dns_builder::DnsRecordType::TXT { text } => {
-                            zone_contents.push_str(&format!(
-                                "{} {} IN TXT \"{}\"\n",
-                                fqdn, record.ttl, text
-                            ));
+                        Err(e) => {
+                            warn!(
+                                "Failed to serialize record {} {} {} - {}",
+                                fqdn, r.rtype, r.value, e
+                            );
+                            continue;
                         }
                     }
                 }
@@ -238,7 +189,9 @@ pub fn generate_from_data(
 
         // Write zone file with validation
         debug!("Writing zone file for {}", domain);
-        SafeZoneFileWriter::write_validated(&zone_path, &zone_contents)
+        let origin = Name::from_utf8(&domain_dot)
+            .with_context(|| format!("Failed to parse origin for zone {}", domain_dot))?;
+        SafeZoneFileWriter::write_validated(&zone_path, &zone_contents, Some(&origin))
             .with_context(|| format!("Failed to write validated zone file for {}", domain))?;
 
         info!("Successfully wrote zone file: {:?}", zone_path);

@@ -5,11 +5,11 @@ use log::{info, warn};
 use std::sync::Arc;
 mod zone_file_generator;
 mod dns_manager;
-mod validators;
+mod dns_validator;
 mod dns_builder;
 use zone_file_generator::generate_all;
 use dns_manager::DnsManager;
-use validators::*;
+use dns_validator::*;
 use std::collections::HashMap;
 use std::process::Command;
 use tokio_postgres::NoTls;
@@ -23,7 +23,6 @@ use prometheus::{TextEncoder, Encoder};
 use prometheus::gather;
 use chrono::TimeZone;
 use chrono::Utc;
-use regex::Regex;
 
 fn generate_salt() -> SaltString {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -214,20 +213,22 @@ async fn ready(data: web::Data<AppState>) -> impl Responder {
 }
 
 fn validate_domain(domain: &str) -> Result<(), String> {
-    // Wrapper that uses the new validators module
+    // Wrapper that uses the centralized dns_validator module
     validate_zone_domain(domain)
         .map_err(|e| e.message)
 }
 
 fn validate_record_type_str(record_type: &str) -> Result<(), String> {
-    // Wrapper that uses the new validators module
+    // Wrapper that uses the centralized dns_validator module
     validate_record_type(record_type)
+        .map(|_| ())
         .map_err(|e| e.message)
 }
 
 fn validate_record_value_str(record_type: &str, value: &str) -> Result<(), String> {
-    // Wrapper that uses the new validators module
+    // Wrapper that uses the centralized dns_validator module
     validate_record_value(record_type, value)
+        .map(|_| ())
         .map_err(|e| e.message)
 }
 
@@ -2340,7 +2341,7 @@ async fn push_config_to_agents(
         let tok = auth.unwrap();
         
         // Validate record name
-        if let Err(e) = validate_record_name(&body.name) {
+        if let Err(e) = validate_record_name_input(&body.name) {
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
         }
 

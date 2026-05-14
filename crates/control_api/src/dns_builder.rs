@@ -5,170 +5,74 @@
 //! validated before persistence.
 
 use anyhow::{anyhow, Context, Result};
-use hickory_proto::rr::{
-    DNSClass, RData, Name,
-    rdata::{SOA, A, AAAA, CNAME, MX, NS, SRV, TXT},
-};
-use hickory_proto::rr::Record;
-use std::net::IpAddr;
-use std::path::Path;
+use hickory_proto::rr::{domain::Name, Record};
 use std::fs;
+use std::path::Path;
 use log::{debug, warn};
 
-/// High-level DNS record type used for creating records
-#[derive(Debug, Clone)]
-pub enum DnsRecordType {
-    /// Start of Authority record
-    SOA {
-        mname: String,
-        rname: String,
-        serial: u32,
-        refresh: i32,
-        retry: i32,
-        expire: i32,
-        minimum: i32,
-    },
-    /// Name Server record
-    NS { nameserver: String },
-    /// Address record (IPv4)
-    A { address: String },
-    /// Address record (IPv6)
-    AAAA { address: String },
-    /// Canonical Name record
-    CNAME { target: String },
-    /// Mail Exchange record
-    MX { preference: u16, exchange: String },
-    /// Service record
-    SRV { 
-        priority: u16,
-        weight: u16,
-        port: u16,
-        target: String,
-    },
-    /// Text record
-    TXT { text: String },
-}
+use crate::dns_validator::{
+    validate_record,
+    validate_zone_file,
+    validate_record_name_input,
+    validate_record_type,
+    validate_record_value,
+};
 
-/// Represents a complete DNS record with all metadata
+/// Represents a complete DNS record with all metadata.
 #[derive(Debug, Clone)]
 pub struct DnsRecord {
-    /// The record name (FQDN)
     pub name: String,
-    /// The record type (SOA, A, AAAA, etc.)
-    pub rtype: DnsRecordType,
-    /// Time to live in seconds
+    pub record_type: String,
+    pub value: String,
     pub ttl: u32,
 }
 
 impl DnsRecord {
-    /// Creates a new DNS record with the given parameters
-    pub fn new(name: String, rtype: DnsRecordType, ttl: u32) -> Self {
-        Self { name, rtype, ttl }
+    /// Creates a new DNS record with the given parameters.
+    pub fn new(name: String, record_type: String, value: String, ttl: u32) -> Self {
+        Self {
+            name,
+            record_type,
+            value,
+            ttl,
+        }
     }
 
-    /// Converts this DnsRecord into a Hickory Record
-    ///
-    /// # Errors
-    /// Returns an error if the record cannot be parsed or created
+    /// Converts this DnsRecord into a Hickory Record.
     pub fn to_hickory_record(&self) -> Result<Record> {
-        let name = Name::from_utf8(&self.name)
-            .with_context(|| format!("Failed to parse DNS name: {}", self.name))?;
-
-        let rdata = match &self.rtype {
-            DnsRecordType::SOA {
-                mname,
-                rname,
-                serial,
-                refresh,
-                retry,
-                expire,
-                minimum,
-            } => {
-                let mname_obj = Name::from_utf8(mname)
-                    .with_context(|| format!("Failed to parse SOA mname: {}", mname))?;
-                let rname_obj = Name::from_utf8(rname)
-                    .with_context(|| format!("Failed to parse SOA rname: {}", rname))?;
-
-                RData::SOA(SOA::new(
-                    mname_obj,
-                    rname_obj,
-                    *serial,
-                    *refresh,
-                    *retry,
-                    *expire,
-                    *minimum as u32,
-                ))
-            }
-            DnsRecordType::NS { nameserver } => {
-                let ns = Name::from_utf8(nameserver)
-                    .with_context(|| format!("Failed to parse NS record: {}", nameserver))?;
-                RData::NS(NS(ns))
-            }
-            DnsRecordType::A { address } => {
-                let ip: IpAddr = address.parse()
-                    .with_context(|| format!("Failed to parse A record address: {}", address))?;
-                match ip {
-                    IpAddr::V4(v4) => RData::A(A(v4)),
-                    IpAddr::V6(_) => return Err(anyhow!("IPv6 address provided for A record, use AAAA instead")).with_context(|| format!("Address: {}", address)),
-                }
-            }
-            DnsRecordType::AAAA { address } => {
-                let ip: IpAddr = address.parse()
-                    .with_context(|| format!("Failed to parse AAAA record address: {}", address))?;
-                match ip {
-                    IpAddr::V6(v6) => RData::AAAA(AAAA(v6)),
-                    IpAddr::V4(_) => return Err(anyhow!("IPv4 address provided for AAAA record, use A instead")).with_context(|| format!("Address: {}", address)),
-                }
-            }
-            DnsRecordType::CNAME { target } => {
-                let target_name = Name::from_utf8(target)
-                    .with_context(|| format!("Failed to parse CNAME target: {}", target))?;
-                RData::CNAME(CNAME(target_name))
-            }
-            DnsRecordType::MX {
-                preference,
-                exchange,
-            } => {
-                let exchange_name = Name::from_utf8(exchange)
-                    .with_context(|| format!("Failed to parse MX exchange: {}", exchange))?;
-                RData::MX(MX::new(*preference, exchange_name))
-            }
-            DnsRecordType::SRV {
-                priority,
-                weight,
-                port,
-                target,
-            } => {
-                let target_name = Name::from_utf8(target)
-                    .with_context(|| format!("Failed to parse SRV target: {}", target))?;
-                RData::SRV(SRV::new(*priority, *weight, *port, target_name))
-            }
-            DnsRecordType::TXT { text } => {
-                // TXT records can contain multiple strings; for now we'll support a single string
-                RData::TXT(TXT::new(vec![text.clone()]))
-            }
-        };
-
-        Ok(Record::from_rdata(name, self.ttl, rdata).set_dns_class(DNSClass::IN).clone())
+        validate_record(&self.name, &self.record_type, &self.value, self.ttl, None)
+            .map_err(|err| anyhow!(err.to_string()))
     }
 
-    /// Validates that this record can be converted to a Hickory Record
-    ///
-    /// # Errors
-    /// Returns an error if the record is invalid
+    /// Return the record in zone file text format.
+    pub fn to_zone_string(&self) -> Result<String> {
+        Ok(self.to_hickory_record()?.to_string())
+    }
+
+    /// Validates that this record can be converted to a Hickory Record.
     pub fn validate(&self) -> Result<()> {
-        self.to_hickory_record().map(|_| ())
+        validate_record_name_input(&self.name)
+            .map_err(|err| anyhow!(err.to_string()))?;
+
+        validate_record_type(&self.record_type)
+            .map_err(|err| anyhow!(err.to_string()))?;
+
+        validate_record_value(&self.record_type, &self.value)
+            .map_err(|err| anyhow!(err.to_string()))?;
+
+        if self.name == "@" {
+            Ok(())
+        } else {
+            self.to_hickory_record().map(|_| ())
+        }
     }
 }
 
-/// Builder for creating DNS records from database-style data
+/// Builder for creating DNS records from database-style data.
 pub struct DnsRecordBuilder;
 
 impl DnsRecordBuilder {
-    /// Creates a DnsRecord from database fields
-    ///
-    /// This is the main API for converting database records into type-safe DNS records.
-    /// It validates the input and returns an error if the record cannot be created.
+    /// Creates a DnsRecord from database fields.
     pub fn from_db_fields(
         name: String,
         rtype: String,
@@ -176,173 +80,64 @@ impl DnsRecordBuilder {
         ttl: i32,
         priority: i32,
     ) -> Result<DnsRecord> {
-        let ttl = u32::try_from(ttl)
-            .with_context(|| format!("Invalid TTL value: {}", ttl))?;
+        let ttl = u32::try_from(ttl).with_context(|| format!("Invalid TTL value: {}", ttl))?;
 
-        let record_type = match rtype.to_uppercase().as_str() {
-            "SOA" => Self::parse_soa_value(&value)?,
-            "NS" => DnsRecordType::NS {
-                nameserver: Self::normalize_fqdn(&value)?,
-            },
-            "A" => DnsRecordType::A {
-                address: value.parse()
-                    .with_context(|| format!("Invalid A record address: {}", value))?,
-            },
-            "AAAA" => DnsRecordType::AAAA {
-                address: value.parse()
-                    .with_context(|| format!("Invalid AAAA record address: {}", value))?,
-            },
-            "CNAME" => DnsRecordType::CNAME {
-                target: Self::normalize_fqdn(&value)?,
-            },
-            "MX" => Self::parse_mx_value(&value, priority)?,
-            "SRV" => Self::parse_srv_value(&value, priority)?,
-            "TXT" => DnsRecordType::TXT { text: value },
-            other => return Err(anyhow!("Unsupported DNS record type: {}", other)),
-        };
+        let record_type = rtype.trim().to_ascii_uppercase();
+        let normalized_value = Self::normalize_value(&record_type, &value, priority);
 
-        Ok(DnsRecord::new(name, record_type, ttl))
+        let record = DnsRecord::new(name, record_type, normalized_value, ttl);
+        record.validate()?;
+        Ok(record)
     }
 
-    /// Parse SOA record value from database format
-    ///
-    /// Expected format: "mname rname serial refresh retry expire minimum"
-    fn parse_soa_value(value: &str) -> Result<DnsRecordType> {
-        let parts: Vec<&str> = value.split_whitespace().collect();
-        if parts.len() < 7 {
-            return Err(anyhow!(
-                "Invalid SOA record format. Expected 7 fields, got {}. Value: {}",
-                parts.len(),
-                value
-            ));
-        }
-
-        let mname = Self::normalize_fqdn(parts[0])?;
-        let rname = Self::normalize_fqdn(parts[1])?;
-
-        let serial: u32 = parts[2].parse()
-            .with_context(|| format!("Invalid SOA serial: {}", parts[2]))?;
-        let refresh: i32 = parts[3].parse()
-            .with_context(|| format!("Invalid SOA refresh: {}", parts[3]))?;
-        let retry: i32 = parts[4].parse()
-            .with_context(|| format!("Invalid SOA retry: {}", parts[4]))?;
-        let expire: i32 = parts[5].parse()
-            .with_context(|| format!("Invalid SOA expire: {}", parts[5]))?;
-        let minimum: u32 = parts[6].parse()
-            .with_context(|| format!("Invalid SOA minimum: {}", parts[6]))?;
-
-        Ok(DnsRecordType::SOA {
-            mname,
-            rname,
-            serial,
-            refresh,
-            retry,
-            expire,
-            minimum: minimum as i32,
-        })
-    }
-
-    /// Parse MX record value from database format
-    ///
-    /// Expected format: "exchange" with preference coming from priority field
-    fn parse_mx_value(value: &str, priority: i32) -> Result<DnsRecordType> {
-        let preference = if priority > 0 {
-            u16::try_from(priority)
-                .with_context(|| format!("Invalid MX preference: {}", priority))?
-        } else {
-            // Try to parse from value if priority is not set
-            let parts: Vec<&str> = value.split_whitespace().collect();
-            if parts.len() >= 2 {
-                parts[0].parse()
-                    .with_context(|| format!("Invalid MX preference in value: {}", parts[0]))?
-            } else {
-                return Err(anyhow!("MX record requires preference and exchange"));
+    fn normalize_value(record_type: &str, value: &str, priority: i32) -> String {
+        let trimmed = value.trim();
+        match record_type {
+            "MX" => {
+                let mut tokens = trimmed.split_whitespace();
+                if priority > 0 && tokens.next().map_or(true, |first| first.parse::<u16>().is_err()) {
+                    format!("{} {}", priority, trimmed)
+                } else {
+                    trimmed.to_string()
+                }
             }
-        };
-
-        let exchange = if priority > 0 {
-            Self::normalize_fqdn(value)?
-        } else {
-            let parts: Vec<&str> = value.split_whitespace().collect();
-            if parts.len() >= 2 {
-                Self::normalize_fqdn(parts[1])?
-            } else {
-                return Err(anyhow!("MX record requires preference and exchange"));
+            "SRV" => {
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                if priority > 0 {
+                    match tokens.len() {
+                        1 => format!("{} 0 0 {}", priority, trimmed),
+                        3 => format!("{} {}", priority, trimmed),
+                        4 => trimmed.to_string(),
+                        _ => trimmed.to_string(),
+                    }
+                } else if tokens.len() == 3 {
+                    format!("0 {}", trimmed)
+                } else {
+                    trimmed.to_string()
+                }
             }
-        };
-
-        Ok(DnsRecordType::MX { preference, exchange })
-    }
-
-    /// Parse SRV record value from database format
-    ///
-    /// Expected format: "priority weight port target"
-    fn parse_srv_value(value: &str, priority: i32) -> Result<DnsRecordType> {
-        let parts: Vec<&str> = value.split_whitespace().collect();
-
-        // If priority field is set, this is the source; otherwise parse from value
-        let (priority, weight, port, target) = if priority > 0 {
-            if parts.len() < 3 {
-                return Err(anyhow!("SRV record requires weight, port, and target. Got: {}", value));
-            }
-            let p = u16::try_from(priority).with_context(|| format!("Invalid SRV priority: {}", priority))?;
-            let w: u16 = parts[0].parse().with_context(|| format!("Invalid SRV weight: {}", parts[0]))?;
-            let pt: u16 = parts[1].parse().with_context(|| format!("Invalid SRV port: {}", parts[1]))?;
-            let t = Self::normalize_fqdn(parts[2])?;
-            (p, w, pt, t)
-        } else {
-            if parts.len() < 4 {
-                return Err(anyhow!("SRV record requires priority, weight, port, and target. Got: {}", value));
-            }
-            let p: u16 = parts[0].parse().with_context(|| format!("Invalid SRV priority: {}", parts[0]))?;
-            let w: u16 = parts[1].parse().with_context(|| format!("Invalid SRV weight: {}", parts[1]))?;
-            let pt: u16 = parts[2].parse().with_context(|| format!("Invalid SRV port: {}", parts[2]))?;
-            let t = Self::normalize_fqdn(parts[3])?;
-            (p, w, pt, t)
-        };
-
-        Ok(DnsRecordType::SRV {
-            priority,
-            weight,
-            port,
-            target,
-        })
-    }
-
-    /// Ensures an FQDN has a trailing dot
-    fn normalize_fqdn(fqdn: &str) -> Result<String> {
-        let trimmed = fqdn.trim();
-        if trimmed.is_empty() {
-            return Err(anyhow!("Empty FQDN"));
-        }
-        if !trimmed.ends_with('.') {
-            Ok(format!("{}.", trimmed))
-        } else {
-            Ok(trimmed.to_string())
+            _ => trimmed.to_string(),
         }
     }
 }
 
-/// Safe zone file writer that validates before persisting
+/// Safe zone file writer that validates before persisting.
 pub struct SafeZoneFileWriter;
 
 impl SafeZoneFileWriter {
-    /// Writes zone content to disk with atomic semantics and validation
-    ///
-    /// This function:
-    /// 1. Writes content to a temporary file
-    /// 2. Validates the file by attempting to parse it with Hickory DNS
-    /// 3. If valid, atomically replaces the target file
-    /// 4. If invalid, removes the temporary file and returns an error
-    pub fn write_validated(zone_path: &Path, content: &str) -> Result<()> {
+    /// Writes zone content to disk with atomic semantics and validation.
+    pub fn write_validated(
+        zone_path: &Path,
+        content: &str,
+        origin: Option<&Name>,
+    ) -> Result<()> {
         let tmp_path = zone_path.with_extension("zone.tmp");
 
         debug!("Writing zone file to temporary location: {:?}", tmp_path);
         fs::write(&tmp_path, content)
             .with_context(|| format!("Failed to write zone file temp at {:?}", tmp_path))?;
 
-        // Validate the written file by attempting to parse it
-        if let Err(e) = Self::validate_zone_file(&tmp_path) {
+        if let Err(e) = validate_zone_file(&tmp_path, content, origin) {
             warn!("Zone file validation failed, removing temporary file: {:?}", tmp_path);
             let _ = fs::remove_file(&tmp_path);
             return Err(e).with_context(|| format!("Zone file validation failed at {:?}", tmp_path));
@@ -354,72 +149,9 @@ impl SafeZoneFileWriter {
 
         Ok(())
     }
-
-    /// Validates a zone file by attempting to parse it line by line
-    ///
-    /// This is a basic validation that checks:
-    /// - File can be read
-    /// - Basic zone file format (name TTL class type rdata...)
-    /// - At least one record exists
-    fn validate_zone_file(path: &Path) -> Result<()> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read zone file for validation: {:?}", path))?;
-
-        let mut found_record = false;
-        let mut line_num = 0;
-
-        for line in content.lines() {
-            line_num += 1;
-            let trimmed = line.trim();
-
-            // Skip empty lines and comments
-            if trimmed.is_empty() || trimmed.starts_with(';') {
-                continue;
-            }
-
-            // Check that the line has the basic components of a DNS record
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() < 4 {
-                return Err(anyhow!(
-                    "Invalid zone file format at line {}: insufficient fields in '{}'",
-                    line_num,
-                    trimmed
-                ));
-            }
-
-            // Basic validation: TTL should be numeric
-            if parts[1].parse::<u32>().is_err() {
-                return Err(anyhow!(
-                    "Invalid zone file format at line {}: TTL '{}' is not numeric",
-                    line_num,
-                    parts[1]
-                ));
-            }
-
-            // Validate record type is known
-            let record_type = parts[3].to_uppercase();
-            match record_type.as_str() {
-                "SOA" | "NS" | "A" | "AAAA" | "CNAME" | "MX" | "SRV" | "TXT" | "CAA" | "PTR" | "SPF" => {}
-                _ => {
-                    warn!("Unknown record type at line {}: {}", line_num, record_type);
-                }
-            }
-            
-            found_record = true;
-        }
-
-        if !found_record {
-            return Err(anyhow!(
-                "Zone file validation failed: no records found in {:?}",
-                path
-            ));
-        }
-
-        Ok(())
-    }
 }
 
-/// TOML configuration builder for Hickory DNS named config
+/// TOML configuration builder for Hickory DNS named config.
 pub struct TomlConfigBuilder {
     zones: Vec<TomlZone>,
     listen_ipv4: Vec<String>,
@@ -446,7 +178,7 @@ struct TomlGeoRule {
 }
 
 impl TomlConfigBuilder {
-    /// Creates a new TOML configuration builder
+    /// Creates a new TOML configuration builder.
     pub fn new() -> Self {
         Self {
             zones: Vec::new(),
@@ -454,7 +186,7 @@ impl TomlConfigBuilder {
         }
     }
 
-    /// Adds a zone to the configuration
+    /// Adds a zone to the configuration.
     pub fn add_zone(
         &mut self,
         zone: String,
@@ -488,7 +220,7 @@ impl TomlConfigBuilder {
         Ok(())
     }
 
-    /// Builds the final TOML string
+    /// Builds the final TOML string.
     pub fn build(&self) -> Result<String> {
         let mut result = String::new();
         result.push_str("listen_addrs_ipv4 = [");
@@ -550,9 +282,8 @@ mod tests {
     fn test_dns_record_creation_a() {
         let record = DnsRecord::new(
             "example.com.".to_string(),
-            DnsRecordType::A {
-                address: "192.0.2.1".to_string(),
-            },
+            "A".to_string(),
+            "192.0.2.1".to_string(),
             3600,
         );
 
@@ -563,9 +294,8 @@ mod tests {
     fn test_dns_record_creation_aaaa() {
         let record = DnsRecord::new(
             "example.com.".to_string(),
-            DnsRecordType::AAAA {
-                address: "2001:db8::1".to_string(),
-            },
+            "AAAA".to_string(),
+            "2001:db8::1".to_string(),
             3600,
         );
 
@@ -576,9 +306,8 @@ mod tests {
     fn test_dns_record_creation_invalid_a() {
         let record = DnsRecord::new(
             "example.com.".to_string(),
-            DnsRecordType::A {
-                address: "192.0.2.999".to_string(),
-            },
+            "A".to_string(),
+            "192.0.2.999".to_string(),
             3600,
         );
 
@@ -597,8 +326,7 @@ mod tests {
 
         assert!(result.is_ok(), "SOA creation failed: {:?}", result.err());
         let record = result.unwrap();
-        let validation = record.validate();
-        assert!(validation.is_ok(), "SOA validation failed: {:?}", validation.err());
+        assert!(record.validate().is_ok());
     }
 
     #[test]
@@ -619,7 +347,7 @@ mod tests {
         let result = DnsRecordBuilder::from_db_fields(
             "@".to_string(),
             "NS".to_string(),
-            "ns1.example.com".to_string(),
+            "ns1.example.com.".to_string(),
             3600,
             0,
         );
@@ -634,7 +362,7 @@ mod tests {
         let result = DnsRecordBuilder::from_db_fields(
             "@".to_string(),
             "MX".to_string(),
-            "mail.example.com".to_string(),
+            "mail.example.com.".to_string(),
             3600,
             10,
         );
