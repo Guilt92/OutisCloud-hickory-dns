@@ -138,7 +138,7 @@ pub fn generate_from_data(
         for r in recs {
             let fqdn = fqdn_for_record(&r.name, &domain);
 
-            // Build and validate record through Hickory DNS APIs (no custom validation)
+            // Build and validate record through Hickory DNS APIs (fail-fast on invalid)
             match DnsRecordBuilder::from_db_fields(
                 fqdn.clone(),
                 r.rtype.clone(),
@@ -147,14 +147,12 @@ pub fn generate_from_data(
                 r.priority,
             ) {
                 Ok(record) => {
-                    // Record construction through Hickory validation succeeded
-                    // Additional validate() call is redundant but explicit
+                    // Validate the record - this delegates to Hickory
                     if let Err(e) = record.validate() {
-                        warn!(
-                            "Skipping record that failed validation: {} {} {} - {}",
-                            fqdn, r.ttl, r.rtype, e
-                        );
-                        continue;
+                        return Err(anyhow!(
+                            "Invalid record in zone {}: {} {} {} - {}",
+                            domain, fqdn, r.ttl, r.rtype, e
+                        ));
                     }
 
                     // Convert to zone file format (delegates to Hickory Record::to_string())
@@ -164,20 +162,18 @@ pub fn generate_from_data(
                             zone_contents.push('\n');
                         }
                         Err(e) => {
-                            warn!(
-                                "Failed to serialize record {} {} {} - {}",
-                                fqdn, r.rtype, r.value, e
-                            );
-                            continue;
+                            return Err(anyhow!(
+                                "Failed to serialize record {} {} {} for zone {} - {}",
+                                fqdn, r.rtype, r.value, domain, e
+                            ));
                         }
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to parse record {}: type={} value={} - {}",
-                        fqdn, r.rtype, r.value, e
-                    );
-                    continue;
+                    return Err(anyhow!(
+                        "Invalid record in zone {}: {}: type={} value={} - {}",
+                        domain, fqdn, r.rtype, r.value, e
+                    ));
                 }
             }
         }
@@ -189,12 +185,12 @@ pub fn generate_from_data(
             }
         }
 
-        // Write zone file with Hickory validation
+        // Write zone file with Hickory validation (final validation gate)
         debug!("Writing zone file for {}", domain);
         let origin = Name::from_utf8(&domain_dot)
             .with_context(|| format!("Failed to parse origin for zone {}", domain_dot))?;
         SafeZoneFileWriter::write_validated(&zone_path, &zone_contents, Some(&origin))
-            .with_context(|| format!("Failed to write validated zone file for {}", domain))?;
+            .with_context(|| format!("Zone file validation failed for {}: Hickory parser rejected zone structure", domain))?;
 
         info!("Successfully wrote zone file: {:?}", zone_path);
 
