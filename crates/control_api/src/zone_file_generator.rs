@@ -7,6 +7,7 @@ use tokio::task;
 use log::{debug, warn, info};
 use hickory_proto::rr::domain::Name;
 use crate::dns_builder::{DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder};
+use crate::dns_validator::{validate_zone_has_soa, validate_zone_has_ns};
 
 /// Represents a single DNS record row fetched from the database.
 #[derive(Clone, Debug)]
@@ -128,16 +129,16 @@ pub fn generate_from_data(
                 "ns1.{} hostmaster.{} {} 3600 3600 604800 3600",
                 domain_dot, domain_dot, serial
             );
-            
+
             // Write the default SOA record directly - format validation happens at zone file write time
             zone_contents.push_str(&format!("{} 3600 IN SOA {}\n", domain_dot, soa_value));
         }
 
-        // Process each record from the database
+        // Process each record from the database, validating through Hickory
         for r in recs {
             let fqdn = fqdn_for_record(&r.name, &domain);
 
-            // Skip records with invalid type or value - let Builder catch issues
+            // Build and validate record through Hickory DNS APIs (no custom validation)
             match DnsRecordBuilder::from_db_fields(
                 fqdn.clone(),
                 r.rtype.clone(),
@@ -146,16 +147,17 @@ pub fn generate_from_data(
                 r.priority,
             ) {
                 Ok(record) => {
-                    // Validate the record before including it
+                    // Record construction through Hickory validation succeeded
+                    // Additional validate() call is redundant but explicit
                     if let Err(e) = record.validate() {
                         warn!(
-                            "Skipping invalid record: {} {} {} - {}",
+                            "Skipping record that failed validation: {} {} {} - {}",
                             fqdn, r.ttl, r.rtype, e
                         );
                         continue;
                     }
 
-                    // Write the record in validated zone file text format.
+                    // Convert to zone file format (delegates to Hickory Record::to_string())
                     match record.to_zone_string() {
                         Ok(text) => {
                             zone_contents.push_str(&text);
@@ -187,7 +189,7 @@ pub fn generate_from_data(
             }
         }
 
-        // Write zone file with validation
+        // Write zone file with Hickory validation
         debug!("Writing zone file for {}", domain);
         let origin = Name::from_utf8(&domain_dot)
             .with_context(|| format!("Failed to parse origin for zone {}", domain_dot))?;
@@ -198,7 +200,7 @@ pub fn generate_from_data(
 
         // Add zone to TOML configuration
         let zone_path_str = zone_path.to_string_lossy().to_string();
-        
+
         let geo_rules = if *geodns_enabled {
             geo_rules_map
                 .get(zone_id)
@@ -243,10 +245,10 @@ pub fn generate_from_data(
     let toml_content = toml_builder.build()?;
     let named_path = base_path.join("named.toml");
     let tmp_named = base_path.join("named.toml.tmp");
-    
+
     debug!("Writing TOML configuration to temporary file: {:?}", tmp_named);
     fs::write(&tmp_named, &toml_content).with_context(|| format!("failed to write named.toml temp at {:?}", tmp_named))?;
-    
+
     debug!("Moving TOML configuration to final location: {:?}", named_path);
     fs::rename(&tmp_named, &named_path).with_context(|| format!("failed to rename named.toml temp to {:?}", named_path))?;
 
