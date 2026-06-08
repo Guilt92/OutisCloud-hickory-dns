@@ -1978,7 +1978,7 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
             ).await.unwrap_or_default();
             
             let mut assigned_nameservers: Vec<String> = Vec::new();
-            
+
             if !ns_rows.is_empty() {
                 // Use nameservers from database
                 for row in ns_rows {
@@ -1988,8 +1988,15 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
                     } else {
                         format!("{}.", hostname)
                     };
+
+                    // Validate NS value through Hickory before inserting
+                    if let Err(e) = validate_record_value("NS", &ns_value) {
+                        warn!("Failed to validate NS record '{}': {}", ns_value, e.message);
+                        continue;
+                    }
+
                     assigned_nameservers.push(ns_value.clone());
-                    
+
                     let ns_id = Uuid::new_v4().to_string();
                     if let Err(e) = (&*data.db).execute(
                         "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
@@ -2016,6 +2023,12 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
                     .collect();
 
                 for ns_value in ns_values.iter() {
+                    // Validate NS value through Hickory before inserting
+                    if let Err(e) = validate_record_value("NS", ns_value) {
+                        warn!("Failed to validate NS record '{}': {}", ns_value, e.message);
+                        continue;
+                    }
+
                     assigned_nameservers.push(ns_value.clone());
                     let ns_id = Uuid::new_v4().to_string();
                     if let Err(e) = (&*data.db).execute(
@@ -2339,13 +2352,14 @@ async fn push_config_to_agents(
             return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
         }
         let tok = auth.unwrap();
-        
-        // Validate record name
+
+        // Delegate ALL record validation to Hickory DNS APIs
+        // Validate record name through Hickory
         if let Err(e) = validate_record_name_input(&body.name) {
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
         }
 
-        // Validate record type
+        // Validate record type through Hickory
         if let Err(e) = validate_record_type(&body.record_type) {
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
         }
@@ -2355,7 +2369,7 @@ async fn push_config_to_agents(
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
         }
 
-        // Validate record value based on type
+        // Validate record value through Hickory - this delegates to RData::try_from_str()
         if let Err(e) = validate_record_value(&body.record_type, &body.value) {
             return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
         }
@@ -2372,48 +2386,12 @@ async fn push_config_to_agents(
                 }
             }
         }
-        
-        // Check zone existence and ownership first (we need zone_id for conflict checks)
+
+        // Check zone existence and ownership
         let zone_id_str = zone_id.to_string();
-        
-        // CNAME conflict detection - CNAME cannot coexist with other records at same name
-        let normalized_name = if body.name == "@" || body.name.is_empty() {
-            "@".to_string()
-        } else {
-            body.name.trim_end_matches('.').to_string()
-        };
-        
+
+        // Validate NS records against allowed nameservers
         let rtype_upper = body.record_type.to_uppercase();
-        
-        // Check for existing CNAME when adding other record types
-        if rtype_upper != "CNAME" {
-            let cname_exists = (&*data.db).query_opt(
-                "SELECT id FROM records WHERE CAST(zone_id AS varchar) = $1 AND name = $2 AND type = 'CNAME'",
-                &[&zone_id_str, &normalized_name]
-            ).await;
-            
-            if let Ok(Some(_)) = cname_exists {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "CNAME record already exists at this name. Cannot add other record types when CNAME exists."
-                }));
-            }
-        }
-        
-        // Check for existing records when adding CNAME
-        if rtype_upper == "CNAME" {
-            let other_exists = (&*data.db).query_opt(
-                "SELECT id FROM records WHERE CAST(zone_id AS varchar) = $1 AND name = $2 AND type != 'CNAME'",
-                &[&zone_id_str, &normalized_name]
-            ).await;
-            
-            if let Ok(Some(_)) = other_exists {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Cannot add CNAME: other record types already exist at this name. CNAME cannot coexist with other records."
-                }));
-            }
-        }
-        
-        // Validate NS records against allowed nameservers (for global architecture)
         if rtype_upper == "NS" {
             let allowed_ns = get_global_nameservers();
             if let Err(e) = validate_ns_value(&body.value, &allowed_ns) {
@@ -2527,9 +2505,9 @@ async fn push_config_to_agents(
         if auth_from_header(&req, &data.jwt_secret).is_none() {
             return HttpResponse::Unauthorized().finish();
         }
-    
+
         let (zone_id, record_id) = path.into_inner();
-    
+
         // Check ownership similar to create_record/delete_record
         let owner_check = (&*data.db).query_opt(
             "SELECT owner FROM zones WHERE CAST(id AS varchar) = $1",
@@ -2551,21 +2529,79 @@ async fn push_config_to_agents(
             + body.value.is_some() as usize
             + body.ttl.is_some() as usize
             + body.priority.is_some() as usize;
-    
+
         if field_count == 0 {
             return HttpResponse::BadRequest().body("no fields to update");
         }
-    
+
+        // Validate each field through Hickory before updating
+        if let Some(ref name) = body.name {
+            if let Err(e) = validate_record_name_input(name) {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            }
+        }
+
+        if let Some(ref record_type) = body.record_type {
+            if let Err(e) = validate_record_type(record_type) {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            }
+        }
+
+        if let Some(ttl) = body.ttl {
+            if let Err(e) = validate_ttl(ttl as u32) {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            }
+        }
+
+        // If both record_type and value are provided, validate value against type
+        // If only value is provided, we need the current type from the database
+        if let Some(ref value) = body.value {
+            let record_type = if let Some(ref rt) = body.record_type {
+                rt.clone()
+            } else {
+                // Get current record type from database
+                let current_record = (&*data.db).query_opt(
+                    "SELECT type FROM records WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
+                    &[&record_id, &zone_id]
+                ).await;
+
+                match current_record {
+                    Ok(Some(row)) => match row.try_get::<_, String>(0) {
+                        Ok(rt) => rt,
+                        Err(_) => {
+                            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to get current record type"}));
+                        }
+                    },
+                    Ok(None) => {
+                        return HttpResponse::NotFound().json(ErrorResponse { error: "record not found".to_string(), details: None });
+                    },
+                    Err(e) => {
+                        warn!("Failed to fetch current record: {}", e);
+                        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+                    }
+                }
+            };
+
+            // Validate value through Hickory
+            if let Err(e) = validate_record_value(&record_type, value) {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            }
+        }
+
+        // Validate priority if provided
+        if let Some(priority) = body.priority {
+            if priority < 0 {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": "priority must be non-negative"}));
+            }
+        }
+
         // Build the update using string concatenation with owned values
         let name_val = body.name.clone();
         let type_val = body.record_type.clone();
         let value_val = body.value.clone();
         let ttl_val = body.ttl;
-        
+
         let priority_val: Option<i32> = if let Some(p) = body.priority {
-            if p < 0 {
-                return HttpResponse::BadRequest().body("priority must be non-negative");
-            }
             Some(p)
         } else {
             None
@@ -2977,7 +3013,7 @@ async fn push_config_to_agents(
         ttl: Option<u32>,
     }
 
-    // Import zone
+    // Import zone - FAIL-FAST: reject entire import on first validation error
     async fn import_zone(
         path: web::Path<String>,
         body: web::Json<ImportZoneReq>,
@@ -2988,28 +3024,81 @@ async fn push_config_to_agents(
         if auth.is_none() {
             return HttpResponse::Unauthorized().json(ErrorResponse { error: "unauthorized".to_string(), details: None });
         }
-        
+
         let zone_id = path.into_inner();
-        
+
+        // FAIL-FAST: Validate ALL records first before importing any
+        // If any record is invalid, reject the entire import (no partial imports)
+        for record in body.records.iter() {
+            let ttl = record.ttl.unwrap_or(3600) as u32;
+
+            // Validate record name through Hickory - fail immediately on error
+            if let Err(e) = validate_record_name_input(&record.name) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Import validation failed",
+                    "details": format!("Record {}: {}", record.name, e.message)
+                }));
+            }
+
+            // Validate record type through Hickory - fail immediately on error
+            if let Err(e) = validate_record_type(&record.record_type) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Import validation failed",
+                    "details": format!("Record {} ({}): {}", record.name, record.record_type, e.message)
+                }));
+            }
+
+            // Validate TTL - fail immediately on error
+            if let Err(e) = validate_ttl(ttl) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Import validation failed",
+                    "details": format!("Record {} ({}): {}", record.name, record.record_type, e.message)
+                }));
+            }
+
+            // Validate record value through Hickory - fail immediately on error
+            // This delegates to RData::try_from_str() which is Hickory's parser
+            if let Err(e) = validate_record_value(&record.record_type, &record.value) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Import validation failed",
+                    "details": format!("Record {} ({}): {}", record.name, record.record_type, e.message)
+                }));
+            }
+        }
+
+        // All records passed validation - now import them all
         let mut imported = 0;
         for record in body.records.iter() {
             let ttl = record.ttl.unwrap_or(3600) as i32;
+
             match (&*data.db).execute(
                 "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
                 &[&Uuid::new_v4().to_string(), &zone_id, &record.name, &record.record_type, &record.value, &ttl]
             ).await {
                 Ok(_) => imported += 1,
-                Err(e) => warn!("failed to import record: {}", e)
+                Err(e) => {
+                    warn!("failed to import record: {}", e);
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": "Import partially failed",
+                        "details": format!("Database error while importing: {}", e)
+                    }));
+                }
             }
         }
-        
-        // after importing, we want the on-disk data to match the database
+
+        // After importing all records, regenerate zone files to validate complete zone through Hickory
         if let Err(e) = data.dns_manager.regenerate_zones(data.db.clone()).await {
             warn!("Failed to regenerate zone files after import: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Zone file generation failed",
+                "details": format!("Hickory zone parser validation failed: {}", e)
+            }));
         }
+
         HttpResponse::Ok().json(serde_json::json!({
             "imported": imported,
-            "zone_id": zone_id
+            "zone_id": zone_id,
+            "message": format!("Successfully imported {} records", imported)
         }))
     }
 

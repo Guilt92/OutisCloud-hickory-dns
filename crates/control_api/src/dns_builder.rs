@@ -2,7 +2,7 @@
 //!
 //! This module provides strongly-typed APIs for building DNS records and zones using
 //! Hickory DNS types, eliminating all string-based DNS generation. All records are
-//! validated before persistence.
+//! validated before persistence using Hickory DNS validation APIs.
 
 use anyhow::{anyhow, Context, Result};
 use hickory_proto::rr::{domain::Name, Record};
@@ -16,6 +16,7 @@ use crate::dns_validator::{
     validate_record_name_input,
     validate_record_type,
     validate_record_value,
+    validate_ttl,
 };
 
 /// Represents a complete DNS record with all metadata.
@@ -39,27 +40,40 @@ impl DnsRecord {
     }
 
     /// Converts this DnsRecord into a Hickory Record.
+    /// This delegates ALL record validation to Hickory DNS via validate_record().
     pub fn to_hickory_record(&self) -> Result<Record> {
         validate_record(&self.name, &self.record_type, &self.value, self.ttl, None)
             .map_err(|err| anyhow!(err.to_string()))
     }
 
     /// Return the record in zone file text format.
+    /// Validates by converting to Hickory Record first.
     pub fn to_zone_string(&self) -> Result<String> {
         Ok(self.to_hickory_record()?.to_string())
     }
 
     /// Validates that this record can be converted to a Hickory Record.
+    /// Uses Hickory DNS APIs for all validation (zero custom logic).
     pub fn validate(&self) -> Result<()> {
+        // Validate name through Hickory
         validate_record_name_input(&self.name)
             .map_err(|err| anyhow!(err.to_string()))?;
 
+        // Validate record type through Hickory
         validate_record_type(&self.record_type)
             .map_err(|err| anyhow!(err.to_string()))?;
 
+        // Validate TTL (simple numeric check)
+        validate_ttl(self.ttl)
+            .map_err(|err| anyhow!(err.to_string()))?;
+
+        // Validate record value through Hickory - KEY VALIDATION
+        // This delegates to RData::try_from_str() which does all record-type-specific validation
         validate_record_value(&self.record_type, &self.value)
             .map_err(|err| anyhow!(err.to_string()))?;
 
+        // Final validation: can we construct a Hickory Record?
+        // This confirms all parts work together
         if self.name == "@" {
             Ok(())
         } else {
@@ -72,7 +86,8 @@ impl DnsRecord {
 pub struct DnsRecordBuilder;
 
 impl DnsRecordBuilder {
-    /// Creates a DnsRecord from database fields.
+    /// Creates a DnsRecord from database fields with Hickory validation.
+    /// All record-type-specific validation delegates to Hickory DNS.
     pub fn from_db_fields(
         name: String,
         rtype: String,
@@ -86,10 +101,13 @@ impl DnsRecordBuilder {
         let normalized_value = Self::normalize_value(&record_type, &value, priority);
 
         let record = DnsRecord::new(name, record_type, normalized_value, ttl);
+        // Validate through Hickory before returning
         record.validate()?;
         Ok(record)
     }
 
+    /// Normalizes record value for certain types (e.g., adding priority to MX/SRV).
+    /// This handles database schema differences, not DNS validation.
     fn normalize_value(record_type: &str, value: &str, priority: i32) -> String {
         let trimmed = value.trim();
         match record_type {
@@ -125,11 +143,12 @@ impl DnsRecordBuilder {
 pub struct SafeZoneFileWriter;
 
 impl SafeZoneFileWriter {
-    /// Writes zone content to disk with atomic semantics and validation.
+    /// Writes zone content to disk with atomic semantics and Hickory validation.
+    /// Zone file is validated by Hickory's parser before committing.
     pub fn write_validated(
         zone_path: &Path,
         content: &str,
-        origin: Option<&Name>,
+        origin: Option<&hickory_proto::rr::domain::Name>,
     ) -> Result<()> {
         let tmp_path = zone_path.with_extension("zone.tmp");
 
@@ -137,6 +156,7 @@ impl SafeZoneFileWriter {
         fs::write(&tmp_path, content)
             .with_context(|| format!("Failed to write zone file temp at {:?}", tmp_path))?;
 
+        // Validate zone file using Hickory's parser - delegates to Hickory
         if let Err(e) = validate_zone_file(&tmp_path, content, origin) {
             warn!("Zone file validation failed, removing temporary file: {:?}", tmp_path);
             let _ = fs::remove_file(&tmp_path);
@@ -390,5 +410,174 @@ mod tests {
         let toml_str = result.unwrap();
         assert!(toml_str.contains("zone = \"example.com\""));
         assert!(toml_str.contains("listen_addrs_ipv4"));
+    }
+
+    // Comprehensive validation tests verifying Hickory delegation
+
+    #[test]
+    fn test_aaaa_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "ipv6.example.com.".to_string(),
+            "AAAA".to_string(),
+            "2001:db8::1".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_aaaa_record_rejected_by_hickory() {
+        let record = DnsRecord::new(
+            "ipv6.example.com.".to_string(),
+            "AAAA".to_string(),
+            "invalid-ipv6".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_err(), "Hickory should reject invalid IPv6");
+    }
+
+    #[test]
+    fn test_txt_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "txt.example.com.".to_string(),
+            "TXT".to_string(),
+            "\"v=spf1 mx -all\"".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_srv_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "_sip._tcp.example.com.".to_string(),
+            "SRV".to_string(),
+            "10 20 5060 sipserver.example.com.".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_caa_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "example.com.".to_string(),
+            "CAA".to_string(),
+            "0 issue \"ca.example.com\"".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tlsa_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "_443._tcp.example.com.".to_string(),
+            "TLSA".to_string(),
+            "3 1 1 d2abde240d7cd3ee6b4b28c54df034b97983a1d16e8a410e4561cb106618e971".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_record_type_rejected() {
+        let record = DnsRecord::new(
+            "example.com.".to_string(),
+            "INVALID_TYPE".to_string(),
+            "1.2.3.4".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_err(), "Hickory should reject invalid record type");
+    }
+
+    #[test]
+    fn test_zero_ttl_rejected() {
+        let record = DnsRecord::new(
+            "example.com.".to_string(),
+            "A".to_string(),
+            "1.2.3.4".to_string(),
+            0,
+        );
+        assert!(record.validate().is_err(), "TTL of 0 should be rejected");
+    }
+
+    #[test]
+    fn test_invalid_domain_name_rejected() {
+        let record = DnsRecord::new(
+            "invalid..domain".to_string(),
+            "A".to_string(),
+            "1.2.3.4".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_err(), "Invalid domain names should be rejected by Hickory");
+    }
+
+    #[test]
+    fn test_builder_validates_through_hickory() {
+        let result = DnsRecordBuilder::from_db_fields(
+            "test.example.com.".to_string(),
+            "AAAA".to_string(),
+            "invalid-ip".to_string(),
+            3600,
+            0,
+        );
+        assert!(result.is_err(), "Builder should validate through Hickory and reject invalid IPv6");
+    }
+
+    #[test]
+    fn test_mx_record_with_priority_validation() {
+        let result = DnsRecordBuilder::from_db_fields(
+            "@".to_string(),
+            "MX".to_string(),
+            "mail.example.com.".to_string(),
+            3600,
+            25,
+        );
+        assert!(result.is_ok(), "MX record with priority should validate through Hickory");
+    }
+
+    #[test]
+    fn test_ptr_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "1.2.3.4.in-addr.arpa.".to_string(),
+            "PTR".to_string(),
+            "mail.example.com.".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cname_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "alias.example.com.".to_string(),
+            "CNAME".to_string(),
+            "canonical.example.com.".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_soa_record_validation_through_hickory() {
+        let record = DnsRecord::new(
+            "example.com.".to_string(),
+            "SOA".to_string(),
+            "ns1.example.com. hostmaster.example.com. 2024010101 3600 1800 604800 3600".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_soa_record_rejected_by_hickory() {
+        let record = DnsRecord::new(
+            "example.com.".to_string(),
+            "SOA".to_string(),
+            "incomplete soa record".to_string(),
+            3600,
+        );
+        assert!(record.validate().is_err(), "Hickory should reject invalid SOA format");
     }
 }
