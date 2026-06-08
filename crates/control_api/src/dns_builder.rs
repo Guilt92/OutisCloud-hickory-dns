@@ -220,16 +220,17 @@ impl TomlConfigBuilder {
         Ok(())
     }
 
+
     /// Builds the final TOML string.
     pub fn build(&self) -> Result<String> {
         let mut result = String::new();
-        result.push_str("listen_addrs_ipv4 = [");
+        result.push_str("listen_addrs_ipv4 = ["); 
         for (i, addr) in self.listen_ipv4.iter().enumerate() {
             if i > 0 {
                 result.push_str(", ");
             }
             result.push('"');
-            result.push_str(addr);
+            result.push_str(addr); 
             result.push('"');
         }
         result.push_str("]\n\n");
