@@ -20,9 +20,6 @@ zone_path = "/etc/hickory/zone.test2.com"
 [[zones]]
 zone = "outis.com."
 zone_type = "Primary"
-geodns = { enabled = true, rules = [
-] }
-
 [[zones.stores]]
 type = "file"
 zone_path = "/etc/hickory/zone.outis.com"

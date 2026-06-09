@@ -1,7 +1,7 @@
 import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../../api/client'
-import { Globe, Plus, Trash2, MapPin, Play, ChevronRight } from 'lucide-react'
+import { Globe, Plus, Trash2, MapPin, Play, Edit3 } from 'lucide-react'
 
 export default function GeoRules(){
   const [rules, setRules] = React.useState([])
@@ -105,135 +105,108 @@ export default function GeoRules(){
 
   return (
     <div className="space-y-6">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white shadow-lg rounded-xl p-6 border border-gray-100"
+        className="card"
       >
-        <div className="flex items-center space-x-3 mb-6">
-          <div className="p-2 bg-green-100 rounded-lg">
-            <Globe className="w-6 h-6 text-green-600" />
-          </div>
-          <h3 className="text-xl font-bold text-gray-800">GeoDNS Rules</h3>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Zone</label>
-            <select 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" 
-              value={zone} 
-              onChange={e=>setZone(e.target.value)}
-            >
-              <option value="">Select a zone</option>
-              {zones.map(z=> <option key={z.id} value={z.id}>{z.domain}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Match Type</label>
-            <select 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" 
-              value={matchType} 
-              onChange={e=>setMatchType(e.target.value)}
-            >
-              <option value="country">Country</option>
-              <option value="region">Region</option>
-              <option value="continent">Continent</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Match Value</label>
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" 
-              placeholder="e.g., US, EU, NA" 
-              value={matchValue} 
-              onChange={e=>setMatchValue(e.target.value)} 
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Target IP</label>
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" 
-              placeholder="e.g., 192.0.2.1" 
-              value={target} 
-              onChange={e=>setTarget(e.target.value)} 
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-            <input type="number" min="0" className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Enabled</label>
-            <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="h-5 w-5" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Record Name</label>
-            <input className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="optional" value={recordName} onChange={e=>setRecordName(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Record Type</label>
-            <input className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="e.g., A, AAAA" value={recordType} onChange={e=>setRecordType(e.target.value)} />
-          </div>
-          <div className="flex items-end">
-            <button 
-              className="w-full bg-gradient-to-r from-green-600 to-green-700 text-white px-4 py-2 rounded-lg hover:from-green-700 hover:to-green-800 transition-all flex items-center justify-center space-x-2 font-medium"
-              onClick={create}
-            >
-              <Plus className="w-5 h-5" />
-              <span>{editingRule ? 'Update Rule' : 'Add Rule'}</span>
-            </button>
-          </div>
-          {editingRule && (
-            <div className="col-span-full text-right">
-              <button className="text-sm text-gray-600 hover:underline" onClick={()=>setEditingRule(null)}>Cancel</button>
+        <div className="p-5">
+          <div className="flex items-center gap-3 mb-5">
+            <div className="icon-box bg-green-100 dark:bg-green-900/30">
+              <Globe className="w-5 h-5 text-green-600 dark:text-green-400" />
             </div>
-          )}
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white">GeoDNS Rules</h3>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
+              <label className="form-label">Zone</label>
+              <select className="select" value={zone} onChange={e=>setZone(e.target.value)}>
+                <option value="">Select a zone</option>
+                {zones.map(z=> <option key={z.id} value={z.id}>{z.domain}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="form-label">Match Type</label>
+              <select className="select" value={matchType} onChange={e=>setMatchType(e.target.value)}>
+                <option value="country">Country</option>
+                <option value="region">Region</option>
+                <option value="continent">Continent</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label">Match Value</label>
+              <input className="input" placeholder="e.g., US, EU, NA" value={matchValue} onChange={e=>setMatchValue(e.target.value)} />
+            </div>
+            <div>
+              <label className="form-label">Target IP</label>
+              <input className="input" placeholder="e.g., 192.0.2.1" value={target} onChange={e=>setTarget(e.target.value)} />
+            </div>
+            <div>
+              <label className="form-label">Priority</label>
+              <input type="number" min="0" className="input" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
+            </div>
+            <div className="flex items-end pb-0.5">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+                <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500" />
+                Enabled
+              </label>
+            </div>
+            <div>
+              <label className="form-label">Record Name</label>
+              <input className="input" placeholder="optional" value={recordName} onChange={e=>setRecordName(e.target.value)} />
+            </div>
+            <div>
+              <label className="form-label">Record Type</label>
+              <input className="input" placeholder="e.g., A, AAAA" value={recordType} onChange={e=>setRecordType(e.target.value)} />
+            </div>
+          </div>
+          <div className="form-actions mt-4">
+            <button className="btn-success" onClick={create}>
+              <Plus className="w-4 h-4" />
+              {editingRule ? 'Update Rule' : 'Add Rule'}
+            </button>
+            {editingRule && (
+              <button className="btn-secondary" onClick={()=>setEditingRule(null)}>Cancel</button>
+            )}
+          </div>
         </div>
       </motion.div>
 
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+      {/* Test Resolution */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
-        className="bg-white shadow-lg rounded-xl p-6 border border-gray-100"
+        className="card p-5"
       >
-        <div className="flex items-center space-x-3 mb-6">
-          <div className="p-2 bg-blue-100 rounded-lg">
-            <Play className="w-6 h-6 text-blue-600" />
+        <div className="flex items-center gap-3 mb-4">
+          <div className="icon-box bg-blue-100 dark:bg-blue-900/30">
+            <Play className="w-5 h-5 text-blue-600 dark:text-blue-400" />
           </div>
-          <h3 className="text-xl font-bold text-gray-800">Test Resolution</h3>
+          <h3 className="text-lg font-bold text-gray-900 dark:text-white">Test Resolution</h3>
         </div>
 
-        <div className="flex flex-wrap items-end gap-4">
+        <div className="flex flex-wrap items-end gap-3">
           <div className="flex-1 min-w-[200px]">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Client IP Address</label>
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent" 
-              placeholder="e.g., 8.8.8.8" 
-              value={testIp} 
-              onChange={e=>setTestIp(e.target.value)} 
-            />
+            <label className="form-label">Client IP Address</label>
+            <input className="input" placeholder="e.g., 8.8.8.8" value={testIp} onChange={e=>setTestIp(e.target.value)} />
           </div>
-          <button 
-            className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-6 py-2 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all flex items-center space-x-2 font-medium"
-            onClick={testResolve}
-            disabled={testing}
-          >
-            <Play className={`w-5 h-5 ${testing ? 'animate-pulse' : ''}`} />
-            <span>Resolve</span>
+          <button className="btn-primary" onClick={testResolve} disabled={testing}>
+            <Play className={`w-4 h-4 ${testing ? 'animate-pulse' : ''}`} />
+            Resolve
           </button>
         </div>
 
         <AnimatePresence>
           {resolveResult && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
               className="mt-4"
             >
-              <div className="bg-gray-900 rounded-lg p-4 overflow-x-auto">
+              <div className="bg-gray-900 dark:bg-black rounded-lg p-4 overflow-x-auto border border-gray-800">
                 <pre className="text-green-400 text-sm font-mono">{JSON.stringify(resolveResult, null, 2)}</pre>
               </div>
             </motion.div>
@@ -241,74 +214,68 @@ export default function GeoRules(){
         </AnimatePresence>
       </motion.div>
 
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+      {/* Rules Table */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="bg-white shadow-lg rounded-xl border border-gray-100 overflow-hidden"
+        transition={{ delay: 0.15 }}
+        className="card overflow-hidden"
       >
         {rules.length === 0 ? (
           <div className="p-12 text-center">
-            <Globe className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500">No GeoDNS rules configured yet</p>
+            <Globe className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+            <p className="text-gray-500 dark:text-gray-400">No GeoDNS rules configured yet</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50">
+            <table className="table">
+              <thead>
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Zone</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Match</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Value</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Target</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Pri</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Enabled</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Record</th>
-                  <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+                  <th>Zone</th>
+                  <th>Match</th>
+                  <th>Value</th>
+                  <th>Target</th>
+                  <th>Pri</th>
+                  <th>Enabled</th>
+                  <th>Record</th>
+                  <th className="text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody>
                 {rules.map((r, i) => (
-                  <motion.tr 
+                  <motion.tr
                     key={r.id}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="hover:bg-gray-50"
+                    transition={{ delay: i * 0.03 }}
                   >
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">{getZoneName(r.zone_id)}</td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 capitalize">
-                        {r.match_type}
-                      </span>
+                    <td className="font-medium text-gray-900 dark:text-white">{getZoneName(r.zone_id)}</td>
+                    <td>
+                      <span className="badge badge-info capitalize">{r.match_type}</span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-600">
-                      <div className="flex items-center space-x-1">
-                        <MapPin className="w-4 h-4 text-gray-400" />
+                    <td>
+                      <div className="flex items-center gap-1.5">
+                        <MapPin className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                         <span>{r.match_value}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-600 font-mono">{r.target}</td>
-                    <td className="px-6 py-4 text-sm text-gray-600">{r.priority}</td>
-                    <td className="px-6 py-4">
-                      <input type="checkbox" checked={r.enabled} onChange={()=>toggleEnabled(r)} className="h-4 w-4" />
+                    <td className="font-mono text-gray-600 dark:text-gray-300">{r.target}</td>
+                    <td className="text-gray-500 dark:text-gray-400">{r.priority}</td>
+                    <td>
+                      <input type="checkbox" checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500" />
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-600">
+                    <td className="text-gray-500 dark:text-gray-400">
                       {r.record_name || '-'}{r.record_type ? `/${r.record_type}` : ''}
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <button 
-                        onClick={()=>startEditRule(r)}
-                        className="text-blue-600 hover:text-blue-800 p-1 rounded hover:bg-blue-50"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={()=>remove(r.id)}
-                        className="text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                    <td className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={()=>startEditRule(r)} className="btn-sm btn-ghost">
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={()=>remove(r.id)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </motion.tr>
                 ))}

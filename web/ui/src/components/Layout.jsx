@@ -56,7 +56,7 @@ export default function Layout({ children }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef(null);
   const { user, isAuthenticated, logout } = useAuthStore();
-  const { theme, toggleTheme } = useUIStore();
+  const { theme } = useUIStore();
   const navigate = useNavigate();
   
   // Close user menu when clicking outside

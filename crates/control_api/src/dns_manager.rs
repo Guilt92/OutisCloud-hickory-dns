@@ -2,7 +2,6 @@
 /// This is the core of the Option B architecture: control-api manages the database
 /// and generates zone files, the DNS server watches those files and reloads automatically
 use std::path::Path;
-use log::{error, info, warn};
 use std::sync::Arc;
 use tokio_postgres::Client;
 use crate::zone_file_generator;

@@ -82,12 +82,12 @@ export default function Login() {
 
   const showSessionExpiredMessage = sessionExpiredParam === 'true' || sessionExpired;
 
-  // const features = [
-  //   { icon: Zap, label: 'High Performance', desc: 'Lightning fast DNS queries' },
-  //   { icon: Shield, label: 'Secure', desc: 'DNSSEC & TSIG support' },
-  //   { icon: Database, label: 'Cloud Native', desc: 'PostgreSQL backed' },
-  //   { icon: Network, label: 'Geo DNS', desc: 'Global load balancing' },
-  // ];
+  const features = [
+    { icon: Zap, label: 'High Performance', desc: 'Lightning fast DNS queries' },
+    { icon: Shield, label: 'Secure', desc: 'DNSSEC & TSIG support' },
+    { icon: Database, label: 'Cloud Native', desc: 'PostgreSQL backed' },
+    { icon: Network, label: 'Geo DNS', desc: 'Global load balancing' },
+  ];
   
   return (
     <div className="min-h-screen flex">

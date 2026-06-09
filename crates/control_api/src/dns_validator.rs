@@ -127,15 +127,6 @@ pub fn validate_ttl(ttl: u32) -> Result<(), ValidationError> {
     }
 }
 
-/// Validate MX priority is within the allowed 16-bit range.
-pub fn validate_mx_priority(priority: i32) -> Result<(), ValidationError> {
-    if priority < 0 || priority > u16::MAX as i32 {
-        Err(ValidationError::new("priority", "MX priority must be between 0 and 65535"))
-    } else {
-        Ok(())
-    }
-}
-
 /// Validate NS record value against a configured set of allowed nameservers.
 pub fn validate_ns_value(value: &str, allowed_nameservers: &[String]) -> Result<(), ValidationError> {
     if allowed_nameservers.is_empty() {

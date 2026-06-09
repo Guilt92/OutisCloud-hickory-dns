@@ -4,10 +4,9 @@ use tokio_postgres::Client;
 use std::path::Path;
 use std::{collections::{HashSet, HashMap}, fs};
 use tokio::task;
-use log::{debug, warn, info};
+use log::{debug, info};
 use hickory_proto::rr::domain::Name;
 use crate::dns_builder::{DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder};
-use crate::dns_validator::{validate_zone_has_soa, validate_zone_has_ns};
 
 /// Represents a single DNS record row fetched from the database.
 #[derive(Clone, Debug)]
@@ -134,48 +133,34 @@ pub fn generate_from_data(
             zone_contents.push_str(&format!("{} 3600 IN SOA {}\n", domain_dot, soa_value));
         }
 
-        // Process each record from the database, validating through Hickory
+        // Process each record - validation delegates entirely to Hickory DNS via DnsRecordBuilder
         for r in recs {
             let fqdn = fqdn_for_record(&r.name, &domain);
 
-            // Build and validate record through Hickory DNS APIs (fail-fast on invalid)
-            match DnsRecordBuilder::from_db_fields(
+            // Build and validate record through Hickory DNS (from_db_fields calls validate internally)
+            let record = DnsRecordBuilder::from_db_fields(
                 fqdn.clone(),
                 r.rtype.clone(),
                 r.value.clone(),
                 r.ttl,
                 r.priority,
-            ) {
-                Ok(record) => {
-                    // Validate the record - this delegates to Hickory
-                    if let Err(e) = record.validate() {
-                        return Err(anyhow!(
-                            "Invalid record in zone {}: {} {} {} - {}",
-                            domain, fqdn, r.ttl, r.rtype, e
-                        ));
-                    }
+            )
+            .with_context(|| {
+                format!(
+                    "Invalid record in zone {}: {} {} {}",
+                    domain, fqdn, r.rtype, r.value
+                )
+            })?;
 
-                    // Convert to zone file format (delegates to Hickory Record::to_string())
-                    match record.to_zone_string() {
-                        Ok(text) => {
-                            zone_contents.push_str(&text);
-                            zone_contents.push('\n');
-                        }
-                        Err(e) => {
-                            return Err(anyhow!(
-                                "Failed to serialize record {} {} {} for zone {} - {}",
-                                fqdn, r.rtype, r.value, domain, e
-                            ));
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(anyhow!(
-                        "Invalid record in zone {}: {}: type={} value={} - {}",
-                        domain, fqdn, r.rtype, r.value, e
-                    ));
-                }
-            }
+            // Serialize to zone format using Hickory's Record::to_string()
+            let text = record.to_zone_string().with_context(|| {
+                format!(
+                    "Failed to serialize record {} {} {} for zone {}",
+                    fqdn, r.rtype, r.value, domain
+                )
+            })?;
+            zone_contents.push_str(&text);
+            zone_contents.push('\n');
         }
 
         // Add default NS records if none exist
@@ -280,7 +265,7 @@ pub async fn generate_all(base_dir: &str, db: Arc<Client>) -> anyhow::Result<()>
 
                 let recs = db
                     .query(
-                        "SELECT name, type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1",
+                        "SELECT name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1",
                         &[&zone_id],
                     )
                     .await
@@ -290,7 +275,7 @@ pub async fn generate_all(base_dir: &str, db: Arc<Client>) -> anyhow::Result<()>
                 for r in recs {
                     list.push(RecordRow {
                         name: r.try_get("name").unwrap_or_default(),
-                        rtype: r.try_get("type").unwrap_or_default(),
+                        rtype: r.try_get("record_type").unwrap_or_default(),
                         value: r.try_get("value").unwrap_or_default(),
                         ttl: r.try_get("ttl").unwrap_or(3600),
                         priority: r.try_get("priority").unwrap_or(0),
@@ -376,6 +361,7 @@ mod tests {
 
     #[test]
     fn test_default_ns_records_env() {
+        let previous = std::env::var("PUBLIC_NAMESERVERS").ok();
         std::env::remove_var("PUBLIC_NAMESERVERS");
         let defaults = default_ns_records();
         assert_eq!(
@@ -385,6 +371,12 @@ mod tests {
         std::env::set_var("PUBLIC_NAMESERVERS", "a.com.,b.com.");
         let custom = default_ns_records();
         assert_eq!(custom, vec!["a.com.".to_string(), "b.com.".to_string()]);
+        // restore original
+        if let Some(v) = previous {
+            std::env::set_var("PUBLIC_NAMESERVERS", v);
+        } else {
+            std::env::remove_var("PUBLIC_NAMESERVERS");
+        }
     }
 
     #[tokio::test]
@@ -511,6 +503,10 @@ mod tests {
 
     #[test]
     fn test_default_ns_and_soa_serial() {
+        // isolate from other tests that may have set PUBLIC_NAMESERVERS
+        let previous = std::env::var("PUBLIC_NAMESERVERS").ok();
+        std::env::remove_var("PUBLIC_NAMESERVERS");
+
         let dir = tempdir().unwrap();
         let base = dir.path().to_str().unwrap();
 
@@ -532,5 +528,10 @@ mod tests {
         // Serial is at position 6: fqdn(0) ttl(1) IN(2) SOA(3) mname(4) rname(5) serial(6)
         let serial = parts[6];
         assert!(serial.chars().all(|c| c.is_digit(10)));
+
+        // restore env var
+        if let Some(v) = previous {
+            std::env::set_var("PUBLIC_NAMESERVERS", v);
+        }
     }
 }

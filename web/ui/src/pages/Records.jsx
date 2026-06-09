@@ -5,7 +5,7 @@ import { validators } from '../hooks/useFormValidation'
 import BulkImport from '../components/BulkImport'
 import Notifications from '../components/Notifications'
 import { useParams } from 'react-router-dom'
-import { FileText, Plus, Trash2, Download, RefreshCw } from 'lucide-react'
+import { FileText, Plus, Trash2, Download, RefreshCw, Edit3, X } from 'lucide-react'
 
 export default function Records(){
   const { id } = useParams()
@@ -16,7 +16,7 @@ export default function Records(){
   const [value, setValue] = React.useState('')
   const [ttl, setTtl] = React.useState(3600)
   const [priority, setPriority] = React.useState(0)
-  const [editing, setEditing] = React.useState(null) // record being edited
+  const [editing, setEditing] = React.useState(null)
   const [error, setError] = React.useState('')
   const [loading, setLoading] = React.useState(false)
   const notify = React.useContext(Notifications)
@@ -121,185 +121,162 @@ export default function Records(){
   const recordTypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'PTR', 'SOA', 'CAA']
 
   return (
-    <div className="space-y-6">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+    <div className="page space-y-6">
+      {/* Header */}
+      <motion.div
+        initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white shadow-lg rounded-xl p-6 border border-gray-100"
+        className="section-header"
       >
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-orange-100 rounded-lg">
-              <FileText className="w-6 h-6 text-orange-600" />
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-gray-800">DNS Records</h3>
-              <p className="text-sm text-gray-500">Zone: {zoneId?.substring(0,8)}...</p>
-            </div>
-          </div>
-          <button 
-            onClick={load}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            <RefreshCw className={`w-5 h-5 text-gray-600 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-orange-500 focus:border-transparent" 
-              placeholder="e.g., www" 
-              value={name} 
-              onChange={e=>setName(e.target.value)} 
-            />
+        <div className="flex items-center gap-3">
+          <div className="icon-box bg-gradient-to-br from-orange-500 to-orange-600">
+            <FileText className="w-5 h-5 text-white" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-            <select 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-orange-500 focus:border-transparent" 
-              value={type} 
-              onChange={e=>setType(e.target.value)}
-            >
-              {recordTypes.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Value</label>
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-orange-500 focus:border-transparent" 
-              placeholder="e.g., 192.0.2.1" 
-              value={value} 
-              onChange={e=>setValue(e.target.value)} 
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">TTL</label>
-            <input 
-              type="number"
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-orange-500 focus:border-transparent" 
-              placeholder="3600" 
-              value={ttl} 
-              onChange={e=>setTtl(Number(e.target.value))} 
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-            <input
-              type="number"
-              className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-              value={priority}
-              onChange={e => setPriority(Number(e.target.value))}
-            />
-            <p className="text-xs text-gray-500 mt-1">Only used for MX/SRV</p>
-          </div>
-          <div className="flex items-end">
-            <button 
-              className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white px-4 py-2 rounded-lg hover:from-orange-600 hover:to-orange-700 transition-all flex items-center justify-center space-x-2 font-medium"
-              onClick={create}
-            >
-              <Plus className="w-5 h-5" />
-              <span>{editing ? 'Save' : 'Add'} Record</span>
-            </button>
-            {editing && (
-              <button onClick={resetForm} className="ml-2 text-gray-600 hover:text-gray-800">Cancel</button>
-            )}
+            <h1 className="section-title">DNS Records</h1>
+            <p className="section-desc">Zone: {zoneId?.substring(0,8)}...</p>
           </div>
         </div>
-
-        {error && (
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-4 bg-red-50 text-red-600 px-4 py-2 rounded-lg text-sm"
-          >
-            {error}
-          </motion.div>
-        )}
-
-        <div className="flex items-center space-x-3 mt-4 pt-4 border-t border-gray-100">
-          <BulkImport endpoint={`/api/v1/zones/${zoneId}/records/bulk`} onComplete={onBulkComplete} />
-          <button 
-            onClick={downloadTemplate}
-            className="flex items-center space-x-2 text-gray-600 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <Download className="w-4 h-4" />
-            <span>Template</span>
+        <div className="flex items-center gap-2">
+          <button className="btn-secondary btn-sm" onClick={load} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
           </button>
         </div>
       </motion.div>
 
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+      {/* Form card */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="card"
+      >
+        <div className="p-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+            <div>
+              <label className="form-label">Name</label>
+              <input className="input" placeholder="e.g., www" value={name} onChange={e=>setName(e.target.value)} />
+            </div>
+            <div>
+              <label className="form-label">Type</label>
+              <select className="select" value={type} onChange={e=>setType(e.target.value)}>
+                {recordTypes.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="form-label">Value</label>
+              <input className="input" placeholder="e.g., 192.0.2.1" value={value} onChange={e=>setValue(e.target.value)} />
+            </div>
+            <div>
+              <label className="form-label">TTL</label>
+              <input type="number" className="input" placeholder="3600" value={ttl} onChange={e=>setTtl(Number(e.target.value))} />
+            </div>
+            <div>
+              <label className="form-label">Priority</label>
+              <input type="number" className="input" value={priority} onChange={e => setPriority(Number(e.target.value))} />
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Only used for MX/SRV</p>
+            </div>
+            <div className="flex items-end gap-2">
+              <button className="btn-primary flex-1" onClick={create}>
+                <Plus className="w-4 h-4" />
+                {editing ? 'Save' : 'Add'} Record
+              </button>
+              {editing && (
+                <button onClick={resetForm} className="btn-sm btn-ghost"><X className="w-4 h-4" /></button>
+              )}
+            </div>
+          </div>
+
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mt-4"
+              >
+                <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-4 py-2 rounded-lg text-sm border border-red-200 dark:border-red-800">{error}</div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+            <BulkImport endpoint={`/api/v1/zones/${zoneId}/records/bulk`} onComplete={onBulkComplete} />
+            <button onClick={downloadTemplate} className="btn-sm btn-ghost">
+              <Download className="w-4 h-4" />
+              Template
+            </button>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Table */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
-        className="bg-white shadow-lg rounded-xl border border-gray-100 overflow-hidden"
+        className="card overflow-hidden"
       >
         {records.length === 0 ? (
           <div className="p-12 text-center">
-            <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500">No records in this zone yet</p>
+            <FileText className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+            <p className="text-gray-500 dark:text-gray-400">No records in this zone yet</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50">
+            <table className="table">
+              <thead>
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Type</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Value</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">TTL</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Priority</th>
-                  <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Actions</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Value</th>
+                  <th>TTL</th>
+                  <th>Priority</th>
+                  <th className="text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody>
                 {records.map((r, i) => (
-                  <motion.tr 
+                  <motion.tr
                     key={r.id}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: i * 0.02 }}
-                    className="hover:bg-gray-50"
                   >
-                    <td className="px-6 py-4 text-sm text-gray-500 font-mono">{r.id?.substring(0,8)}...</td>
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">{r.name || '@'}</td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        ['A','AAAA'].includes(r.record_type) ? 'bg-blue-100 text-blue-800' :
-                        ['CNAME'].includes(r.record_type) ? 'bg-purple-100 text-purple-800' :
-                        ['MX'].includes(r.record_type) ? 'bg-red-100 text-red-800' :
-                        ['TXT'].includes(r.record_type) ? 'bg-green-100 text-green-800' :
-                        'bg-gray-100 text-gray-800'
+                    <td className="font-medium text-gray-900 dark:text-white">{r.name || '@'}</td>
+                    <td>
+                      <span className={`badge ${
+                        ['A','AAAA'].includes(r.record_type) ? 'badge-info' :
+                        ['CNAME'].includes(r.record_type) ? 'badge-warning' :
+                        ['MX'].includes(r.record_type) ? 'badge-danger' :
+                        ['TXT'].includes(r.record_type) ? 'badge-success' :
+                        'badge-default'
                       }`}>
                         {r.record_type}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-600 font-mono max-w-xs truncate">{r.value}</td>
-                    <td className="px-6 py-4 text-sm text-gray-500">{r.ttl}</td>
-                    <td className="px-6 py-4 text-sm text-gray-500">{r.priority || ''}</td>
-                    <td className="px-6 py-4 text-right space-x-1">
-                      <button 
-                        onClick={()=>{
-                          setEditing(r);
-                          setName(r.name);
-                          setType(r.record_type);
-                          setValue(r.value);
-                          setTtl(r.ttl);
-                          setPriority(r.priority);
-                        }}
-                        className="text-blue-600 hover:text-blue-800 p-1 rounded hover:bg-blue-50"
-                      >
-                        Edit
-                      </button>
-                      <button 
-                        onClick={()=>remove(r.id)}
-                        className="text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                    <td className="font-mono text-gray-600 dark:text-gray-300 max-w-xs truncate">{r.value}</td>
+                    <td className="text-gray-500 dark:text-gray-400">{r.ttl}</td>
+                    <td className="text-gray-500 dark:text-gray-400">{r.priority || ''}</td>
+                    <td className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => {
+                            setEditing(r);
+                            setName(r.name);
+                            setType(r.record_type);
+                            setValue(r.value);
+                            setTtl(r.ttl);
+                            setPriority(r.priority);
+                          }}
+                          className="btn-sm btn-ghost"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => remove(r.id)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </motion.tr>
                 ))}

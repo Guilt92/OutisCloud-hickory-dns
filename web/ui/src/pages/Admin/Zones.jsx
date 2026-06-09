@@ -1,6 +1,8 @@
 import React from 'react'
+import { motion } from 'framer-motion'
 import api from '../../api/client'
 import { Link } from 'react-router-dom'
+import { Globe, Plus, Download, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
 import BulkImport from '../../components/BulkImport'
 import Notifications from '../../components/Notifications'
 import { useFormValidation, validators, FormField, downloadTemplate } from '../../hooks/useFormValidation'
@@ -10,7 +12,7 @@ export default function Zones(){
   const [zones, setZones] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const notify = React.useContext(Notifications)
-  const { values, errors, bind, validate, reset, setFieldValue } = useFormValidation(
+  const { values, errors, bind, setFieldValue } = useFormValidation(
     { domain: '' },
     (vals) => ({ domain: validators.domain(vals.domain) })
   )
@@ -20,27 +22,18 @@ export default function Zones(){
   const [editType, setEditType] = React.useState('primary')
   const [editGeodns, setEditGeodns] = React.useState(false)
   const [zoneNameservers, setZoneNameservers] = React.useState({})
+  const [creating, setCreating] = React.useState(false)
 
-  // Advanced search with debouncing
-  const { searchTerm, filteredItems, handleSearch } = useAdvancedSearch(
-    zones,
-    ['domain', 'id']
-  )
-  
-  // Table sorting
+  const { searchTerm, filteredItems, handleSearch } = useAdvancedSearch(zones, ['domain', 'id'])
   const { sortedItems, sortConfig, requestSort } = useTableSort(filteredItems, { field: 'domain', order: 'asc' })
-  
-  // Pagination
   const pagination = usePagination(sortedItems, 10)
 
-  const load = async () => { 
+  const load = async () => {
     setLoading(true)
-    try { 
+    try {
       const r = await api.get('/api/v1/zones')
       const zonesData = r.data || []
       setZones(zonesData)
-      
-      // Load nameservers for each zone
       const nameserversMap = {}
       for (const zone of zonesData) {
         try {
@@ -53,16 +46,15 @@ export default function Zones(){
         }
       }
       setZoneNameservers(nameserversMap)
-    } catch (e) { 
+    } catch (e) {
       console.error('Error loading zones', e)
-      const errMsg = e.response?.data?.error || e.message || 'Failed to load zones';
-      notify?.error(errMsg)
+      notify?.error(e.response?.data?.error || e.message || 'Failed to load zones')
     } finally {
       setLoading(false)
     }
   }
 
-  React.useEffect(()=>{ 
+  React.useEffect(() => {
     const token = localStorage.getItem('token')
     if (token) api.setToken(token)
     load()
@@ -71,45 +63,31 @@ export default function Zones(){
   const handleCreateClick = async (e) => {
     e.preventDefault()
     e.stopPropagation()
-    
-    console.log('handleCreateClick called, domain:', values.domain)
-    
     if (!values.domain || values.domain.trim() === '') {
       notify?.error('Please enter a domain name')
       return
     }
-    
-    // Basic validation
     const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$/
     if (!domainRegex.test(values.domain.trim())) {
       notify?.error('Please enter a valid domain name (e.g., example.com)')
       return
     }
-    
-    try { 
-      const domain = values.domain.trim().endsWith('.') ? values.domain.trim() : values.domain.trim() + '.';
-      console.log('Creating zone with domain:', domain)
-      
-      const response = await api.post('/api/v1/zones', { domain: domain, geodns_enabled: geodnsEnabled })
-      console.log('Zone created response:', response)
-      
+    setCreating(true)
+    try {
+      const domain = values.domain.trim().endsWith('.') ? values.domain.trim() : values.domain.trim() + '.'
+      const response = await api.post('/api/v1/zones', { domain, geodns_enabled: geodnsEnabled })
       setFieldValue('domain', '')
       setGeodnsEnabled(false)
       load()
-      
-      if (response.data && response.data.nameservers && response.data.nameservers.length > 0) {
-        const nsList = response.data.nameservers.join(', ')
-        notify?.success(`Zone ${domain} created! Nameservers: ${nsList}`)
-      } else {
-        notify?.success(`Zone ${domain} created`)
-      }
-    } catch (err) { 
-      console.error('Create zone error:', err)
-      const errMsg = err.response?.data?.error || err.message || 'Error creating zone';
-      notify?.error(errMsg)
-    } 
+      const nsList = response.data?.nameservers
+      notify?.success(nsList?.length ? `Zone ${domain} created! Nameservers: ${nsList.join(', ')}` : `Zone ${domain} created`)
+    } catch (err) {
+      notify?.error(err.response?.data?.error || err.message || 'Error creating zone')
+    } finally {
+      setCreating(false)
+    }
   }
-  
+
   const startEdit = (zone) => {
     setEditingZone(zone)
     setEditDomain(zone.domain)
@@ -129,15 +107,13 @@ export default function Zones(){
       return
     }
     try {
-      // Ensure domain has trailing dot for DNS standard
-      const domain = editDomain.endsWith('.') ? editDomain : editDomain + '.';
-      await api.put(`/api/v1/zones/${editingZone.id}`, { domain: domain, zone_type: editType, geodns_enabled: editGeodns })
+      const domain = editDomain.endsWith('.') ? editDomain : editDomain + '.'
+      await api.put(`/api/v1/zones/${editingZone.id}`, { domain, zone_type: editType, geodns_enabled: editGeodns })
       notify?.success('Zone updated')
       cancelEdit()
       load()
     } catch (e) {
-      const errMsg = e.response?.data?.error || e.message || 'Error updating zone';
-      notify?.error(errMsg)
+      notify?.error(e.response?.data?.error || e.message || 'Error updating zone')
     }
   }
 
@@ -146,149 +122,231 @@ export default function Zones(){
     try {
       await api.delete(`/api/v1/zones/${zone.id}`)
       notify?.success('Zone deleted')
-      if (editingZone && editingZone.id === zone.id) cancelEdit()
+      if (editingZone?.id === zone.id) cancelEdit()
       load()
     } catch (e) {
-      const errMsg = e.response?.data?.error || e.message || 'Error deleting zone';
-      notify?.error(errMsg)
+      notify?.error(e.response?.data?.error || e.message || 'Error deleting zone')
     }
   }
 
   const toggleZoneGeo = async (zone) => {
     try {
-      await api.put(`/api/v1/zones/${zone.id}`, { geodns_enabled: !zone.geodns_enabled });
-      load();
+      await api.put(`/api/v1/zones/${zone.id}`, { geodns_enabled: !zone.geodns_enabled })
+      load()
     } catch (e) {
-      const errMsg = e.response?.data?.error || e.message || 'Failed to update zone';
-      notify?.error(errMsg);
+      notify?.error(e.response?.data?.error || e.message || 'Failed to update zone')
     }
   }
 
-  const onBulkComplete = () => { load(); notify?.success('Zones imported'); }
+  const onBulkComplete = () => { load(); notify?.success('Zones imported') }
 
   return (
-    <div className="bg-white dark:bg-gray-800 shadow rounded p-6">
-      <div className="mb-6">
-        <h3 className="text-lg font-semibold mb-4">Zones</h3>
-        {!editingZone ? (
-          <div className="grid gap-2 mb-4 max-w-md">
-            <FormField label="Domain" error={errors.domain}>
-              <input className="w-full border dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded px-3 py-2" placeholder="example.com" {...bind('domain')} />
-            </FormField>
-            <FormField label="Enable GeoDNS">
-              <input type="checkbox" checked={geodnsEnabled} onChange={e=>setGeodnsEnabled(e.target.checked)} className="h-5 w-5" />
-            </FormField>
-            <div className="flex items-center space-x-2">
-              <button type="button" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition-colors" onClick={handleCreateClick}>Create Zone</button>
-              <BulkImport endpoint={'/api/v1/zones/bulk'} onComplete={onBulkComplete} />
-              <button className="text-sm text-gray-600 dark:text-gray-400 hover:underline" onClick={() => downloadTemplate('zones_template.csv', ['domain'], [['example.com'], ['test.io']])}>Template</button>
-            </div>
+    <div className="page">
+      {/* Header */}
+      <div className="section-header">
+        <div className="flex items-center gap-3">
+          <div className="icon-box bg-primary-100 dark:bg-primary-900/30">
+            <Globe className="w-5 h-5 text-primary-600 dark:text-primary-400" />
           </div>
-        ) : (
-          <div className="grid gap-2 mb-4 max-w-md">
-            <FormField label="Domain">
-              <input className="w-full border dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded px-3 py-2" value={editDomain} onChange={e=>setEditDomain(e.target.value)} />
-            </FormField>
-            <FormField label="Zone Type">
-              <select className="w-full border dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded px-3 py-2" value={editType} onChange={e=>setEditType(e.target.value)}>
-                <option value="primary">primary</option>
-                <option value="secondary">secondary</option>
-              </select>
-            </FormField>
-            <FormField label="Enable GeoDNS">
-              <input type="checkbox" checked={editGeodns} onChange={e=>setEditGeodns(e.target.checked)} className="h-5 w-5" />
-            </FormField>
-            <div className="flex items-center space-x-2">
-              <button className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded" onClick={saveEdit}>Save</button>
-              <button className="bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded" onClick={cancelEdit}>Cancel</button>
-            </div>
+          <div>
+            <h1 className="section-title">Zones</h1>
+            <p className="section-desc">Manage DNS zones and domain delegation</p>
           </div>
-        )}
+        </div>
       </div>
 
-      {/* Advanced Search */}
-      <div className="mb-4">
+      {/* Create / Edit Card */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="card"
+      >
+        <div className="p-5">
+          {!editingZone ? (
+            <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+              <div className="flex-1 max-w-md">
+                <FormField label="Domain" error={errors.domain}>
+                  <input
+                    className="input"
+                    placeholder="example.com"
+                    {...bind('domain')}
+                  />
+                </FormField>
+              </div>
+              <div className="flex items-center gap-3 pb-0.5">
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={geodnsEnabled}
+                    onChange={e => setGeodnsEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+                  />
+                  GeoDNS
+                </label>
+              </div>
+              <div className="flex items-center gap-2 pb-0.5">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleCreateClick}
+                  disabled={creating}
+                >
+                  {creating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  {creating ? 'Creating...' : 'Create Zone'}
+                </button>
+                <BulkImport endpoint="/api/v1/zones/bulk" onComplete={onBulkComplete} />
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+              <div className="flex-1 max-w-md">
+                <FormField label="Domain">
+                  <input className="input" value={editDomain} onChange={e => setEditDomain(e.target.value)} />
+                </FormField>
+              </div>
+              <div>
+                <FormField label="Zone Type">
+                  <select className="select" value={editType} onChange={e => setEditType(e.target.value)}>
+                    <option value="primary">Primary</option>
+                    <option value="secondary">Secondary</option>
+                  </select>
+                </FormField>
+              </div>
+              <div className="flex items-center gap-3 pb-0.5">
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={editGeodns}
+                    onChange={e => setEditGeodns(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+                  />
+                  GeoDNS
+                </label>
+              </div>
+              <div className="flex items-center gap-2 pb-0.5">
+                <button className="btn-success" onClick={saveEdit}>
+                  <CheckSquare className="w-4 h-4" />
+                  Save
+                </button>
+                <button className="btn-secondary" onClick={cancelEdit}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </motion.div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
         <input
           type="text"
           placeholder="Search zones by domain or ID..."
           value={searchTerm}
           onChange={(e) => handleSearch(e.target.value)}
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 transition-all"
+          className="input pl-10"
         />
         {filteredItems.length > 0 && (
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Found {filteredItems.length} zone{filteredItems.length !== 1 ? 's' : ''}
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
+            {filteredItems.length} zone{filteredItems.length !== 1 ? 's' : ''} found
           </p>
         )}
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 dark:bg-gray-700 border-b dark:border-gray-600">
-              <SortableHeader 
-                field="domain" 
-                label="Domain" 
-                sortConfig={sortConfig} 
-                onSort={requestSort}
-              />
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">Nameservers</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">Created</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">Type</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">GeoDNS</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <SkeletonTable rows={5} columns={6} />
-            ) : pagination.currentItems.length > 0 ? (
-              pagination.currentItems.map(z => (
-                <FadeIn key={z.id}>
-                  <tr className="border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap text-gray-900 dark:text-gray-100">{z.domain}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
-                      {zoneNameservers[z.id] ? (
-                        <div className="flex flex-col">
-                          {zoneNameservers[z.id].map((ns, i) => (
-                            <span key={i}>{ns}</span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">Loading...</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
-                      {z.created_at ? new Date(z.created_at).toLocaleDateString() : 'N/A'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">{z.zone_type || 'primary'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <input type="checkbox" checked={z.geodns_enabled} onChange={()=>toggleZoneGeo(z)} className="h-4 w-4" />
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap space-x-2">
-                      <Link to={`/admin/zones/${z.id}/records`} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">
-                        Manage Records
-                      </Link>
-                      <button onClick={()=>startEdit(z)} className="text-green-600 hover:text-green-800">Edit</button>
-                      <button onClick={()=>deleteZone(z)} className="text-red-600 hover:text-red-800">Delete</button>
-                    </td>
-                  </tr>
-                </FadeIn>
-              ))
-            ) : (
+      <div className="card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
               <tr>
-                <td colSpan="6" className="px-6 py-4 text-center text-gray-500 dark:text-gray-400">
-                  No zones found
-                </td>
+                <SortableHeader field="domain" label="Domain" sortConfig={sortConfig} onSort={requestSort} />
+                <th>Nameservers</th>
+                <th>Created</th>
+                <th>Type</th>
+                <th>GeoDNS</th>
+                <th className="text-right">Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {loading ? (
+                <SkeletonTable rows={5} columns={6} />
+              ) : pagination.currentItems.length > 0 ? (
+                pagination.currentItems.map(z => (
+                  <FadeIn key={z.id}>
+                    <tr>
+                      <td className="font-medium text-gray-900 dark:text-white">{z.domain}</td>
+                      <td>
+                        <div className="flex flex-col gap-0.5">
+                          {zoneNameservers[z.id] ? (
+                            zoneNameservers[z.id].length > 0 ? (
+                              zoneNameservers[z.id].map((ns, i) => (
+                                <span key={i} className="text-xs text-gray-500 dark:text-gray-400 font-mono">{ns}</span>
+                              ))
+                            ) : (
+                              <span className="text-xs text-gray-400 italic">No NS records</span>
+                            )
+                          ) : (
+                            <span className="text-xs text-gray-400 animate-pulse">Loading...</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="text-sm text-gray-500 dark:text-gray-400">
+                        {z.created_at ? new Date(z.created_at).toLocaleDateString() : 'N/A'}
+                      </td>
+                      <td>
+                        <span className={`badge ${z.zone_type === 'secondary' ? 'badge-warning' : 'badge-primary'}`}>
+                          {z.zone_type || 'primary'}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => toggleZoneGeo(z)}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                            z.geodns_enabled
+                              ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400'
+                              : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                          }`}
+                        >
+                          {z.geodns_enabled ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                          {z.geodns_enabled ? 'Enabled' : 'Disabled'}
+                        </button>
+                      </td>
+                      <td className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <Link
+                            to={`/admin/zones/${z.id}/records`}
+                            className="btn-sm btn-ghost"
+                          >
+                            Records
+                          </Link>
+                          <button onClick={() => startEdit(z)} className="btn-sm btn-ghost">
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => deleteZone(z)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </FadeIn>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="6" className="text-center text-gray-400 dark:text-gray-500 py-12">
+                    <Globe className="w-12 h-12 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
+                    <p className="font-medium text-gray-600 dark:text-gray-400 mb-1">No zones found</p>
+                    <p className="text-sm">Create a zone to get started.</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700">
+          <PaginationControls pagination={pagination} />
+        </div>
       </div>
-
-      {/* Pagination */}
-      <PaginationControls pagination={pagination} />
     </div>
   )
 }

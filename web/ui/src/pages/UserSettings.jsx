@@ -35,7 +35,7 @@ export default function UserSettings() {
         </div>
 
         <div className="space-y-4">
-          <label className="block text-sm font-medium dark:text-gray- text-gray-700300">Theme</label>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Theme</label>
           <div className="grid grid-cols-2 gap-3">
             <button
               onClick={() => setTheme('light')}

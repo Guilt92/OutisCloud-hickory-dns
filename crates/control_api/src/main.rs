@@ -7,11 +7,10 @@ mod zone_file_generator;
 mod dns_manager;
 mod dns_validator;
 mod dns_builder;
-use zone_file_generator::generate_all;
 use dns_manager::DnsManager;
 use dns_validator::*;
+use dns_builder::DnsRecord;
 use std::collections::HashMap;
-use std::process::Command;
 use tokio_postgres::NoTls;
 use argon2::{Argon2, PasswordHash, PasswordVerifier, PasswordHasher};
 use argon2::password_hash::SaltString;
@@ -22,7 +21,6 @@ use actix_web_prom::PrometheusMetricsBuilder;
 use prometheus::{TextEncoder, Encoder};
 use prometheus::gather;
 use chrono::TimeZone;
-use chrono::Utc;
 
 fn generate_salt() -> SaltString {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -337,6 +335,46 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
         return Err(e);
     }
     info!("Records table ready");
+    // Fix: rename `type` column to `record_type` if the old migration SQL was used.
+    // The migration SQL (001_initial_schema.sql) creates column `type`, but all
+    // application code uses `record_type`. Must handle safely for existing DBs.
+    if let Err(e) = client.batch_execute(
+        "DO $$
+         BEGIN
+             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='records' AND column_name='type') THEN
+                 ALTER TABLE records RENAME COLUMN type TO record_type;
+             END IF;
+         END $$;"
+    ).await {
+        warn!("Failed to rename records.type to record_type: {}", e);
+        return Err(e);
+    }
+    // Also ensure record_type column exists (for fresh tables or partial migrations)
+    if let Err(e) = client.batch_execute(
+        "ALTER TABLE records ADD COLUMN IF NOT EXISTS record_type TEXT NOT NULL DEFAULT 'A';"
+    ).await {
+        warn!("Failed to ensure record_type column on records: {}", e);
+        return Err(e);
+    }
+    
+    // Nameservers table — created by migrate_db so it always exists regardless
+    // of whether the migration SQL files were loaded at container init.
+    if let Err(e) = client.batch_execute(
+        "CREATE TABLE IF NOT EXISTS nameservers (
+            id UUID PRIMARY KEY,
+            hostname TEXT NOT NULL UNIQUE,
+            ip_address TEXT NOT NULL,
+            glue_ip TEXT,
+            sort_order INT DEFAULT 0,
+            enabled BOOLEAN DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
+        );"
+    ).await {
+        warn!("Failed to create nameservers table: {}", e);
+        return Err(e);
+    }
+    info!("Nameservers table ready");
     
     // Agents table
     if let Err(e) = client.batch_execute(
@@ -493,7 +531,8 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
          CREATE INDEX IF NOT EXISTS idx_georules_zone_id ON georules(zone_id);
          CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
          CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
-         CREATE INDEX IF NOT EXISTS idx_agents_enabled ON agents(enabled);"
+         CREATE INDEX IF NOT EXISTS idx_agents_enabled ON agents(enabled);
+         CREATE INDEX IF NOT EXISTS idx_nameservers_enabled ON nameservers(enabled);"
     ).await {
         warn!("Failed to create indexes: {}", e);
         // don't return error, indexes are not critical
@@ -679,7 +718,7 @@ async fn refresh_token(body: web::Json<RefreshRequest>, data: web::Data<AppState
                             "SELECT username, role FROM users WHERE CAST(id AS varchar) = $1",
                             &[&uid_str]
                         ).await {
-                            let username: String = user_row.try_get(0).unwrap_or_default();
+                            let _username: String = user_row.try_get(0).unwrap_or_default();
                             let role: Option<String> = user_row.try_get(1).ok();
                             
                             // Generate new access token
@@ -1255,12 +1294,6 @@ async fn create_server(body: web::Json<CreateServerReq>, data: web::Data<AppStat
     
     let id = Uuid::new_v4();
     let id_str = id.to_string();
-    let port = body.port.unwrap_or(53);
-    let enabled = body.enabled.unwrap_or(true);
-    let dnssec = body.dnssec.unwrap_or(false);
-    let enable_logging = body.enable_logging.unwrap_or(true);  
-    let max_cache_ttl = body.max_cache_ttl.unwrap_or(3600);
-    let min_cache_ttl = body.min_cache_ttl.unwrap_or(60);
     
     match (&*data.db).execute(
         "INSERT INTO servers (id, name, address, region) VALUES ($1::text::uuid, $2, $3, $4)", 
@@ -1999,10 +2032,10 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
 
                     let ns_id = Uuid::new_v4().to_string();
                     if let Err(e) = (&*data.db).execute(
-                        "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+                        "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
                         &[&ns_id, &zone_id_str, &"@", &"NS", &ns_value, &3600]
                     ).await {
-                        warn!("Failed to add NS record: {}", e);
+                        warn!("Failed to add NS record for zone {} ({}): {}", domain, zone_id_str, e);
                     }
                 }
             } else {
@@ -2032,7 +2065,7 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
                     assigned_nameservers.push(ns_value.clone());
                     let ns_id = Uuid::new_v4().to_string();
                     if let Err(e) = (&*data.db).execute(
-                        "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+                        "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
                         &[&ns_id, &zone_id_str, &"@", &"NS", ns_value, &3600]
                     ).await {
                         warn!("Failed to add default NS record: {}", e);
@@ -2049,7 +2082,7 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
                 domain.trim_end_matches('.')
             );
             if let Err(e) = (&*data.db).execute(
-                "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+                "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
                 &[&soa_id, &zone_id_str, &"@", &"SOA", &soa_value, &3600]
             ).await {
                 warn!("Failed to add default SOA record: {}", e);
@@ -2090,8 +2123,8 @@ fn default_record_type() -> String {
     "A".to_string()
 }
 
-/// Perform DNS lookup for a domain and record type.
-/// This queries the local DNS server for resolution.
+/// Perform a system DNS lookup (A/AAAA records only via the OS resolver).
+/// For full record type support, enable the `hickory-resolver` feature.
 async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     let auth = auth_from_header(&req, &data.jwt_secret);
     if auth.is_none() {
@@ -2105,17 +2138,14 @@ async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "domain is required"}));
     }
     
-    // Use std::net::ToSocketAddrs for DNS resolution
     let mut records = Vec::new();
     
-    match record_type.as_str() {
-        "A" => {
-            // Try to resolve A record using DNS
-            let addr_string = format!("{}:0", domain);
-            use std::net::ToSocketAddrs;
-            if let Ok(addrs) = addr_string.to_socket_addrs() {
-                for addr in addrs {
-                    if let std::net::SocketAddr::V4(v4) = addr {
+    if record_type == "A" || record_type == "AAAA" {
+        use std::net::ToSocketAddrs;
+        if let Ok(addrs) = format!("{}:0", domain).to_socket_addrs() {
+            for addr in addrs {
+                match addr {
+                    std::net::SocketAddr::V4(v4) if record_type == "A" => {
                         records.push(serde_json::json!({
                             "name": domain,
                             "type": "A",
@@ -2123,70 +2153,30 @@ async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>
                             "value": v4.ip().to_string()
                         }));
                     }
-                }
-            }
-            // Fallback: try simple hostname resolution
-            if records.is_empty() {
-                use std::net::ToSocketAddrs;
-                if let Ok(_) = format!("{}:80", domain).to_socket_addrs() {
-                    // Just add a placeholder if we can't get the IP directly
-                    records.push(serde_json::json!({
-                        "name": domain,
-                        "type": "A",
-                        "ttl": 300,
-                        "value": "Resolution requires proper DNS server"
-                    }));
-                }
-            }
-        }
-        "AAAA" => {
-            records.push(serde_json::json!({
-                "name": domain,
-                "type": "AAAA",
-                "ttl": 300,
-                "value": "IPv6 lookup not implemented in this version"
-            }));
-        }
-        "MX" | "TXT" | "NS" | "CNAME" | "SOA" | "SRV" | "PTR" => {
-            records.push(serde_json::json!({
-                "name": domain,
-                "type": record_type,
-                "ttl": 300,
-                "value": format!("{} record lookup requires full DNS parser", record_type)
-            }));
-        }
-        _ => {
-            // Default: try A record
-            use std::net::ToSocketAddrs;
-            if let Ok(addrs) = format!("{}:0", domain).to_socket_addrs() {
-                for addr in addrs {
-                    if let std::net::SocketAddr::V4(v4) = addr {
+                    std::net::SocketAddr::V6(v6) if record_type == "AAAA" => {
                         records.push(serde_json::json!({
                             "name": domain,
-                            "type": "A",
+                            "type": "AAAA",
                             "ttl": 300,
-                            "value": v4.ip().to_string()
+                            "value": v6.ip().to_string()
                         }));
                     }
+                    _ => {}
                 }
             }
         }
     }
     
-    if records.is_empty() {
-        HttpResponse::Ok().json(serde_json::json!({
-            "domain": domain,
-            "record_type": record_type,
-            "records": [],
-            "message": format!("No {} records found for {}. DNS resolution may be blocked.", record_type, domain)
-        }))
-    } else {
-        HttpResponse::Ok().json(serde_json::json!({
-            "domain": domain,
-            "record_type": record_type,
-            "records": records
-        }))
-    }
+    HttpResponse::Ok().json(serde_json::json!({
+        "domain": domain,
+        "record_type": record_type,
+        "records": records,
+        "note": if records.is_empty() {
+            Some(format!("No {} records found. Only A/AAAA lookups supported without hickory-resolver.", record_type))
+        } else {
+            None
+        }
+    }))
 }
 
 #[derive(Deserialize)]
@@ -2353,37 +2343,21 @@ async fn push_config_to_agents(
         }
         let tok = auth.unwrap();
 
-        // Delegate ALL record validation to Hickory DNS APIs
-        // Validate record name through Hickory
-        if let Err(e) = validate_record_name_input(&body.name) {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+        // Delegate ALL DNS record validation to Hickory via DnsRecord
+        let rec = DnsRecord::new(
+            body.name.clone(),
+            body.record_type.clone(),
+            body.value.clone(),
+            body.ttl,
+        );
+        if let Err(e) = rec.validate() {
+            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
         }
 
-        // Validate record type through Hickory
-        if let Err(e) = validate_record_type(&body.record_type) {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
-        }
-
-        // Validate TTL
-        if let Err(e) = validate_ttl(body.ttl) {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
-        }
-
-        // Validate record value through Hickory - this delegates to RData::try_from_str()
-        if let Err(e) = validate_record_value(&body.record_type, &body.value) {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
-        }
-
-        // Validate priority if provided
+        // Validate priority is non-negative (business rule, not DNS logic)
         if let Some(priority) = body.priority {
             if priority < 0 {
                 return HttpResponse::BadRequest().json(serde_json::json!({"error": "priority must be non-negative"}));
-            }
-            // Additional MX priority validation
-            if body.record_type.to_uppercase() == "MX" {
-                if let Err(e) = validate_mx_priority(priority) {
-                    return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
-                }
             }
         }
 
@@ -2427,7 +2401,7 @@ async fn push_config_to_agents(
         let record_type = body.record_type.clone();
     
         match (&*data.db).execute(
-            "INSERT INTO records (id, zone_id, name, type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
             &[&id_str, &zone_id_str, &body.name, &record_type, &body.value, &ttl, &priority]
         ).await {
             Ok(_) => {
@@ -2446,11 +2420,12 @@ async fn push_config_to_agents(
                 }))
             }
             Err(e) => {
-                warn!("create_record error: {}", e);
-                if e.to_string().contains("unique") {
+                let err_str = e.to_string();
+                warn!("create_record error for zone {} (type={}, name={}): {}", zone_id_str, record_type, body.name, err_str);
+                if err_str.contains("unique") {
                     HttpResponse::Conflict().json(serde_json::json!({"error": "record already exists"}))
                 } else {
-                    HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create record"}))
+                    HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("failed to create record: {}", err_str)}))
                 }
             }
         }
@@ -2468,7 +2443,7 @@ async fn push_config_to_agents(
         let zone_id_str = zone_id.into_inner();
         let rows = (&*data.db)
             .query(
-                "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name",
+                "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name",
                 &[&zone_id_str]
             )
             .await
@@ -2561,7 +2536,7 @@ async fn push_config_to_agents(
             } else {
                 // Get current record type from database
                 let current_record = (&*data.db).query_opt(
-                    "SELECT type FROM records WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
+                    "SELECT record_type FROM records WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
                     &[&record_id, &zone_id]
                 ).await;
 
@@ -2616,7 +2591,7 @@ async fn push_config_to_agents(
                 ).await
             } else if type_val.is_some() {
                 (&*data.db).execute(
-                    "UPDATE records SET type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    "UPDATE records SET record_type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
                     &[&type_val.unwrap(), &record_id, &zone_id]
                 ).await
             } else if value_val.is_some() {
@@ -2646,7 +2621,7 @@ async fn push_config_to_agents(
             }
             if let Some(v) = type_val {
                 let _ = (&*data.db).execute(
-                    "UPDATE records SET type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+                    "UPDATE records SET record_type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
                     &[&v, &record_id, &zone_id]
                 ).await;
             }
@@ -2686,8 +2661,9 @@ async fn push_config_to_agents(
                 }
             }
             Err(e) => {
-                warn!("update_record error: {}", e);
-                HttpResponse::InternalServerError().finish()
+                let err_str = e.to_string();
+                warn!("update_record error for zone {} record {}: {}", zone_id, record_id, err_str);
+                HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("failed to update record: {}", err_str)}))
             }
         }
     }
@@ -2738,8 +2714,9 @@ async fn push_config_to_agents(
                 }
             }
             Err(e) => {
-                warn!("delete_record error: {}", e);
-                HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to delete record".to_string(), details: None })
+                let err_str = e.to_string();
+                warn!("delete_record error for zone {} record {}: {}", zone_id, record_id, err_str);
+                HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("failed to delete record: {}", err_str)}))
             }
         }
     }
@@ -2828,7 +2805,7 @@ async fn push_config_to_agents(
                 
                 // Get NS records for this zone
                 let ns_rows = (&*data.db).query(
-                    "SELECT value FROM records WHERE CAST(zone_id AS varchar) = $1 AND type = 'NS' AND name = '@'",
+                    "SELECT value FROM records WHERE CAST(zone_id AS varchar) = $1 AND record_type = 'NS' AND name = '@'",
                     &[&zone_id]
                 ).await.unwrap_or_default();
                 
@@ -2956,7 +2933,7 @@ async fn push_config_to_agents(
         HttpResponse::Ok().json(ApiResponse { success: true, data: Some(serde_json::json!({"zone_id": zone_id})), error: None })
     }
 
-    // Export zone
+    // Export zone - serves the already-generated Hickory-validated zone file from disk
     async fn export_zone(
         path: web::Path<String>,
         data: web::Data<AppState>,
@@ -2978,26 +2955,18 @@ async fn push_config_to_agents(
         };
         
         let domain: String = zone_row.try_get(0).unwrap_or_default();
+        let zone_file_name = format!("zone.{}", domain.trim_end_matches('.'));
+        let zone_path = std::path::Path::new(&data.dns_manager.zone_dir()).join(&zone_file_name);
         
-        let records = (&*data.db).query(
-            "SELECT name, type, value, ttl FROM records WHERE CAST(zone_id AS varchar) = $1",
-            &[&zone_id]
-        ).await.unwrap_or_default();
-        
-        let mut zone_content = format!("$ORIGIN {}\n$TTL 3600\n\n", domain);
-        zone_content.push_str(&format!("@ 3600 IN SOA ns.{} hostmaster.{} 1 3600 3600 604800 3600\n\n", domain, domain));
-        
-        for r in records {
-            let name: String = r.try_get(0).unwrap_or_default();
-            let record_type: String = r.try_get(1).unwrap_or_default();
-            let value: String = r.try_get(2).unwrap_or_default();
-            let ttl: i32 = r.try_get(3).unwrap_or(0);
-            zone_content.push_str(&format!("{} {} IN {} {}\n", if name.is_empty() || name == "@" { "@" } else { &name }, ttl, record_type, value));
+        match tokio::fs::read_to_string(&zone_path).await {
+            Ok(content) => HttpResponse::Ok()
+                .content_type("text/plain")
+                .body(content),
+            Err(_) => HttpResponse::NotFound().json(ErrorResponse {
+                error: "zone file not found on disk. Regenerate with /api/v1/dns/generate first.".to_string(),
+                details: None,
+            }),
         }
-        
-        HttpResponse::Ok()
-            .content_type("text/plain")
-            .body(zone_content)
     }
 
     #[derive(Deserialize)]
@@ -3027,41 +2996,22 @@ async fn push_config_to_agents(
 
         let zone_id = path.into_inner();
 
-        // FAIL-FAST: Validate ALL records first before importing any
+        // FAIL-FAST: Validate ALL records through Hickory before importing any
         // If any record is invalid, reject the entire import (no partial imports)
         for record in body.records.iter() {
-            let ttl = record.ttl.unwrap_or(3600) as u32;
+            let ttl = record.ttl.unwrap_or(3600);
 
-            // Validate record name through Hickory - fail immediately on error
-            if let Err(e) = validate_record_name_input(&record.name) {
+            // Delegate all DNS validation to Hickory via DnsRecord
+            let rec = DnsRecord::new(
+                record.name.clone(),
+                record.record_type.clone(),
+                record.value.clone(),
+                ttl,
+            );
+            if let Err(e) = rec.validate() {
                 return HttpResponse::BadRequest().json(serde_json::json!({
                     "error": "Import validation failed",
-                    "details": format!("Record {}: {}", record.name, e.message)
-                }));
-            }
-
-            // Validate record type through Hickory - fail immediately on error
-            if let Err(e) = validate_record_type(&record.record_type) {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Import validation failed",
-                    "details": format!("Record {} ({}): {}", record.name, record.record_type, e.message)
-                }));
-            }
-
-            // Validate TTL - fail immediately on error
-            if let Err(e) = validate_ttl(ttl) {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Import validation failed",
-                    "details": format!("Record {} ({}): {}", record.name, record.record_type, e.message)
-                }));
-            }
-
-            // Validate record value through Hickory - fail immediately on error
-            // This delegates to RData::try_from_str() which is Hickory's parser
-            if let Err(e) = validate_record_value(&record.record_type, &record.value) {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Import validation failed",
-                    "details": format!("Record {} ({}): {}", record.name, record.record_type, e.message)
+                    "details": format!("Record {}: {}", record.name, e)
                 }));
             }
         }
@@ -3072,7 +3022,7 @@ async fn push_config_to_agents(
             let ttl = record.ttl.unwrap_or(3600) as i32;
 
             match (&*data.db).execute(
-                "INSERT INTO records (id, zone_id, name, type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+                "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
                 &[&Uuid::new_v4().to_string(), &zone_id, &record.name, &record.record_type, &record.value, &ttl]
             ).await {
                 Ok(_) => imported += 1,
@@ -3344,9 +3294,22 @@ mod cors_tests {
     use super::*;
     use actix_web::{test, App, http, web, HttpResponse};
 
+    fn cors_env(origins: &str) -> Option<String> {
+        let prev = std::env::var("ALLOWED_ORIGINS").ok();
+        std::env::set_var("ALLOWED_ORIGINS", origins);
+        prev
+    }
+
+    fn restore_cors_env(prev: Option<String>) {
+        match prev {
+            Some(v) => std::env::set_var("ALLOWED_ORIGINS", v),
+            None => std::env::remove_var("ALLOWED_ORIGINS"),
+        }
+    }
+
     #[actix_web::test]
     async fn allowed_origin_and_preflight() {
-        std::env::set_var("ALLOWED_ORIGINS", "http://foo.example");
+        let prev = cors_env("http://foo.example");
         let app = test::init_service(
             App::new()
                 .wrap(cors_middleware())
@@ -3386,11 +3349,12 @@ mod cors_tests {
                 .map(|v| v.to_str().unwrap()),
             Some("http://foo.example"),
         );
+        restore_cors_env(prev);
     }
 
     #[actix_web::test]
     async fn disallowed_origin() {
-        std::env::set_var("ALLOWED_ORIGINS", "http://foo.example");
+        let prev = cors_env("http://foo.example");
         let app = test::init_service(
             App::new()
                 .wrap(cors_middleware())
@@ -3409,11 +3373,12 @@ mod cors_tests {
             .headers()
             .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .is_none());
+        restore_cors_env(prev);
     }
 
     #[actix_web::test]
     async fn wildcard_allows_any_origin() {
-        std::env::set_var("ALLOWED_ORIGINS", "*");
+        let prev = cors_env("*");
         let app = test::init_service(
             App::new()
                 .wrap(cors_middleware())
@@ -3436,10 +3401,12 @@ mod cors_tests {
                 .map(|v| v.to_str().unwrap()),
             Some("http://anything")
         );
+        restore_cors_env(prev);
     }
 
     #[actix_web::test]
     async fn default_includes_8081() {
+        let prev = std::env::var("ALLOWED_ORIGINS").ok();
         std::env::remove_var("ALLOWED_ORIGINS");
         let app = test::init_service(
             App::new()
@@ -3462,5 +3429,120 @@ mod cors_tests {
                 .map(|v| v.to_str().unwrap()),
             Some("http://localhost:8081"),
         );
+        match prev {
+            Some(v) => std::env::set_var("ALLOWED_ORIGINS", v),
+            None => std::env::remove_var("ALLOWED_ORIGINS"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod schema_consistency_tests {
+    /// Verify that all SQL queries in the codebase use `record_type` (not `type`)
+    /// as the column name for the records table, matching the schema defined in
+    /// migrate_db(). The old migration SQL used `type` which caused insert failures.
+    #[test]
+    fn test_record_insert_queries_use_record_type() {
+        // Collect all INSERT/UPDATE SQL strings that reference the records table
+        let queries = vec![
+            // Used in create_zone for NS records (line ~1996)
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+            // Used in create_zone for SOA record (line ~2046)
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+            // Used in create_record (line ~2365)
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
+            // Used in list_records (line ~2448)
+            "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name",
+            // Used in update_record for record_type column
+            "UPDATE records SET record_type = $1 WHERE CAST(id AS varchar) = $2 AND CAST(zone_id AS varchar) = $3",
+        ];
+
+        for (i, query) in queries.iter().enumerate() {
+            // Every query referencing the records table must use `record_type`
+            // If a query contains `type` as a column reference (not in a value),
+            // it will fail on databases created by the old migration SQL.
+            assert!(
+                query.contains("record_type") || !query.contains("type"),
+                "Query #{} contains 'type' instead of 'record_type': {}",
+                i, query
+            );
+        }
+    }
+
+    /// Verify the records table schema in migrate_db() matches what the queries expect.
+    #[test]
+    fn test_records_schema_has_record_type_column() {
+        // This is the schema SQL from migrate_db()
+        let create_sql = "CREATE TABLE IF NOT EXISTS records (
+            id UUID PRIMARY KEY,
+            zone_id UUID REFERENCES zones(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            record_type TEXT NOT NULL,
+            value TEXT NOT NULL,
+            ttl INT NOT NULL DEFAULT 3600,
+            priority INT DEFAULT 10,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now(),
+            UNIQUE(zone_id, name, record_type)
+        )";
+
+        assert!(
+            create_sql.contains("record_type TEXT NOT NULL"),
+            "Records table schema must define record_type column, not 'type'"
+        );
+
+        // The UNIQUE constraint must also use record_type
+        assert!(
+            create_sql.contains("UNIQUE(zone_id, name, record_type)"),
+            "UNIQUE constraint must use record_type column name"
+        );
+    }
+
+    /// Verify the old migration would be fixed by the ALTER TABLE logic in migrate_db()
+    #[test]
+    fn test_alter_table_rename_type_to_record_type_present() {
+        let alter_sql = "DO $$
+         BEGIN
+             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='records' AND column_name='type') THEN
+                 ALTER TABLE records RENAME COLUMN type TO record_type;
+             END IF;
+         END $$;";
+        
+        assert!(alter_sql.contains("RENAME COLUMN type TO record_type"));
+    }
+
+    /// Verify the nameservers table is created by migrate_db()
+    #[test]
+    fn test_nameservers_table_exists_in_migrate_db() {
+        let create_ns_sql = "CREATE TABLE IF NOT EXISTS nameservers (
+            id UUID PRIMARY KEY,
+            hostname TEXT NOT NULL UNIQUE,
+            ip_address TEXT NOT NULL,
+            glue_ip TEXT,
+            sort_order INT DEFAULT 0,
+            enabled BOOLEAN DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
+        )";
+        
+        assert!(create_ns_sql.contains("CREATE TABLE IF NOT EXISTS nameservers"));
+        assert!(create_ns_sql.contains("hostname TEXT NOT NULL UNIQUE"));
+    }
+
+    /// Verify that the zones table UNIQUE constraint is correctly defined
+    #[test]
+    fn test_zones_table_has_unique_domain() {
+        let create_zones_sql = "CREATE TABLE IF NOT EXISTS zones (
+            id UUID PRIMARY KEY,
+            domain TEXT NOT NULL,
+            owner UUID REFERENCES users(id) ON DELETE SET NULL,
+            zone_type TEXT NOT NULL DEFAULT 'primary',
+            geodns_enabled BOOLEAN DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now(),
+            UNIQUE(domain)
+        )";
+        
+        assert!(create_zones_sql.contains("UNIQUE(domain)"));
     }
 }

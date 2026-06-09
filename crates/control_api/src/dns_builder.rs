@@ -5,7 +5,7 @@
 //! validated before persistence using Hickory DNS validation APIs.
 
 use anyhow::{anyhow, Context, Result};
-use hickory_proto::rr::{domain::Name, Record};
+use hickory_proto::rr::Record;
 use std::fs;
 use std::path::Path;
 use log::{debug, warn};
