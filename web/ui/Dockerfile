@@ -6,6 +6,11 @@ FROM node:20-alpine AS builder
 # Set working directory
 WORKDIR /app
 
+# Build-time configuration for API base URL
+# Default: /api (same-origin through nginx proxy, avoids CORS)
+ARG VITE_API_BASE_URL=/api
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
 # Copy package files first for better caching
 COPY package.json package-lock.json* ./
 
