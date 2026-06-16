@@ -36,7 +36,7 @@ services:
       HICKORY_DNS_DIR: "/etc/hickory"
       GEOIP_DB_PATH: "/etc/hickory/GeoLite2-Country.mmdb"
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
     volumes:
       - ./deploy/dns:/etc/hickory:rw
       - /etc/group:/etc/group:ro
