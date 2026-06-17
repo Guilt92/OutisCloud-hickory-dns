@@ -64,8 +64,6 @@ services:
     build:
       context: ./web/ui
       dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: /api
     container_name: outiscloud-ui
     ports:
       - "${UI_PORT:-8081}:80"

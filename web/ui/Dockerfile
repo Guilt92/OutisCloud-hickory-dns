@@ -7,8 +7,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Build-time configuration for API base URL
-# Default: /api (same-origin through nginx proxy, avoids CORS)
-ARG VITE_API_BASE_URL=/api
+# Default: empty (same-origin through nginx proxy, avoids CORS)
+# The code in client.js uses '' as fallback, so all API paths with
+# /api prefix resolve relative to the current origin.
+ARG VITE_API_BASE_URL=""
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 
 # Copy package files first for better caching
