@@ -83,11 +83,12 @@ services:
       RUST_LOG: info
       GEOIP_DB_PATH: /etc/outiscloud/GeoLite2-Country.mmdb
     ports:
-      # Bind to the host LAN IP, not 0.0.0.0: systemd-resolved holds
-      # 127.0.0.53:53 / 127.0.0.54:53, which makes a wildcard bind of port 53
-      # fail with "address already in use".
-      - "${DNS_BIND_IP:-192.168.1.186}:53:53/udp"
-      - "${DNS_BIND_IP:-192.168.1.186}:53:53/tcp"
+      # Bind to all interfaces by default. Set DNS_BIND_IP to a specific host
+      # interface when port 53 is already reserved on the server (e.g. by the
+      # systemd-resolved stub), which would otherwise make a wildcard bind fail
+      # with "address already in use".
+      - "${DNS_BIND_IP:-0.0.0.0}:53:53/udp"
+      - "${DNS_BIND_IP:-0.0.0.0}:53:53/tcp"
       - "${DOT_PORT:-853}:853/tcp"  # DoT
     volumes:
       - ./deploy/dns:/etc/hickory:ro
