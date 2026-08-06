@@ -69,7 +69,15 @@ pub fn validate_record_name(
     let fqdn = if trimmed.ends_with('.') {
         trimmed.to_string()
     } else if let Some(origin) = origin {
-        format!("{}.{}", trimmed.trim_end_matches('.'), origin)
+        let origin_str = origin.to_string();
+        let origin_base = origin_str.trim_end_matches('.');
+        // If the name already contains the zone domain (e.g. "ns1.example.com"
+        // for origin "example.com.") it only needs to be made absolute.
+        if trimmed == origin_base || trimmed.ends_with(&format!(".{}", origin_base)) {
+            normalize_to_fqdn(trimmed)
+        } else {
+            format!("{}.{}", trimmed.trim_end_matches('.'), origin)
+        }
     } else {
         normalize_to_fqdn(trimmed)
     };

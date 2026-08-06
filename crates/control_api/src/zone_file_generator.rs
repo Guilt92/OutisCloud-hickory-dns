@@ -29,7 +29,15 @@ fn fqdn_for_record(name: &str, domain: &str) -> String {
     } else if name.ends_with('.') {
         name.to_string()
     } else {
-        ensure_trailing_dot(&format!("{}.{}", name.trim_end_matches('.'), domain_base))
+        let trimmed = name.trim_end_matches('.');
+        // Users may supply the full hostname (e.g. "ns1.uid0.ir") instead of a
+        // bare label (e.g. "www"). If the name already contains the zone domain
+        // there is no need to append the origin a second time.
+        if trimmed == domain_base || trimmed.ends_with(&format!(".{}", domain_base)) {
+            ensure_trailing_dot(trimmed)
+        } else {
+            ensure_trailing_dot(&format!("{}.{}", trimmed, domain_base))
+        }
     }
 }
 
@@ -106,6 +114,8 @@ pub fn generate_from_data(
 
         let recs = records_map.get(zone_id).cloned().unwrap_or_default();
         let domain_dot = ensure_trailing_dot(domain.trim_end_matches('.'));
+        let origin = Name::from_utf8(&domain_dot)
+            .with_context(|| format!("Failed to parse origin for zone {}", domain_dot))?;
 
         // Determine if there is an SOA record in the dataset. Apex NS records
         // are not checked here: they are generated from the nameservers table
@@ -158,8 +168,11 @@ pub fn generate_from_data(
                 )
             })?;
 
-            // Serialize to zone format using Hickory's Record::to_string()
-            let text = record.to_zone_string().with_context(|| {
+            // Serialize to zone format using Hickory's Record::to_string().
+            // The origin qualifier makes sure any relative domain name in the
+            // RDATA (e.g. SOA mname/rname) is written fully-qualified so the
+            // zone parser does not append the origin a second time.
+            let text = record.to_zone_string_with_origin(&origin).with_context(|| {
                 format!(
                     "Failed to serialize record {} {} {} for zone {}",
                     fqdn, r.rtype, r.value, domain
@@ -189,18 +202,18 @@ pub fn generate_from_data(
             
             // Check if this nameserver hostname is a subdomain of the current zone
             if ns_hostname != zone_domain && ns_hostname.ends_with(&format!(".{}", zone_domain)) {
-                // Add glue A record
+                // Add glue A record. The hostname must be written as a
+                // fully-qualified name: a relative name here would have the zone
+                // origin appended by the zone parser (e.g. ns1.uid0.ir.uid0.ir.).
                 let ip = ns_row.ip_address.trim();
                 if !ip.is_empty() {
-                    zone_contents.push_str(&format!("{} 3600 IN A {}\n", ns_hostname, ip));
+                    zone_contents.push_str(&format!("{} 3600 IN A {}\n", ensure_trailing_dot(&ns_hostname), ip));
                 }
             }
         }
 
         // Write zone file with Hickory validation (final validation gate)
         debug!("Writing zone file for {}", domain);
-        let origin = Name::from_utf8(&domain_dot)
-            .with_context(|| format!("Failed to parse origin for zone {}", domain_dot))?;
         SafeZoneFileWriter::write_validated(&zone_path, &zone_contents, Some(&origin))
             .with_context(|| format!("Zone file validation failed for {}: Hickory parser rejected zone structure", domain))?;
 
@@ -384,6 +397,9 @@ mod tests {
         assert_eq!(fqdn_for_record("www", "example.com"), "www.example.com.");
         assert_eq!(fqdn_for_record("www.", "example.com"), "www.");
         assert_eq!(fqdn_for_record("sub", "example.com."), "sub.example.com.");
+        // full hostnames containing the zone domain must not be doubled
+        assert_eq!(fqdn_for_record("ns1.example.com", "example.com"), "ns1.example.com.");
+        assert_eq!(fqdn_for_record("ns1.example.com", "example.com."), "ns1.example.com.");
     }
 
     #[test]
@@ -616,9 +632,9 @@ mod tests {
         assert!(contents.contains("IN NS ns1.example.com."));
         assert!(contents.contains("IN NS ns2.example.com."));
         assert!(!contents.contains("ns1.stale.com"));
-        // Glue A records for the in-zone nameserver hostnames.
-        assert!(contents.contains("ns1.example.com 3600 IN A 51.68.254.5"));
-        assert!(contents.contains("ns2.example.com 3600 IN A 51.68.254.6"));
+        // Glue A records for the in-zone nameserver hostnames (FQDN form).
+        assert!(contents.contains("ns1.example.com. 3600 IN A 51.68.254.5"));
+        assert!(contents.contains("ns2.example.com. 3600 IN A 51.68.254.6"));
         // Regular records are still present.
         assert!(contents.contains("IN A 1.2.3.4"));
     }

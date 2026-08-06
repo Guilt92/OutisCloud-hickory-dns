@@ -465,14 +465,19 @@ impl Context {
         //  then check the Type again and have custom add logic.
         let set_ttl = match (rtype, self.ttl, &rdata) {
             // TTL for the SOA is set internally...
-            // expire is for the SOA, minimum is default for records
+            // honor an explicit TTL on the SOA line, otherwise fall back to the
+            // SOA MINIMUM which is the conventional default for the zone. Using
+            // the EXPIRE value here (as older releases did) made the served SOA
+            // TTL depend on a retry/expire timer which is not what operators
+            // specify in the zone file.
             (RecordType::SOA, _, RData::SOA(soa)) => {
-                // TODO, this looks wrong, get_expire() should be get_minimum(), right?
-                let set_ttl = soa.expire() as u32; // the spec seems a little inaccurate with u32 and i32
-                if self.ttl.is_none() {
-                    self.ttl = Some(soa.minimum());
-                } // TODO: should this only set it if it's not set?
-                set_ttl
+                if let Some(ttl) = self.ttl {
+                    ttl
+                } else {
+                    let minimum = soa.minimum();
+                    self.ttl = Some(minimum);
+                    minimum
+                }
             }
             (RecordType::SOA, _, _) => {
                 return ParseResult::Err(ParseError::from(format!(

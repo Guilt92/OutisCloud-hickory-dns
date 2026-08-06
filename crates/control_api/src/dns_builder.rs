@@ -5,7 +5,7 @@
 //! validated before persistence using Hickory DNS validation APIs.
 
 use anyhow::{anyhow, Context, Result};
-use hickory_proto::rr::Record;
+use hickory_proto::rr::{Name, Record, RData};
 use std::fs;
 use std::path::Path;
 use log::{debug, warn};
@@ -46,10 +46,19 @@ impl DnsRecord {
             .map_err(|err| anyhow!(err.to_string()))
     }
 
-    /// Return the record in zone file text format.
-    /// Validates by converting to Hickory Record first.
-    pub fn to_zone_string(&self) -> Result<String> {
-        Ok(self.to_hickory_record()?.to_string())
+    /// Return the record in zone file text format, qualifying any relative
+    /// names embedded in the RDATA (e.g. SOA mname/rname) with the zone origin.
+    ///
+    /// Record values coming from the database may contain domain names without a
+    /// trailing dot (for example `ns1.uid0.ir` instead of `ns1.uid0.ir.`). When
+    /// such a relative name is written to a zone file the Hickory zone parser
+    /// appends the origin again, producing doubled names such as
+    /// `ns1.uid0.ir.uid0.ir.`. This method rewrites relative RDATA names so the
+    /// generated zone file contains fully-qualified names instead.
+    pub fn to_zone_string_with_origin(&self, origin: &Name) -> Result<String> {
+        let mut record = self.to_hickory_record()?;
+        record.set_data(absolutize_rdata(record.data().clone(), origin));
+        Ok(record.to_string())
     }
 
     /// Validates that this record can be converted to a Hickory Record.
@@ -79,6 +88,71 @@ impl DnsRecord {
         } else {
             self.to_hickory_record().map(|_| ())
         }
+    }
+}
+
+/// Ensure `name` is written as a fully-qualified name.
+///
+/// Relative names are qualified with the zone `origin`. Names that already
+/// contain the zone domain (e.g. `ns1.uid0.ir` for origin `uid0.ir.`) are only
+/// given a trailing dot rather than having the origin appended a second time.
+fn absolutize_name(name: Name, origin: &Name) -> Name {
+    if name.is_fqdn() {
+        return name;
+    }
+    let ascii = name.to_string();
+    let origin_str = origin.to_string();
+    let origin_base = origin_str.trim_end_matches('.');
+    if ascii == origin_base || ascii.ends_with(&format!(".{}", origin_base)) {
+        Name::from_utf8(format!("{}.", ascii)).unwrap_or(name)
+    } else {
+        // append_domain consumes the name; fall back to a re-parsed absolute
+        // name (the value was already validated) on failure
+        name.append_domain(origin)
+            .unwrap_or_else(|_| Name::from_utf8(format!("{}.", ascii)).expect("name parses"))
+    }
+}
+
+/// Rewrites relative domain names embedded in RDATA to fully-qualified names.
+///
+/// This applies to every RDATA type that carries a host/domain name: SOA
+/// (mname/rname), NS, CNAME, PTR, ANAME, MX, SRV and NAPTR.
+fn absolutize_rdata(rdata: RData, origin: &Name) -> RData {
+    use hickory_proto::rr::rdata::{ANAME, CNAME, MX, NAPTR, NS, PTR, SOA, SRV};
+
+    match rdata {
+        RData::SOA(soa) => RData::SOA(SOA::new(
+            absolutize_name(soa.mname().clone(), origin),
+            absolutize_name(soa.rname().clone(), origin),
+            soa.serial(),
+            soa.refresh(),
+            soa.retry(),
+            soa.expire(),
+            soa.minimum(),
+        )),
+        RData::NS(ns) => RData::NS(NS(absolutize_name(ns.0, origin))),
+        RData::CNAME(cname) => RData::CNAME(CNAME(absolutize_name(cname.0, origin))),
+        RData::PTR(ptr) => RData::PTR(PTR(absolutize_name(ptr.0, origin))),
+        RData::ANAME(aname) => RData::ANAME(ANAME(absolutize_name(aname.0, origin))),
+        RData::MX(mx) => RData::MX(MX::new(
+            mx.preference(),
+            absolutize_name(mx.exchange().clone(), origin),
+        )),
+        RData::SRV(srv) => RData::SRV(SRV::new(
+            srv.priority(),
+            srv.weight(),
+            srv.port(),
+            absolutize_name(srv.target().clone(), origin),
+        )),
+        RData::NAPTR(naptr) => RData::NAPTR(NAPTR::new(
+            naptr.order(),
+            naptr.preference(),
+            naptr.flags().to_vec().into_boxed_slice(),
+            naptr.services().to_vec().into_boxed_slice(),
+            naptr.regexp().to_vec().into_boxed_slice(),
+            absolutize_name(naptr.replacement().clone(), origin),
+        )),
+        other => other,
     }
 }
 
@@ -376,6 +450,39 @@ mod tests {
         assert!(result.is_ok());
         let record = result.unwrap();
         assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_to_zone_string_with_origin_qualifies_soa_names() {
+        let origin = Name::from_utf8("example.com.").unwrap();
+        // SOA mname/rname entered relative (no trailing dot) must be written
+        // fully-qualified so they are not doubled by the zone parser.
+        let record = DnsRecordBuilder::from_db_fields(
+            "example.com.".to_string(),
+            "SOA".to_string(),
+            "ns1.example.com hostmaster.example.com 2026080600 3600 3600 604800 3600".to_string(),
+            3600,
+            0,
+        )
+        .unwrap();
+        let text = record.to_zone_string_with_origin(&origin).unwrap();
+        assert!(text.contains("SOA ns1.example.com. hostmaster.example.com."), "was: {text}");
+        assert!(!text.contains(".example.com.example.com"));
+    }
+
+    #[test]
+    fn test_to_zone_string_with_origin_keeps_absolute_soa() {
+        let origin = Name::from_utf8("example.com.").unwrap();
+        let record = DnsRecordBuilder::from_db_fields(
+            "example.com.".to_string(),
+            "SOA".to_string(),
+            "ns1.example.com. hostmaster.example.com. 2024010101 3600 3600 604800 3600".to_string(),
+            3600,
+            0,
+        )
+        .unwrap();
+        let text = record.to_zone_string_with_origin(&origin).unwrap();
+        assert!(text.contains("SOA ns1.example.com. hostmaster.example.com."), "was: {text}");
     }
 
     #[test]
