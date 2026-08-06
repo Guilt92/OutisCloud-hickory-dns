@@ -22,15 +22,14 @@ use prometheus::{TextEncoder, Encoder};
 use prometheus::gather;
 use chrono::TimeZone;
 
+/// Generate a cryptographically random salt for password/agent-token hashing.
 fn generate_salt() -> SaltString {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let salt_bytes = timestamp.to_le_bytes();
-    let salt_b64 = base64_encode(&salt_bytes);
-    SaltString::from_b64(&salt_b64).unwrap_or_else(|_| SaltString::from_b64("ABCD1234EFGH5678IJKL").unwrap())
+    use rand_core::{OsRng, RngCore};
+
+    let mut salt_bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut salt_bytes);
+    SaltString::encode_b64(&salt_bytes)
+        .unwrap_or_else(|_| SaltString::from_b64("ABCD1234EFGH5678IJKL").unwrap())
 }
 
 /// Hash a token for storage in the blacklist
@@ -40,29 +39,6 @@ fn hash_token(token: &str) -> String {
     let mut hasher = DefaultHasher::new();
     token.hash(&mut hasher);
     format!("{:x}", hasher.finish())
-}
-
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    for chunk in data.chunks(3) {
-        let n = ((chunk[0] as u32) << 16) |
-                (((*chunk.get(1).unwrap_or(&0u8)) as u32) << 8) |
-                ((*chunk.get(2).unwrap_or(&0u8)) as u32);
-        result.push(CHARS[((n >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((n >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((n >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(n & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
 }
 
 /// Build a CORS middleware instance based on the `ALLOWED_ORIGINS`
@@ -950,7 +926,25 @@ async fn admin_reset_password(body: web::Json<AdminResetPasswordReq>, data: web:
     }
 }
 
-async fn create_user(req: web::Json<LoginRequest>, data: web::Data<AppState>) -> impl Responder {
+async fn create_user(req: web::Json<LoginRequest>, data: web::Data<AppState>, http_req: HttpRequest) -> impl Responder {
+    // Account creation is admin-only; without this check any unauthenticated
+    // caller could register accounts.
+    let tok = match auth_from_header(&http_req, &data.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "unauthorized",
+                "details": "Authentication required"
+            }));
+        }
+    };
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "forbidden",
+            "details": "Admin role required"
+        }));
+    }
+
     // Validate input
     let username = req.username.trim();
     if username.is_empty() || username.len() < 3 {
@@ -1216,7 +1210,7 @@ async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Respo
     
     // Query servers
     match (&*data.db).query(
-        "SELECT CAST(id AS varchar), name, address FROM servers ORDER BY name", 
+        "SELECT CAST(id AS varchar), name, address, port, COALESCE(region, ''), enabled, dnssec, enable_logging, max_cache_ttl, min_cache_ttl FROM servers ORDER BY name", 
         &[]
     ).await {
         Ok(rows) => {
@@ -1224,13 +1218,13 @@ async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Respo
                 id: r.try_get(0).unwrap_or_default(),
                 name: r.try_get(1).unwrap_or_default(),
                 address: r.try_get(2).unwrap_or_default(),
-                port: 53,  // default value
-                region: None,
-                enabled: true,  // default value
-                dnssec: false,  // default value
-                enable_logging: true,  // default value
-                max_cache_ttl: 3600,  // default value
-                min_cache_ttl: 60,  // default value
+                port: r.try_get(3).unwrap_or(53),
+                region: Some(r.try_get(4).unwrap_or_default()).filter(|s: &String| !s.is_empty()),
+                enabled: r.try_get(5).unwrap_or(true),
+                dnssec: r.try_get(6).unwrap_or(false),
+                enable_logging: r.try_get(7).unwrap_or(true),
+                max_cache_ttl: r.try_get(8).unwrap_or(3600),
+                min_cache_ttl: r.try_get(9).unwrap_or(60),
                 status: None,
             }).collect();
             HttpResponse::Ok().json(servers)
@@ -1296,8 +1290,8 @@ async fn create_server(body: web::Json<CreateServerReq>, data: web::Data<AppStat
     let id_str = id.to_string();
     
     match (&*data.db).execute(
-        "INSERT INTO servers (id, name, address, region) VALUES ($1::text::uuid, $2, $3, $4)", 
-        &[&id_str, &body.name, &body.address, &body.region]
+        "INSERT INTO servers (id, name, address, port, region, enabled, dnssec, enable_logging, max_cache_ttl, min_cache_ttl) VALUES ($1::text::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10)", 
+        &[&id_str, &body.name, &body.address, &body.port.unwrap_or(53), &body.region, &body.enabled.unwrap_or(true), &body.dnssec.unwrap_or(false), &body.enable_logging.unwrap_or(true), &body.max_cache_ttl.unwrap_or(3600), &body.min_cache_ttl.unwrap_or(60)]
     ).await {
         Ok(_) => {
             info!("Created server: {} at {}", body.name, body.address);
@@ -1535,7 +1529,25 @@ struct AgentRegisterResponse {
     token: String,
 }
 
-async fn agent_register(body: web::Json<AgentRegistration>, data: web::Data<AppState>) -> impl Responder {
+async fn agent_register(body: web::Json<AgentRegistration>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+    // Agent registration issues a valid agent token that can later pull the
+    // full zone list, so it must require an authenticated admin.
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "unauthorized",
+                "details": "Authentication required"
+            }));
+        }
+    };
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "forbidden",
+            "details": "Admin role required"
+        }));
+    }
+
     // Validate input
     if body.name.trim().is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -1750,7 +1762,26 @@ struct CreateGeoRuleReq {
 }
 
 async fn create_georule(body: web::Json<CreateGeoRuleReq>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
-    if auth_from_header(&req, &data.inner.jwt_secret).is_none() { return HttpResponse::Unauthorized().finish(); }
+    let tok = match auth_from_header(&req, &data.inner.jwt_secret) {
+        Some(t) => t,
+        None => return HttpResponse::Unauthorized().finish(),
+    };
+
+    // Rules may only be created by an admin or the owner of the target zone.
+    if tok.claims.role != "admin" {
+        let owner_check = (&*data.inner.db).query_opt(
+            "SELECT CAST(owner AS varchar) FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&body.zone_id],
+        ).await;
+        let is_owner = matches!(
+            owner_check,
+            Ok(Some(row)) if row.try_get::<_, String>(0).ok().as_deref() == Some(&tok.claims.sub)
+        );
+        if !is_owner {
+            return HttpResponse::Forbidden().json(serde_json::json!({"error": "access denied"}));
+        }
+    }
+
     let id = Uuid::new_v4();
     let zone_uuid = match Uuid::parse_str(&body.zone_id) {
         Ok(z) => z,
@@ -1813,10 +1844,28 @@ async fn update_georule(
     data: web::Data<FullState>,
     req: HttpRequest,
 ) -> impl Responder {
-    if auth_from_header(&req, &data.inner.jwt_secret).is_none() {
-        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
-    }
+    let tok = match auth_from_header(&req, &data.inner.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+        }
+    };
     let rule_id = path.into_inner();
+
+    // Rules may only be updated by an admin or the owner of the target zone.
+    if tok.claims.role != "admin" {
+        let owner_check = (&*data.inner.db).query_opt(
+            "SELECT CAST(z.owner AS varchar) FROM georules g JOIN zones z ON z.id = g.zone_id WHERE CAST(g.id AS varchar) = $1",
+            &[&rule_id],
+        ).await;
+        let is_owner = matches!(
+            owner_check,
+            Ok(Some(row)) if row.try_get::<_, String>(0).ok().as_deref() == Some(&tok.claims.sub)
+        );
+        if !is_owner {
+            return HttpResponse::Forbidden().json(serde_json::json!({"error": "access denied"}));
+        }
+    }
 
     // Build dynamic query parts
     let mut updates = Vec::new();
@@ -1893,10 +1942,29 @@ async fn update_georule(
 }
 
 async fn delete_georule(path: web::Path<String>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
-    if auth_from_header(&req, &data.inner.jwt_secret).is_none() {
-        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
-    }
+    let tok = match auth_from_header(&req, &data.inner.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+        }
+    };
     let rule_id = path.into_inner();
+
+    // Rules may only be deleted by an admin or the owner of the target zone.
+    if tok.claims.role != "admin" {
+        let owner_check = (&*data.inner.db).query_opt(
+            "SELECT CAST(z.owner AS varchar) FROM georules g JOIN zones z ON z.id = g.zone_id WHERE CAST(g.id AS varchar) = $1",
+            &[&rule_id],
+        ).await;
+        let is_owner = matches!(
+            owner_check,
+            Ok(Some(row)) if row.try_get::<_, String>(0).ok().as_deref() == Some(&tok.claims.sub)
+        );
+        if !is_owner {
+            return HttpResponse::Forbidden().json(serde_json::json!({"error": "access denied"}));
+        }
+    }
+
     match (&*data.inner.db).execute("DELETE FROM georules WHERE CAST(id AS varchar) = $1", &[&rule_id]).await {
         Ok(_) => {
             // regenerate config after deletion
@@ -2073,13 +2141,18 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
                 }
             }
             
-            // Add default SOA record (serial will be bumped later during file
-            // generation).
+            // Add default SOA record with a date-based serial (YYYYMMDD00).
+            // The serial advances whenever a zone is created on a later day, so
+            // secondary servers and caches pick up the new zone. The serial is
+            // kept in sync with the one used by the auto-generated SOA in
+            // zone_file_generator.
             let soa_id = Uuid::new_v4().to_string();
+            let serial = chrono::Utc::now().format("%Y%m%d00").to_string();
             let soa_value = format!(
-                "ns1.{} hostmaster.{} 1 3600 3600 604800 3600",
+                "ns1.{} hostmaster.{} {} 3600 3600 604800 3600",
                 domain.trim_end_matches('.'),
-                domain.trim_end_matches('.')
+                domain.trim_end_matches('.'),
+                serial
             );
             if let Err(e) = (&*data.db).execute(
                 "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
@@ -2191,7 +2264,11 @@ struct GeoResolveRequest {
 
 /// Resolve a DNS response for a zone based on client's geographic location.
 /// Uses GeoRules to determine which target address to return.
-async fn resolve_by_geo(body: web::Json<GeoResolveRequest>, data: web::Data<FullState>) -> impl Responder {
+async fn resolve_by_geo(body: web::Json<GeoResolveRequest>, data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
+    if auth_from_header(&req, &data.inner.jwt_secret).is_none() {
+        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+    }
+
     // Parse client IP
     let client_ip = match body.client_ip.parse::<std::net::IpAddr>() {
         Ok(ip) => ip,
@@ -2364,10 +2441,26 @@ async fn push_config_to_agents(
         // Check zone existence and ownership
         let zone_id_str = zone_id.to_string();
 
-        // Validate NS records against allowed nameservers
+        // Validate NS records against allowed nameservers. The nameservers
+        // table is the source of truth; the environment variable is only a
+        // fallback for deployments that never populated the table.
         let rtype_upper = body.record_type.to_uppercase();
         if rtype_upper == "NS" {
-            let allowed_ns = get_global_nameservers();
+            let ns_rows = (&*data.db)
+                .query(
+                    "SELECT hostname FROM nameservers WHERE enabled = true ORDER BY sort_order, hostname",
+                    &[],
+                )
+                .await
+                .unwrap_or_default();
+            let allowed_ns: Vec<String> = if ns_rows.is_empty() {
+                get_global_nameservers()
+            } else {
+                ns_rows
+                    .iter()
+                    .filter_map(|r| r.try_get::<_, String>(0).ok())
+                    .collect()
+            };
             if let Err(e) = validate_ns_value(&body.value, &allowed_ns) {
                 return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
             }
@@ -2803,15 +2896,29 @@ async fn push_config_to_agents(
                     geodns_enabled: row.try_get(5).unwrap_or(true),
                 };
                 
-                // Get NS records for this zone
+                // Get NS records for this zone. The nameservers table is the
+                // source of truth for the authoritative nameservers; apex NS
+                // rows in the records table are only a fallback for older
+                // deployments that never populated the table.
                 let ns_rows = (&*data.db).query(
-                    "SELECT value FROM records WHERE CAST(zone_id AS varchar) = $1 AND record_type = 'NS' AND name = '@'",
-                    &[&zone_id]
+                    "SELECT hostname FROM nameservers WHERE enabled = true ORDER BY sort_order, hostname",
+                    &[]
                 ).await.unwrap_or_default();
                 
-                let nameservers: Vec<String> = ns_rows.into_iter()
-                    .filter_map(|r| r.try_get(0).ok())
-                    .collect();
+                let nameservers: Vec<String> = if !ns_rows.is_empty() {
+                    ns_rows.iter()
+                        .filter_map(|r| r.try_get::<_, String>(0).ok())
+                        .map(|h| if h.ends_with('.') { h } else { format!("{}.", h) })
+                        .collect()
+                } else {
+                    (&*data.db).query(
+                        "SELECT value FROM records WHERE CAST(zone_id AS varchar) = $1 AND record_type = 'NS' AND name = '@'",
+                        &[&zone_id]
+                    ).await.unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|r| r.try_get::<_, String>(0).ok())
+                        .collect()
+                };
                 
                 #[derive(Serialize)]
                 struct ZoneWithNameservers {

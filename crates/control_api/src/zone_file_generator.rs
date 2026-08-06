@@ -107,14 +107,15 @@ pub fn generate_from_data(
         let recs = records_map.get(zone_id).cloned().unwrap_or_default();
         let domain_dot = ensure_trailing_dot(domain.trim_end_matches('.'));
 
-        // Determine if there is an SOA and NS record in the dataset
+        // Determine if there is an SOA record in the dataset. Apex NS records
+        // are not checked here: they are generated from the nameservers table
+        // below, so any apex NS rows in the records table are skipped during
+        // generation to avoid duplicates and stale values.
         let mut has_soa = false;
-        let mut has_ns = false;
         for r in &recs {
-            match r.rtype.to_uppercase().as_str() {
-                "SOA" => has_soa = true,
-                "NS" => has_ns = true,
-                _ => {}
+            if r.rtype.eq_ignore_ascii_case("SOA") {
+                has_soa = true;
+                break;
             }
         }
 
@@ -135,6 +136,11 @@ pub fn generate_from_data(
 
         // Process each record - validation delegates entirely to Hickory DNS via DnsRecordBuilder
         for r in recs {
+            // Apex NS records are generated from the nameservers table below;
+            // skip stored apex NS rows to avoid duplicates and stale values.
+            if r.rtype.eq_ignore_ascii_case("NS") && r.name == "@" {
+                continue;
+            }
             let fqdn = fqdn_for_record(&r.name, &domain);
 
             // Build and validate record through Hickory DNS (from_db_fields calls validate internally)
@@ -163,10 +169,31 @@ pub fn generate_from_data(
             zone_contents.push('\n');
         }
 
-        // Add default NS records if none exist
-        if !has_ns {
-            for ns in &default_ns {
-                zone_contents.push_str(&format!("{} 3600 IN NS {}\n", domain_dot, ns));
+        // Nameserver (NS) records at the zone apex. The nameservers table is
+        // the source of truth for the authoritative nameservers and applies to
+        // every zone, so always emit the enabled ones here. Previously NS
+        // records were only added when the zone had no NS rows at all, which
+        // meant existing zones kept serving stale NS after nameserver changes.
+        for ns in &default_ns {
+            zone_contents.push_str(&format!("{} 3600 IN NS {}\n", domain_dot, ns));
+        }
+        
+        // Glue records: Add A records for nameserver hostnames that are under this zone
+        // This is needed when a nameserver hostname points to an IP that's inside the zone
+        for ns_row in &nameservers {
+            if !ns_row.enabled {
+                continue;
+            }
+            let ns_hostname = ns_row.hostname.trim_end_matches('.');
+            let zone_domain = domain_dot.trim_end_matches('.');
+            
+            // Check if this nameserver hostname is a subdomain of the current zone
+            if ns_hostname != zone_domain && ns_hostname.ends_with(&format!(".{}", zone_domain)) {
+                // Add glue A record
+                let ip = ns_row.ip_address.trim();
+                if !ip.is_empty() {
+                    zone_contents.push_str(&format!("{} 3600 IN A {}\n", ns_hostname, ip));
+                }
             }
         }
 
@@ -533,5 +560,66 @@ mod tests {
         if let Some(v) = previous {
             std::env::set_var("PUBLIC_NAMESERVERS", v);
         }
+    }
+
+    #[tokio::test]
+    async fn test_apex_ns_from_nameservers_table_with_glue() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+
+        let zones = vec![("id1".to_string(), "example.com".to_string(), true)];
+        // The records table holds a stale apex NS row; it must be replaced by
+        // the nameservers from the nameservers table.
+        let mut recs = HashMap::new();
+        recs.insert(
+            "id1".to_string(),
+            vec![
+                RecordRow {
+                    name: "@".into(),
+                    rtype: "NS".into(),
+                    value: "ns1.stale.com.".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+                RecordRow {
+                    name: "www".into(),
+                    rtype: "A".into(),
+                    value: "1.2.3.4".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+            ],
+        );
+        let geo = HashMap::new();
+        let nameservers = vec![
+            NameserverRow {
+                hostname: "ns1.example.com.".into(),
+                ip_address: "51.68.254.5".into(),
+                glue_ip: None,
+                sort_order: 0,
+                enabled: true,
+            },
+            NameserverRow {
+                hostname: "ns2.example.com.".into(),
+                ip_address: "51.68.254.6".into(),
+                glue_ip: None,
+                sort_order: 1,
+                enabled: true,
+            },
+        ];
+
+        generate_from_data(base, zones, recs, geo, nameservers).unwrap();
+
+        let zonefile = dir.path().join("zone.example.com");
+        let contents = fs::read_to_string(&zonefile).unwrap();
+        // Both nameservers are served at the apex; the stale one is gone.
+        assert!(contents.contains("IN NS ns1.example.com."));
+        assert!(contents.contains("IN NS ns2.example.com."));
+        assert!(!contents.contains("ns1.stale.com"));
+        // Glue A records for the in-zone nameserver hostnames.
+        assert!(contents.contains("ns1.example.com 3600 IN A 51.68.254.5"));
+        assert!(contents.contains("ns2.example.com 3600 IN A 51.68.254.6"));
+        // Regular records are still present.
+        assert!(contents.contains("IN A 1.2.3.4"));
     }
 }
