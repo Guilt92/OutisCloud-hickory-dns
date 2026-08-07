@@ -1,9 +1,2 @@
 listen_addrs_ipv4 = ["0.0.0.0"]
 
-[[zones]]
-zone = "uid0.ir."
-zone_type = "Primary"
-[[zones.stores]]
-type = "file"
-zone_path = "/etc/hickory/zone.uid0.ir"
-
