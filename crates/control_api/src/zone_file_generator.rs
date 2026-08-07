@@ -144,12 +144,31 @@ pub fn generate_from_data(
             zone_contents.push_str(&format!("{} 3600 IN SOA {}\n", domain_dot, soa_value));
         }
 
+        let domain_base = domain.trim_end_matches('.');
+
         // Process each record - validation delegates entirely to Hickory DNS via DnsRecordBuilder
+        let mut soa_emitted = false;
         for r in recs {
+            // A zone may only carry a single SOA record. Zone creation already
+            // inserts an apex SOA, so emitting every stored SOA row would
+            // produce a zone file that Hickory's parser rejects ("SOA is
+            // already specified"). Emit only the first SOA row.
+            if r.rtype.eq_ignore_ascii_case("SOA") {
+                if soa_emitted {
+                    continue;
+                }
+                soa_emitted = true;
+            }
+
             // Apex NS records are generated from the nameservers table below;
             // skip stored apex NS rows to avoid duplicates and stale values.
-            if r.rtype.eq_ignore_ascii_case("NS") && r.name == "@" {
-                continue;
+            // The apex matches both "@" and the bare zone domain itself
+            // (e.g. "uid0.ir" or "uid0.ir."), not just subdomains.
+            if r.rtype.eq_ignore_ascii_case("NS") {
+                let name_base = r.name.trim_end_matches('.');
+                if name_base == "@" || name_base == domain_base {
+                    continue;
+                }
             }
             let fqdn = fqdn_for_record(&r.name, &domain);
 
@@ -637,5 +656,99 @@ mod tests {
         assert!(contents.contains("ns2.example.com. 3600 IN A 51.68.254.6"));
         // Regular records are still present.
         assert!(contents.contains("IN A 1.2.3.4"));
+    }
+
+    #[test]
+    fn test_duplicate_soa_rows_emit_only_one() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+
+        let zones = vec![("id1".to_string(), "example.com".to_string(), true)];
+        let mut recs = HashMap::new();
+        recs.insert(
+            "id1".to_string(),
+            vec![
+                RecordRow {
+                    name: "@".into(),
+                    rtype: "SOA".into(),
+                    value: "ns1.example.com hostmaster.example.com 2026010101 3600 3600 604800 3600".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+                // second, stale SOA row (e.g. manually added after zone creation)
+                RecordRow {
+                    name: "@".into(),
+                    rtype: "SOA".into(),
+                    value: "ns1.example.com. hostmaster.example.com. 2026010102 3600 3600 604800 3600".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+            ],
+        );
+        let geo = HashMap::new();
+
+        generate_from_data(base, zones, recs, geo, vec![]).unwrap();
+
+        let zonefile = dir.path().join("zone.example.com");
+        let contents = fs::read_to_string(&zonefile).unwrap();
+        // only one SOA line may ever be emitted (Hickory rejects duplicates)
+        let soa_count = contents.lines().filter(|l| l.contains("IN SOA")).count();
+        assert_eq!(soa_count, 1, "expected exactly one SOA line, got:\n{}", contents);
+    }
+
+    #[test]
+    fn test_apex_ns_skipped_by_domain_name() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap();
+
+        let zones = vec![("id1".to_string(), "example.com".to_string(), false)];
+        let mut recs = HashMap::new();
+        recs.insert(
+            "id1".to_string(),
+            vec![
+                // apex NS stored as the bare zone domain (not "@")
+                RecordRow {
+                    name: "example.com".into(),
+                    rtype: "NS".into(),
+                    value: "ns1.stale.com.".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+                RecordRow {
+                    name: "example.com.".into(),
+                    rtype: "NS".into(),
+                    value: "ns2.stale.com.".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+                // a real subdomain NS must NOT be skipped
+                RecordRow {
+                    name: "sub".into(),
+                    rtype: "NS".into(),
+                    value: "ns3.stale.com.".into(),
+                    ttl: 3600,
+                    priority: 0,
+                },
+            ],
+        );
+        let geo = HashMap::new();
+        let nameservers = vec![NameserverRow {
+            hostname: "ns1.example.com.".into(),
+            ip_address: "51.68.254.5".into(),
+            glue_ip: None,
+            sort_order: 0,
+            enabled: true,
+        }];
+
+        generate_from_data(base, zones, recs, geo, nameservers).unwrap();
+
+        let zonefile = dir.path().join("zone.example.com");
+        let contents = fs::read_to_string(&zonefile).unwrap();
+        // apex NS comes only from the nameservers table
+        assert!(contents.contains("IN NS ns1.example.com."));
+        assert!(!contents.contains("ns1.stale.com"));
+        assert!(!contents.contains("ns2.stale.com"));
+        // subdomain NS record is preserved
+        assert!(contents.contains("sub.example.com. 3600 IN NS ns3.stale.com."), "was:\n{}", contents);
     }
 }

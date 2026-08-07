@@ -2492,7 +2492,31 @@ async fn push_config_to_agents(
         let ttl: i32 = body.ttl as i32;
         let priority: i32 = body.priority.unwrap_or(0);
         let record_type = body.record_type.clone();
-    
+
+        // A zone may only contain a single SOA record. Zone creation already
+        // inserts one, so reject attempts to add a second SOA with a clear
+        // error instead of producing a zone file Hickory rejects.
+        if rtype_upper == "SOA" {
+            let existing_soa = (&*data.db)
+                .query_opt(
+                    "SELECT 1 FROM records WHERE CAST(zone_id AS varchar) = $1 AND record_type = 'SOA' LIMIT 1",
+                    &[&zone_id_str],
+                )
+                .await;
+            match existing_soa {
+                Ok(Some(_)) => {
+                    return HttpResponse::Conflict().json(serde_json::json!({
+                        "error": "SOA record already exists for this zone; update the existing SOA instead of creating a second one"
+                    }));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("SOA existence check error: {}", e);
+                    return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+                }
+            }
+        }
+
         match (&*data.db).execute(
             "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
             &[&id_str, &zone_id_str, &body.name, &record_type, &body.value, &ttl, &priority]
@@ -2612,6 +2636,29 @@ async fn push_config_to_agents(
         if let Some(ref record_type) = body.record_type {
             if let Err(e) = validate_record_type(record_type) {
                 return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            }
+            // A zone may only contain a single SOA record. Reject updates that
+            // would turn an existing record into a second SOA (excluding the
+            // record being updated, which may be the SOA itself).
+            if record_type.eq_ignore_ascii_case("SOA") {
+                let existing_soa = (&*data.db)
+                    .query_opt(
+                        "SELECT 1 FROM records WHERE CAST(zone_id AS varchar) = $1 AND record_type = 'SOA' AND CAST(id AS varchar) <> $2 LIMIT 1",
+                        &[&zone_id, &record_id],
+                    )
+                    .await;
+                match existing_soa {
+                    Ok(Some(_)) => {
+                        return HttpResponse::Conflict().json(serde_json::json!({
+                            "error": "SOA record already exists for this zone; update the existing SOA instead of creating a second one"
+                        }));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("SOA existence check error: {}", e);
+                        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+                    }
+                }
             }
         }
 
@@ -3244,7 +3291,7 @@ async fn main() -> std::io::Result<()> {
                 let salt = generate_salt();
                 let argon2 = Argon2::default();
                 let password_hash = argon2.hash_password(admin_password.as_bytes(), &salt).unwrap().to_string();
-                let id = Uuid::new_v4();
+        let id = Uuid::new_v4();
                 let id_str = id.to_string();
                 let role = "admin";
                 match (&client).execute("INSERT INTO users (id, username, password_hash, role) VALUES ($1::text::uuid, $2, $3, $4)", &[&id_str, &admin_user, &password_hash, &role]).await {
