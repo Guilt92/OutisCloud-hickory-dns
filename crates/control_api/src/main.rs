@@ -9,7 +9,7 @@ mod dns_validator;
 mod dns_builder;
 use dns_manager::DnsManager;
 use dns_validator::*;
-use dns_builder::DnsRecord;
+use dns_builder::{DnsRecord, DnsRecordBuilder};
 use std::collections::HashMap;
 use tokio_postgres::NoTls;
 use argon2::{Argon2, PasswordHash, PasswordVerifier, PasswordHasher};
@@ -184,6 +184,23 @@ async fn ready(data: web::Data<AppState>) -> impl Responder {
             HttpResponse::ServiceUnavailable().json(serde_json::json!({"status":"not ready"}))
         }
     }
+}
+
+// Collect the full message of an error and its source chain. tokio_postgres
+// errors surface as a top-level "db error" whose useful detail (e.g. the
+// unique-violation message) lives in the source chain, and anyhow/DNS errors
+// similarly nest their cause. Joining every level avoids losing that context.
+fn full_error_string(e: &dyn std::error::Error) -> String {
+    let mut parts = Vec::new();
+    let mut current = Some(e as &dyn std::error::Error);
+    while let Some(err) = current {
+        let msg = err.to_string();
+        if !parts.iter().any(|p: &String| *p == msg) {
+            parts.push(msg);
+        }
+        current = err.source();
+    }
+    parts.join(": ")
 }
 
 fn validate_domain(domain: &str) -> Result<(), String> {
@@ -2045,11 +2062,11 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
     if let Err(e) = validate_domain(&body.domain) {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
     }
+    let domain = body.domain.trim_end_matches('.').to_string();
     
     let zone_id = Uuid::new_v4();
     let zone_id_str = zone_id.to_string();
     let owner_uuid_str = &tok.claims.sub;
-    let domain = body.domain.clone();
     let geodns_enabled = body.geodns_enabled.unwrap_or(true);
     
     // Ensure owner_uuid_str is a valid UUID
@@ -2174,12 +2191,16 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
             }))
         }
         Err(e) => {
-            if e.to_string().contains("unique") || e.to_string().contains("duplicate") {
+            // e.to_string() only shows the top-level "db error"; the actual
+            // SQLSTATE message (e.g. the unique-violation detail) is deeper in
+            // the error chain, so inspect the whole chain for the conflict.
+            let err_str = full_error_string(&e);
+            warn!("create_zone error: {}", err_str);
+            if err_str.contains("unique") || err_str.contains("duplicate") {
                 warn!("create_zone error: domain already exists");
                 HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}))
             } else {
-                warn!("create_zone error: {}", e);
-                HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("failed to create zone: {}", e)}))
+                HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("failed to create zone: {}", err_str)}))
             }
         }
     }
@@ -2420,22 +2441,33 @@ async fn push_config_to_agents(
         }
         let tok = auth.unwrap();
 
-        // Delegate ALL DNS record validation to Hickory via DnsRecord
-        let rec = DnsRecord::new(
-            body.name.clone(),
-            body.record_type.clone(),
-            body.value.clone(),
-            body.ttl,
-        );
-        if let Err(e) = rec.validate() {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
-        }
-
         // Validate priority is non-negative (business rule, not DNS logic)
         if let Some(priority) = body.priority {
             if priority < 0 {
                 return HttpResponse::BadRequest().json(serde_json::json!({"error": "priority must be non-negative"}));
             }
+        }
+
+        // Delegate ALL validation against Hickory via DnsRecordBuilder. Using
+        // from_db_fields (instead of a bare DnsRecord) applies the same
+        // normalization used by the zone generator: for types that carry a
+        // preference/priority in the RDATA (MX/SRV) the separate priority
+        // column is merged into the value before Hickory parses it.
+        let priority_for_validation = body.priority.unwrap_or(0);
+        let ttl_i32 = match i32::try_from(body.ttl) {
+            Ok(t) => t,
+            // TTLs are 32-bit unsigned in the API; cap at i32 max (Hickory uses u32)
+            Err(_) => i32::MAX,
+        };
+        let rec = DnsRecordBuilder::from_db_fields(
+            body.name.clone(),
+            body.record_type.clone(),
+            body.value.clone(),
+            ttl_i32,
+            priority_for_validation,
+        );
+        if let Err(e) = rec {
+            return HttpResponse::BadRequest().json(serde_json::json!({"error": format!("{:#}", e)}));
         }
 
         // Check zone existence and ownership
@@ -2671,25 +2703,38 @@ async fn push_config_to_agents(
         // If both record_type and value are provided, validate value against type
         // If only value is provided, we need the current type from the database
         if let Some(ref value) = body.value {
-            let record_type = if let Some(ref rt) = body.record_type {
-                rt.clone()
+            let (record_type, current_name, current_ttl, current_priority) = if let Some(ref rt) = body.record_type {
+                let current = (&*data.db).query_opt(
+                    "SELECT name, ttl, priority FROM records WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
+                    &[&record_id, &zone_id]
+                ).await;
+                let (cn, ct, cp) = match current {
+                    Ok(Some(row)) => (
+                        row.try_get::<_, String>(0).unwrap_or_else(|_| "@".to_string()),
+                        row.try_get::<_, i32>(1).unwrap_or(3600),
+                        row.try_get::<_, i32>(2).unwrap_or(0),
+                    ),
+                    _ => ("@".to_string(), 3600, 0),
+                };
+                (rt.clone(), cn, ct, cp)
             } else {
                 // Get current record type from database
                 let current_record = (&*data.db).query_opt(
-                    "SELECT record_type FROM records WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
+                    "SELECT record_type, name, ttl, priority FROM records WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
                     &[&record_id, &zone_id]
                 ).await;
 
                 match current_record {
-                    Ok(Some(row)) => match row.try_get::<_, String>(0) {
-                        Ok(rt) => rt,
-                        Err(_) => {
-                            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to get current record type"}));
-                        }
-                    },
+                    Ok(Some(row)) => {
+                        let rt: String = row.try_get("record_type").unwrap_or_default();
+                        let name: String = row.try_get("name").unwrap_or_else(|_| "@".to_string());
+                        let ttl: i32 = row.try_get("ttl").unwrap_or(3600);
+                        let priority: i32 = row.try_get("priority").unwrap_or(0);
+                        (rt, name, ttl, priority)
+                    }
                     Ok(None) => {
                         return HttpResponse::NotFound().json(ErrorResponse { error: "record not found".to_string(), details: None });
-                    },
+                    }
                     Err(e) => {
                         warn!("Failed to fetch current record: {}", e);
                         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
@@ -2697,9 +2742,19 @@ async fn push_config_to_agents(
                 }
             };
 
-            // Validate value through Hickory
-            if let Err(e) = validate_record_value(&record_type, value) {
-                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message}));
+            // Validate value through Hickory, merging any priority/preference
+            // into the RDATA for types that carry it (MX/SRV) exactly like the
+            // zone generator does. This keeps request validation in sync with
+            // what ends up in the generated zone file.
+            let effective_priority = body.priority.unwrap_or(current_priority);
+            if let Err(e) = DnsRecordBuilder::from_db_fields(
+                current_name.clone(),
+                record_type.clone(),
+                value.clone(),
+                current_ttl,
+                effective_priority,
+            ) {
+                return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
             }
         }
 
@@ -3027,9 +3082,13 @@ async fn push_config_to_agents(
             if let Err(e) = validate_domain(new_domain) {
                 return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
             }
+            // Normalize to the bare domain (no trailing dot) so that
+            // "uid0.ir" and "uid0.ir." can never be created as two separate
+            // zones that collide on the same generated zone file.
+            let normalized = new_domain.trim_end_matches('.').to_string();
             match (&*data.db).execute(
                 "UPDATE zones SET domain = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
-                &[new_domain, &zone_id]
+                &[&normalized, &zone_id]
             ).await {
                 Ok(count) => {
                     if count == 0 {
@@ -3037,10 +3096,10 @@ async fn push_config_to_agents(
                     }
                 }
                 Err(e) => {
-                    if e.to_string().contains("unique") {
+                    if full_error_string(&e).contains("unique") {
                         return HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}));
                     }
-                    warn!("update_zone error: {}", e);
+                    warn!("update_zone error: {}", full_error_string(&e));
                     return HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to update zone".to_string(), details: None });
                 }
             }

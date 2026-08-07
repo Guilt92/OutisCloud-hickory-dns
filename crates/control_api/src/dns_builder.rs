@@ -208,6 +208,17 @@ impl DnsRecordBuilder {
                     trimmed.to_string()
                 }
             }
+            "TXT" => {
+                // Hickory's TXT parser treats an unquoted string as a
+                // character-set and strips whitespace, so `v=spf1 mx -all`
+                // would be persisted as `v=spf1mx-all`. Values already quoted
+                // (one or more TXT segments) are passed through untouched.
+                if trimmed.starts_with('"') || !trimmed.contains(char::is_whitespace) {
+                    trimmed.to_string()
+                } else {
+                    format!("\"{}\"", trimmed)
+                }
+            }
             _ => trimmed.to_string(),
         }
     }
@@ -227,6 +238,9 @@ impl SafeZoneFileWriter {
         let tmp_path = zone_path.with_extension("zone.tmp");
 
         debug!("Writing zone file to temporary location: {:?}", tmp_path);
+        // A stale temporary file (e.g. left behind by a previous run owned by a
+        // different uid) would make fs::write fail. Remove it before writing.
+        let _ = fs::remove_file(&tmp_path);
         fs::write(&tmp_path, content)
             .with_context(|| format!("Failed to write zone file temp at {:?}", tmp_path))?;
 

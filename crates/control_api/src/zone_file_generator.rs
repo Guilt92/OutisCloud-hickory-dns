@@ -4,7 +4,7 @@ use tokio_postgres::Client;
 use std::path::Path;
 use std::{collections::{HashSet, HashMap}, fs};
 use tokio::task;
-use log::{debug, info};
+use log::{debug, info, warn};
 use hickory_proto::rr::domain::Name;
 use crate::dns_builder::{DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder};
 
@@ -91,6 +91,7 @@ pub fn generate_from_data(
     // make a set of names for zones we will generate so that we can clean up
     // files left over from previously deleted/renamed zones.
     let mut expected_files = HashSet::new();
+    let mut seen_zone_files = HashSet::new();
     for (_id, domain, _enabled) in &zones {
         expected_files.insert(format!("zone.{}", domain.trim_end_matches('.')));
     }
@@ -111,6 +112,19 @@ pub fn generate_from_data(
     for (zone_id, domain, geodns_enabled) in &zones {
         let zone_file_name = format!("zone.{}", domain.trim_end_matches('.'));
         let zone_path = base_path.join(&zone_file_name);
+
+        // Two zones whose domains only differ by a trailing dot (e.g. "uid0.ir"
+        // and "uid0.ir.") would both write to the same zone file and the last
+        // one would silently overwrite the other's records. The API normalizes
+        // domains, but guard here as well so generation can never corrupt a
+        // zone file.
+        if !seen_zone_files.insert(zone_file_name.clone()) {
+            warn!(
+                "skipping zone {}: another zone already maps to zone file {:?} (duplicate domain with differing trailing dot?)",
+                domain, zone_path
+            );
+            continue;
+        }
 
         let recs = records_map.get(zone_id).cloned().unwrap_or_default();
         let domain_dot = ensure_trailing_dot(domain.trim_end_matches('.'));
@@ -265,7 +279,7 @@ pub fn generate_from_data(
             Vec::new()
         };
 
-        toml_builder.add_zone(domain.to_string(), zone_path_str, *geodns_enabled, geo_rules)?;
+        toml_builder.add_zone(domain.trim_end_matches('.').to_string(), zone_path_str, *geodns_enabled, geo_rules)?;
     }
 
     // cleanup any leftover zone files that are no longer present in the DB
@@ -287,6 +301,10 @@ pub fn generate_from_data(
     let tmp_named = base_path.join("named.toml.tmp");
 
     debug!("Writing TOML configuration to temporary file: {:?}", tmp_named);
+    // A stale temporary file (e.g. left behind by a previous run owned by a
+    // different uid) would make fs::write fail. Remove it before writing so the
+    // atomic tmp+rename pattern always works.
+    let _ = fs::remove_file(&tmp_named);
     fs::write(&tmp_named, &toml_content).with_context(|| format!("failed to write named.toml temp at {:?}", tmp_named))?;
 
     debug!("Moving TOML configuration to final location: {:?}", named_path);
