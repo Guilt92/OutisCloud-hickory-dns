@@ -22,6 +22,9 @@ pub struct LastPublish {
     pub error: Option<String>,
 }
 
+/// Arbitrary but fixed key of the publication advisory lock.
+const PUBLISH_LOCK_KEY: i64 = 0x4f55_5449_5350_5542;
+
 pub struct DnsManager {
     config_dir: String,
     last: std::sync::Mutex<Option<LastPublish>>,
@@ -53,6 +56,13 @@ impl DnsManager {
     /// run (the previous zone file stays published), see [`PublishReport`].
     pub async fn regenerate_zones(&self, db: Arc<Pool>) -> Result<PublishReport, DnsManagerError> {
         let _guard = self.publish_lock.lock().await;
+        // other API instances sharing the database/zone directory take turns (best effort: if the
+        // lock cannot be taken the local lock still serialises this instance)
+        let _cluster = match tokio::time::timeout(std::time::Duration::from_secs(30), db.advisory_lock(PUBLISH_LOCK_KEY)).await {
+            Ok(Ok(l)) => Some(l),
+            Ok(Err(e)) => { log::warn!("cluster publish lock unavailable: {}", e); None }
+            Err(_) => { log::warn!("cluster publish lock not acquired within 30s; publishing anyway"); None }
+        };
         self.ensure_config_dir_exists()?;
         let res = zone_file_generator::generate_all(&self.config_dir, db).await
             .map_err(|e| DnsManagerError::GenerationFailed(format!("{:#}", e)));

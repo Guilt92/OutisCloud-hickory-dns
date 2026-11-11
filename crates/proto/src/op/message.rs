@@ -649,7 +649,8 @@ impl Message {
 
     /// Attempts to read the specified number of `Query`s
     pub fn read_queries(decoder: &mut BinDecoder<'_>, count: usize) -> ProtoResult<Vec<Query>> {
-        let mut queries = Vec::with_capacity(count);
+        // the counts come straight from the wire (up to 65535 each): never pre-allocate for them
+        let mut queries = Vec::with_capacity(Ord::min(count, 8));
         for _ in 0..count {
             queries.push(Query::read(decoder)?);
         }
@@ -677,7 +678,7 @@ impl Message {
         count: usize,
         is_additional: bool,
     ) -> ProtoResult<(Vec<Record>, Option<Edns>, Option<Box<Record<TSIG>>>)> {
-        let mut records: Vec<Record> = Vec::with_capacity(count);
+        let mut records: Vec<Record> = Vec::with_capacity(Ord::min(count, 8));
         let mut edns: Option<Edns> = None;
         let mut sig = None;
 
@@ -1018,7 +1019,8 @@ impl<'r> BinDecodable<'r> for Message {
 
         // get the questions
         let count = header.query_count() as usize;
-        let mut queries = Vec::with_capacity(count);
+        // the counts come straight from the wire (up to 65535 each): never pre-allocate for them
+        let mut queries = Vec::with_capacity(Ord::min(count, 8));
         for _ in 0..count {
             queries.push(Query::read(decoder)?);
         }
@@ -1629,5 +1631,20 @@ mod tests {
             None,
             vec![],
         ))
+    }
+
+    /// Header counts are attacker-controlled: a 12 byte packet claiming 65535 questions and
+    /// records must fail quickly instead of reserving memory for all of them.
+    #[test]
+    fn huge_section_counts_in_a_tiny_packet_are_rejected() {
+        let mut pkt = vec![0x12, 0x34, 0x01, 0x00];
+        for _ in 0..4 {
+            pkt.extend([0xff, 0xff]);
+        }
+        assert!(Message::from_vec(&pkt).is_err());
+        let mut dec = BinDecoder::new(&[]);
+        assert!(Message::read_queries(&mut dec, 65_535).is_err());
+        let mut dec = BinDecoder::new(&[]);
+        assert!(Message::read_records(&mut dec, 65_535, false).is_err());
     }
 }

@@ -50,7 +50,7 @@ fn is_non_geolocatable(ip: IpAddr) -> bool {
 }
 
 impl GeoDB {
-    pub fn open_from_bytes(bytes: Vec<u8>) -> Result<Self, maxminddb::MaxMindDBError> {
+    pub fn open_from_bytes(bytes: Vec<u8>) -> Result<Self, maxminddb::MaxMindDbError> {
         let reader = Reader::from_source(bytes)?;
         Ok(Self {
             reader: std::sync::Arc::new(reader),
@@ -74,12 +74,8 @@ impl GeoDB {
         if is_non_geolocatable(ip) {
             return None;
         }
-        if let Ok(country) = self.reader.lookup::<maxminddb::geoip2::Country>(ip) {
-            if let Some(country) = country.country {
-                return country.iso_code.map(|s| s.to_string());
-            }
-        }
-        None
+        let rec: maxminddb::geoip2::Country = self.reader.lookup(ip).ok()?.decode().ok()??;
+        rec.country.iso_code.map(|s| s.to_string())
     }
 
     /// Two letter continent code of `ip` (`AF`, `AN`, `AS`, `EU`, `NA`, `OC`, `SA`).
@@ -88,10 +84,8 @@ impl GeoDB {
         if is_non_geolocatable(ip) {
             return None;
         }
-        if let Ok(rec) = self.reader.lookup::<maxminddb::geoip2::Country>(ip) {
-            return rec.continent.and_then(|c| c.code).map(|s| s.to_string());
-        }
-        None
+        let rec: maxminddb::geoip2::Country = self.reader.lookup(ip).ok()?.decode().ok()??;
+        rec.continent.code.map(|s| s.to_string())
     }
 
     /// English city name of `ip` (City/Enterprise databases only).
@@ -103,9 +97,9 @@ impl GeoDB {
         if is_non_geolocatable(ip) {
             return None;
         }
-        let rec = self.reader.lookup::<maxminddb::geoip2::City>(ip).ok()?;
-        let name = rec.city?.names?.get("en").map(|s| s.to_string())?;
-        let cc = rec.country.and_then(|c| c.iso_code)?;
+        let rec: maxminddb::geoip2::City = self.reader.lookup(ip).ok()?.decode().ok()??;
+        let name = rec.city.names.english?;
+        let cc = rec.country.iso_code?;
         Some(format!("{}:{}", cc, name))
     }
 
@@ -120,12 +114,9 @@ impl GeoDB {
         if is_non_geolocatable(ip) {
             return None;
         }
-        let rec = self.reader.lookup::<maxminddb::geoip2::City>(ip).ok()?;
-        let cc = rec.country.and_then(|c| c.iso_code)?;
-        let sub = rec
-            .subdivisions
-            .and_then(|v| v.into_iter().next())
-            .and_then(|s| s.iso_code)?;
+        let rec: maxminddb::geoip2::City = self.reader.lookup(ip).ok()?.decode().ok()??;
+        let cc = rec.country.iso_code?;
+        let sub = rec.subdivisions.into_iter().next().and_then(|s| s.iso_code)?;
         Some(format!("{}-{}", cc, sub))
     }
 }
@@ -153,11 +144,31 @@ pub struct GeoRule {
 fn rule_order(a: &GeoRule, b: &GeoRule) -> std::cmp::Ordering {
     b.priority
         .cmp(&a.priority)
+        // at equal priority a rule scoped to a record name beats a zone-wide rule,
+        // and the most specific location wins: city > region > country > continent
+        .then_with(|| is_zone_wide(a).cmp(&is_zone_wide(b)))
+        .then_with(|| specificity(&a.match_type).cmp(&specificity(&b.match_type)))
         .then_with(|| a.match_type.cmp(&b.match_type))
         .then_with(|| a.match_value.cmp(&b.match_value))
         .then_with(|| a.record_name.cmp(&b.record_name))
         .then_with(|| a.record_type.cmp(&b.record_type))
         .then_with(|| a.target.cmp(&b.target))
+}
+
+fn is_zone_wide(r: &GeoRule) -> bool {
+    r.record_name.as_deref().map_or(true, |n| n.trim().is_empty())
+}
+
+/// Lower is more specific.
+fn specificity(match_type: &str) -> u8 {
+    match match_type {
+        "city" => 0,
+        "region" => 1,
+        "country" => 2,
+        "continent" => 3,
+        "default" | "fallback" => 5,
+        _ => 4,
+    }
 }
 
 /// Normalise a DNS name for comparison: lower-case, no trailing dot.
@@ -543,5 +554,84 @@ mod tests {
     fn ipv4_mapped_clients_are_geolocated_as_ipv4() {
         let e = engine(vec![rule("us", "country", "US", "10.0.0.1", 0, true)]);
         assert_eq!(e.evaluate(ip("::ffff:8.8.8.8"), None, None).as_deref(), Some("10.0.0.1"));
+    }
+
+    // ---- City / region matching against a real MaxMind City database -------
+    // MaxMind publishes small open test databases (MaxMind-DB repository) that
+    // contain real City/subdivision structures. Point GEOIP_CITY_TEST_DB at
+    // GeoLite2-City-Test.mmdb (or GeoIP2-City-Test.mmdb, or a full GeoLite2-City).
+    fn city_db() -> Option<GeoDB> {
+        match std::env::var("GEOIP_CITY_TEST_DB") {
+            Ok(p) => Some(GeoDB::open_from_bytes(std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"))).expect("valid mmdb")),
+            Err(_) => {
+                eprintln!("SKIPPED: GEOIP_CITY_TEST_DB not set");
+                None
+            }
+        }
+    }
+
+    fn city_engine(db: GeoDB, rules: Vec<GeoRule>) -> GeoRuleEngine {
+        let mut e = GeoRuleEngine::new(Some(db));
+        e.set_rules(rules);
+        e
+    }
+
+    #[test]
+    fn city_database_exposes_country_continent_region_and_city() {
+        let Some(db) = city_db() else { return };
+        assert!(db.database_type().contains("City"));
+        // London (test data): GB / EU / England / London
+        let london = ip("81.2.69.142");
+        assert_eq!(db.country(london).as_deref(), Some("GB"));
+        assert_eq!(db.continent(london).as_deref(), Some("EU"));
+        assert_eq!(db.region(london).as_deref(), Some("GB-ENG"));
+        assert_eq!(db.city(london).as_deref(), Some("GB:London"));
+        // Milton, Washington (test data)
+        let milton = ip("216.160.83.56");
+        assert_eq!(db.country(milton).as_deref(), Some("US"));
+        assert_eq!(db.region(milton).as_deref(), Some("US-WA"));
+        assert_eq!(db.city(milton).as_deref(), Some("US:Milton"));
+        // Non-public addresses still have no location
+        assert_eq!(db.city(ip("10.1.2.3")), None);
+        assert_eq!(db.region(ip("192.168.0.1")), None);
+    }
+
+    #[test]
+    fn city_and_region_rules_match_and_are_the_most_specific() {
+        let Some(db) = city_db() else { return };
+        let e = city_engine(db, vec![
+            rule("country", "country", "GB", "10.0.0.1", 0, true),
+            rule("continent", "continent", "EU", "10.0.0.2", 0, true),
+            rule("region", "region", "GB-ENG", "10.0.0.3", 0, true),
+            rule("city", "city", "GB:London", "10.0.0.4", 0, true),
+        ]);
+        // same priority: city beats region beats country beats continent
+        assert_eq!(e.evaluate(ip("81.2.69.142"), None, None).as_deref(), Some("10.0.0.4"));
+        // England but not London -> region rule
+        assert_eq!(e.evaluate(ip("2.125.160.216"), None, None).as_deref(), Some("10.0.0.3"));
+        // Sweden is in Europe only -> continent rule
+        assert_eq!(e.evaluate(ip("89.160.20.128"), None, None).as_deref(), Some("10.0.0.2"));
+        // US client matches nothing
+        assert_eq!(e.evaluate(ip("216.160.83.56"), None, None), None);
+        // matching is case-insensitive, a bare city name works, other cities do not match
+        let e = city_engine(city_db().unwrap(), vec![
+            rule("c", "city", "london", "10.0.0.9", 0, true),
+            rule("r", "region", "us-wa", "10.0.0.8", 0, true),
+        ]);
+        assert_eq!(e.evaluate(ip("81.2.69.142"), None, None).as_deref(), Some("10.0.0.9"));
+        assert_eq!(e.evaluate(ip("216.160.83.56"), None, None).as_deref(), Some("10.0.0.8"));
+        assert_eq!(e.evaluate(ip("89.160.20.128"), None, None), None);
+        // disabled rules never match
+        let e = city_engine(city_db().unwrap(), vec![rule("c", "city", "GB:London", "10.0.0.9", 0, false)]);
+        assert_eq!(e.evaluate(ip("81.2.69.142"), None, None), None);
+    }
+
+    #[test]
+    fn city_database_handles_ipv6_and_mapped_addresses() {
+        let Some(db) = city_db() else { return };
+        // the MaxMind test data carries IPv6 networks, e.g. 2001:218::/32 (Japan)
+        assert_eq!(db.country(ip("2001:218::1")).as_deref(), Some("JP"));
+        // IPv4 mapped into IPv6 resolves like the IPv4 address
+        assert_eq!(db.city(ip("::ffff:81.2.69.142")).as_deref(), Some("GB:London"));
     }
 }

@@ -19,6 +19,10 @@ categories.workspace = true
 license.workspace = true
 
 [features]
+# the workspace server binary is built with DNSSEC signing (dnssec-ring); keep the
+# integration crate's cfg(feature) gates in step so the signed-zone tests compile and run
+default = ["dnssec-ring", "metrics"]
+
 dnssec-aws-lc-rs = [
     "hickory-proto/dnssec-aws-lc-rs",
     "hickory-resolver/dnssec-aws-lc-rs",

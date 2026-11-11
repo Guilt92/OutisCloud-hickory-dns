@@ -13,6 +13,7 @@ mod dns_validator;
 mod dns_builder;
 mod db_pool;
 mod ext;
+mod dnssec;
 mod metrics;
 use db_pool::Pool;
 use dns_manager::DnsManager;
@@ -657,7 +658,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
     if let Err(e) = client.batch_execute(
         "DO $$
          BEGIN
-             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='records' AND column_name='type') THEN
+             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='records' AND column_name='type') THEN
                  ALTER TABLE records RENAME COLUMN type TO record_type;
              END IF;
          END $$;"
@@ -879,6 +880,8 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
          CREATE INDEX IF NOT EXISTS idx_zone_revisions_zone ON zone_revisions(zone_id, created_at DESC);
          CREATE INDEX IF NOT EXISTS idx_zone_members_user ON zone_members(user_id);"
     ).await?;
+    // DNSSEC keys
+    client.batch_execute(dnssec::SCHEMA).await?;
     // users: MFA
     client.batch_execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
@@ -1474,7 +1477,7 @@ async fn get_user(path: web::Path<String>, data: web::Data<AppState>, req: HttpR
     }
 }
 
-async fn list_users(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+async fn list_users(page: web::Query<ext::PageQuery>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     // Check for auth token
     let tok = match auth_from_header(&req, &data.jwt_secret) {
         Some(t) => t,
@@ -1494,11 +1497,14 @@ async fn list_users(data: web::Data<AppState>, req: HttpRequest) -> impl Respond
         }));
     }
     
+    let (limit, offset, qtext) = page.parts();
     match (&*data.db).query(
-        "SELECT CAST(id AS varchar), username, role, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at_str FROM users ORDER BY username",
-        &[]
+        "SELECT CAST(id AS varchar), username, role, to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at_str, count(*) OVER() FROM users \
+         WHERE $1::text IS NULL OR username ILIKE '%' || $1 || '%' ORDER BY username LIMIT $2::bigint OFFSET $3::bigint",
+        &[&qtext, &limit, &offset]
     ).await {
         Ok(rows) => {
+            let total: i64 = rows.first().and_then(|r| r.try_get(4).ok()).unwrap_or(0);
             let users: Vec<_> = rows.into_iter().filter_map(|r| {
                 let id_result = r.try_get::<_, String>(0);
                 let username_result = r.try_get::<_, String>(1);
@@ -1517,7 +1523,7 @@ async fn list_users(data: web::Data<AppState>, req: HttpRequest) -> impl Respond
                     _ => None  // Skip rows with deserialization errors
                 }
             }).collect();
-            HttpResponse::Ok().json(users)
+            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(users)
         }
         Err(e) => {
             warn!("list_users error: {}", e);
@@ -2412,6 +2418,9 @@ async fn create_georule(body: web::Json<CreateGeoRuleReq>, data: web::Data<FullS
         Ok(a) => a,
         Err(resp) => return resp,
     };
+    if dnssec::zone_is_signed(db, &zone_str).await {
+        return dnssec::geo_conflict();
+    }
     if let Err(e) = validate_georule_fields(
         Some(&body.match_type), Some(&body.match_value), Some(&body.target),
         body.record_name.as_deref(), body.record_type.as_deref(),
@@ -2609,7 +2618,7 @@ struct CreateZoneReq {
     geodns_enabled: Option<bool>,
 }
 
-async fn list_zones(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+async fn list_zones(page: web::Query<ext::PageQuery>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     // Check authentication
     let auth = auth_from_header(&req, &data.jwt_secret);
     if auth.is_none() {
@@ -2622,17 +2631,20 @@ async fn list_zones(data: web::Data<AppState>, req: HttpRequest) -> impl Respond
     
     // Admins see every zone; others the zones they own or that were shared with them.
     let is_admin = tok.claims.role == "admin";
+    let (limit, offset, qtext) = page.parts();
     let query_result = (&*data.db).query(
         "SELECT CAST(z.id AS varchar), z.domain, COALESCE(CAST(z.owner AS varchar), '') as owner, z.zone_type, z.created_at::text, \
                 COALESCE(z.geodns_enabled, true), z.status, z.ecs_enabled, \
-                CASE WHEN $1 THEN 'admin' WHEN CAST(z.owner AS varchar) = $2 THEN 'owner' ELSE COALESCE(m.role, '') END \
+                CASE WHEN $1 THEN 'admin' WHEN CAST(z.owner AS varchar) = $2 THEN 'owner' ELSE COALESCE(m.role, '') END, count(*) OVER() \
          FROM zones z LEFT JOIN zone_members m ON m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2 \
-         WHERE $1 OR CAST(z.owner AS varchar) = $2 OR m.user_id IS NOT NULL ORDER BY z.domain",
-        &[&is_admin, &tok.claims.sub]
+         WHERE ($1 OR CAST(z.owner AS varchar) = $2 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
+         ORDER BY z.domain LIMIT $4::bigint OFFSET $5::bigint",
+        &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset]
     ).await;
     
     match query_result {
         Ok(rows) => {
+            let total: i64 = rows.first().and_then(|r| r.try_get(9).ok()).unwrap_or(0);
             let zones: Vec<ZoneWithOwner> = rows.into_iter().map(|r| ZoneWithOwner {
                 id: r.try_get(0).unwrap_or_default(),
                 domain: r.try_get(1).unwrap_or_default(),
@@ -2644,7 +2656,7 @@ async fn list_zones(data: web::Data<AppState>, req: HttpRequest) -> impl Respond
                 ecs_enabled: r.try_get(7).unwrap_or(false),
                 access: r.try_get(8).unwrap_or_default(),
             }).collect();
-            HttpResponse::Ok().json(ApiResponse { success: true, data: Some(zones), error: None })
+            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(ApiResponse { success: true, data: Some(zones), error: None })
         }
         Err(e) => {
             warn!("list_zones database error: {}", e);
@@ -3231,6 +3243,7 @@ async fn create_record(
 
 async fn list_records(
     zone_id: web::Path<String>,
+    page: web::Query<ext::PageQuery>,
     data: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
@@ -3243,10 +3256,13 @@ async fn list_records(
         return resp;
     }
 
+    let (limit, offset, qtext) = page.parts();
     let rows = match (&*data.db)
         .query(
-            "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name, record_type, value",
-            &[&zone_id_str]
+            "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority, count(*) OVER() FROM records WHERE CAST(zone_id AS varchar) = $1 \
+             AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR value ILIKE '%' || $2 || '%' OR record_type ILIKE $2) \
+             ORDER BY name, record_type, value LIMIT $3::bigint OFFSET $4::bigint",
+            &[&zone_id_str, &qtext, &limit, &offset]
         )
         .await
     {
@@ -3257,6 +3273,7 @@ async fn list_records(
         }
     };
 
+    let total: i64 = rows.first().and_then(|r| r.try_get(7).ok()).unwrap_or(0);
     let records: Vec<RecordResponse> = rows.into_iter().map(|r| RecordResponse {
         id: r.try_get(0).unwrap_or_default(),
         zone_id: r.try_get(1).unwrap_or_default(),
@@ -3267,7 +3284,7 @@ async fn list_records(
         priority: r.try_get::<_, i32>(6).unwrap_or(0),
     }).collect();
 
-    HttpResponse::Ok().json(records)
+    HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(records)
 }
 
 #[derive(Deserialize)]
@@ -3628,6 +3645,16 @@ async fn update_zone(
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "no fields to update"}));
     }
 
+    if (body.geodns_enabled == Some(true) || new_domain.as_ref().map_or(false, |nd| *nd != access.domain.trim_end_matches('.').to_ascii_lowercase()))
+        && dnssec::zone_is_signed(db, &zone_id).await
+    {
+        // GeoDNS cannot be signed, and a rename would orphan the DS published at the registrar
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "dnssec_enabled",
+            "details": "This zone is DNSSEC-signed: it cannot be renamed or switched to GeoDNS. Disable DNSSEC first (remove the DS at the registrar, then POST /dnssec/disable)."
+        }));
+    }
+
     if let Some(nd) = &new_domain {
         if *nd != access.domain.trim_end_matches('.').to_ascii_lowercase() {
             if tok.claims.role != "admin" {
@@ -3982,6 +4009,12 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Audit Logs
     .route("/api/v1/audit/logs", web::get().to(ext::list_audit))
     .configure(ext::configure)
+    // DNSSEC
+    .route("/api/v1/zones/{id}/dnssec", web::get().to(dnssec::get_dnssec))
+    .route("/api/v1/zones/{id}/dnssec/enable", web::post().to(dnssec::enable_dnssec))
+    .route("/api/v1/zones/{id}/dnssec/disable", web::post().to(dnssec::disable_dnssec))
+    .route("/api/v1/zones/{id}/dnssec/rollover", web::post().to(dnssec::rollover_dnssec))
+    .route("/api/v1/zones/{id}/dnssec/rollover/complete", web::post().to(dnssec::complete_rollover))
     // Metrics
     .route("/metrics", web::get().to(|| async move {
         let encoder = TextEncoder::new();
@@ -4200,7 +4233,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     // Prometheus metrics middleware
-    let prometheus = PrometheusMetricsBuilder::new("control_api").registry(prometheus013::default_registry().clone()).endpoint("/metrics").build().expect("prometheus builder");
+    let prometheus = PrometheusMetricsBuilder::new("control_api").registry(prometheus::default_registry().clone()).endpoint("/metrics").build().expect("prometheus builder");
 
     let app_data = web::Data::new(app_state.clone());
     let full_data = web::Data::new(full_state.clone());
@@ -4219,7 +4252,7 @@ async fn main() -> std::io::Result<()> {
                 .app_data(full_data.clone())
             .configure(configure_routes)
     })
-    .bind(("0.0.0.0", 8080))?
+    .bind(std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()))?
     .run()
     .await
 }

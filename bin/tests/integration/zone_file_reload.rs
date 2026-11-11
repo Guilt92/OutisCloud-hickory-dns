@@ -1,115 +1,153 @@
+//! End-to-end check of zone hot reload: the server watches its zone directory
+//! and swaps the in-memory data without restarting. A broken zone file must be
+//! rejected while the previous data keeps being served.
+
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use hickory_net::client::{Client, ClientHandle};
+use hickory_net::runtime::TokioRuntimeProvider;
+use hickory_net::udp::UdpClientStream;
+use hickory_proto::op::ResponseCode;
+use hickory_proto::rr::{DNSClass, Name, RData, RecordType, rdata::A};
 use regex::Regex;
 use tempfile::tempdir;
 
-use hickory_net::{client::ClientHandle, xfer::Protocol};
-use hickory_proto::rr::{Name, RecordType, rdata::A};
+const ZONE_HEAD: &str = "example.com. 3600 IN SOA ns1.example.com. hostmaster.example.com. {SERIAL} 3600 3600 604800 3600\nexample.com. 3600 IN NS ns1.example.com.\nns1.example.com. 3600 IN A 127.0.0.1\nwww.example.com. 300 IN A 127.0.0.1\n";
 
-use crate::server_harness::{query_message};
+fn write_zone(path: &std::path::Path, serial: u32, extra: &str) {
+    // atomic replace, exactly like the control API publisher does
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, format!("{}{}", ZONE_HEAD.replace("{SERIAL}", &serial.to_string()), extra)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
 
-// we need access to the generator - re-export from control_api crate
-use control_api::zone_file_generator::{generate_from_data, RecordRow};
+struct Server(Child);
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
-// small helper for building a simple zone dataset
-fn make_zone(max_id: &str, domain: &str, records: Vec<RecordRow>) -> (Vec<(String,String)>, std::collections::HashMap<String, Vec<RecordRow>>) {
-    let mut zones = Vec::new();
-    zones.push((max_id.to_string(), domain.to_string()));
-    let mut map = std::collections::HashMap::new();
-    map.insert(max_id.to_string(), records);
-    (zones, map)
+async fn a_records(client: &mut Client<TokioRuntimeProvider>, name: &str) -> (ResponseCode, Vec<A>) {
+    let resp = client
+        .query(Name::from_str(name).unwrap(), DNSClass::IN, RecordType::A)
+        .await
+        .expect("query");
+    let answers = resp
+        .answers()
+        .iter()
+        .filter_map(|r| match r.data() {
+            RData::A(a) => Some(*a),
+            _ => None,
+        })
+        .collect();
+    (resp.response_code(), answers)
+}
+
+async fn eventually<F: FnMut() -> Fut, Fut: std::future::Future<Output = bool>>(what: &str, mut f: F) {
+    let end = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < end {
+        if f().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("timed out waiting for: {what}");
 }
 
 #[tokio::test]
 async fn reload_on_zonefile_change() {
-    // temporary directory for config + zones
     let tmp = tempdir().unwrap();
     let zonedir = tmp.path().join("zones");
     std::fs::create_dir_all(&zonedir).unwrap();
+    let zone_path = zonedir.join("zone.example.com");
+    write_zone(&zone_path, 1, "");
 
-    // first generation: example.com with www record
-    let (zones, mut recs) = make_zone(
-        "id1",
-        "example.com",
-        vec![RecordRow { name: "www".into(), rtype: "A".into(), value: "127.0.0.1".into(), ttl: 3600, priority: 0 }],
-    );
-    generate_from_data(zonedir.to_str().unwrap(), zones.clone(), recs.clone()).unwrap();
+    let conf = tmp.path().join("named.toml");
+    std::fs::write(
+        &conf,
+        format!(
+            "listen_addrs_ipv4 = [\"127.0.0.1\"]\n\n[[zones]]\nzone = \"example.com\"\nzone_type = \"Primary\"\n\n[[zones.stores]]\ntype = \"file\"\nzone_path = \"{}\"\n",
+            zone_path.display()
+        ),
+    )
+    .unwrap();
 
-    // write minimal config pointing at our zonedir
-    let conf_path = tmp.path().join("test.toml");
-    let conf_contents = format!(
-        "listen_addrs_ipv4 = [\"127.0.0.1\"]\ndirectory = \"{}\"\n",
-        zonedir.to_string_lossy()
-    );
-    std::fs::write(&conf_path, conf_contents).unwrap();
-
-    // spawn the server
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hickory-dns"));
-    cmd.stdout(Stdio::piped())
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hickory-dns"))
+        .stdout(Stdio::piped())
         .arg("-d")
-        .arg(conf_path.to_str().unwrap())
-        .arg("--zonedir")
-        .arg(zonedir.to_str().unwrap())
-        .arg("--port")
-        .arg("0");
-
-    let mut child = cmd.spawn().expect("failed to spawn server");
+        .arg(format!("--config={}", conf.display()))
+        .arg(format!("--zonedir={}", zonedir.display()))
+        .arg("--port=0")
+        .spawn()
+        .expect("spawn server");
+    let pid = child.id();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let server = Server(child);
 
-    // parse listening port
-    let addr_regex = Regex::new(r"listening for (UDP|TCP) on ((?:(?:0\.0\.0\.0)|(?:127\.0\.0\.1)|(?:\[::\])):\d+)").unwrap();
-    let mut port = None;
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
+    let re = Regex::new(r"listening for UDP on (127\.0\.0\.1:\d+)").unwrap();
+    let mut addr = None;
+    let end = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < end {
         let mut line = String::new();
         if stdout.read_line(&mut line).unwrap_or(0) == 0 {
-            continue;
+            break;
         }
-        if let Some(caps) = addr_regex.captures(&line) {
-            let addr = caps.get(2).unwrap().as_str();
-            if let Ok(sock) = SocketAddr::from_str(addr) {
-                port = Some(sock.port());
-                break;
-            }
+        if let Some(c) = re.captures(&line) {
+            addr = Some(SocketAddr::from_str(&c[1]).unwrap());
+        }
+        if line.contains("awaiting connections") {
+            break;
         }
     }
-    let port = port.expect("server did not announce its port");
+    let addr = addr.expect("server did not announce its UDP port");
+    assert_eq!(addr.ip(), Ipv4Addr::LOCALHOST);
+    // keep draining stdout so the server never blocks on a full pipe
+    std::thread::spawn(move || {
+        let mut l = String::new();
+        while stdout.read_line(&mut l).unwrap_or(0) > 0 {
+            l.clear();
+        }
+    });
 
-    // create a client to talk to the server
-    let mut client = hickory_net::Client::new(("127.0.0.1", port)).expect("create client");
+    let stream = UdpClientStream::builder(addr, TokioRuntimeProvider::new()).build();
+    let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(bg);
 
-    // initial query should return 127.0.0.1
-    let name = Name::from_str("www.example.com.").unwrap();
-    let resp = query_message(&mut client, name.clone(), RecordType::A).await.unwrap();
-    assert_eq!(resp.answers().len(), 1);
-    if let A(address) = resp.answers()[0].data() {
-        assert_eq!(address, &A::new(127, 0, 0, 1));
-    } else {
-        panic!("expected A record");
-    }
+    let (rc, a) = a_records(&mut client, "www.example.com.").await;
+    assert_eq!((rc, a), (ResponseCode::NoError, vec![A::new(127, 0, 0, 1)]));
+    assert_eq!(a_records(&mut client, "foo.example.com.").await.0, ResponseCode::NXDomain);
 
-    // modify zone adding foo record
-    recs.get_mut("id1").unwrap().push(RecordRow { name: "foo".into(), rtype: "A".into(), value: "5.6.7.8".into(), ttl: 3600, priority: 0 });
-    generate_from_data(zonedir.to_str().unwrap(), zones.clone(), recs.clone()).unwrap();
+    // add a record: picked up without a restart
+    write_zone(&zone_path, 2, "foo.example.com. 300 IN A 5.6.7.8\n");
+    let mut c2 = client.clone();
+    eventually("new record is served after reload", || {
+        let mut c = c2.clone();
+        async move { a_records(&mut c, "foo.example.com.").await.1 == vec![A::new(5, 6, 7, 8)] }
+    })
+    .await;
+    // old data stays
+    assert_eq!(a_records(&mut c2, "www.example.com.").await.1, vec![A::new(127, 0, 0, 1)]);
 
-    // wait for reload (watcher sleeps 250ms internally)
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // a broken zone file is rejected; previous data keeps being served
+    write_zone(&zone_path, 3, "this is not a valid record line\n");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (rc, a) = a_records(&mut c2, "foo.example.com.").await;
+    assert_eq!((rc, a), (ResponseCode::NoError, vec![A::new(5, 6, 7, 8)]), "bad zone must not replace good data");
 
-    // query new record
-    let resp2 = query_message(&mut client, Name::from_str("foo.example.com.").unwrap(), RecordType::A)
-        .await
-        .unwrap();
-    assert_eq!(resp2.answers().len(), 1);
-    if let A(address) = resp2.answers()[0].data() {
-        assert_eq!(address, &A::new(5, 6, 7, 8));
-    } else {
-        panic!("expected foo A record");
-    }
+    // and a later good file is applied again
+    write_zone(&zone_path, 4, "foo.example.com. 300 IN A 9.9.9.9\n");
+    eventually("fixed zone is applied", || {
+        let mut c = c2.clone();
+        async move { a_records(&mut c, "foo.example.com.").await.1 == vec![A::new(9, 9, 9, 9)] }
+    })
+    .await;
 
-    // cleanup
-    let _ = child.kill();
+    // the same process served all of it (hot reload, not restart)
+    assert_eq!(server.0.id(), pid);
 }

@@ -441,10 +441,16 @@ impl<P: RuntimeProvider + Send + Sync> ZoneHandler for InMemoryZoneHandler<P> {
             Some(rr_set) => LookupRecords::new(lookup_options, rr_set),
             None => {
                 return Continue(Err(
+                    // Does the name, or any name below it (empty non-terminal), exist? Keys are
+                    // ordered in canonical DNS order, so everything at or below `name` sorts
+                    // directly after `(name, type 0)`: one O(log n) range probe instead of a
+                    // scan over every RRset (that scan made each NXDOMAIN in a 20k-record
+                    // zone cost ~5 ms and allowed cheap random-subdomain CPU exhaustion).
                     if inner
                         .records
-                        .keys()
-                        .any(|key| key.name() == name || name.zone_of(key.name()))
+                        .range(RrKey::new(name.clone(), RecordType::Unknown(0))..)
+                        .next()
+                        .is_some_and(|(key, _)| key.name() == name || name.zone_of(key.name()))
                     {
                         LookupError::NameExists
                     } else {

@@ -363,7 +363,7 @@ impl ZoneConfig {
                                     Some(zone_dir),
                                     config,
                                     #[cfg(feature = "__dnssec")]
-                                    server_config.nx_proof_kind.clone(),
+                                    server_config.effective_nx_proof_kind(),
                                 )
                                 .await?;
 
@@ -382,7 +382,7 @@ impl ZoneConfig {
                                 Some(zone_dir),
                                 config,
                                 #[cfg(feature = "__dnssec")]
-                                server_config.nx_proof_kind.clone(),
+                                server_config.effective_nx_proof_kind(),
                             )?;
 
                             #[cfg(feature = "__dnssec")]
@@ -522,6 +522,18 @@ pub(crate) struct ServerZoneConfig {
 }
 
 impl ServerZoneConfig {
+    /// A signed zone without an explicit non-existence proof would answer
+    /// NXDOMAIN/NODATA without NSEC records, which validating resolvers treat as
+    /// bogus; default to NSEC when keys are configured.
+    #[cfg(feature = "__dnssec")]
+    fn effective_nx_proof_kind(&self) -> Option<NxProofKind> {
+        match (&self.nx_proof_kind, self.keys.is_empty()) {
+            (Some(k), _) => Some(k.clone()),
+            (None, false) => Some(NxProofKind::Nsec),
+            (None, true) => None,
+        }
+    }
+
     /// path to the zone file, i.e. the base set of original records in the zone
     ///
     /// this is only used on first load, if dynamic update is enabled for the zone, then the journal

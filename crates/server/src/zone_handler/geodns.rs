@@ -155,6 +155,27 @@ impl ZoneHandler for GeoZoneHandler {
         LookupControlFlow::Skip
     }
 
+    #[cfg(feature = "__dnssec")]
+    async fn nsec3_records(
+        &self,
+        _info: crate::zone_handler::Nsec3QueryInfo<'_>,
+        _lookup_options: LookupOptions,
+    ) -> LookupControlFlow<AuthLookup> {
+        LookupControlFlow::Skip
+    }
+
+    /// The geo handler only synthesises answers; denial-of-existence proofs
+    /// (and signatures) come from the signed zone handler behind it.
+    #[cfg(feature = "__dnssec")]
+    fn nx_proof_kind(&self) -> Option<&crate::dnssec::NxProofKind> {
+        None
+    }
+
+    #[cfg(feature = "metrics")]
+    fn metrics_label(&self) -> &'static str {
+        "geodns"
+    }
+
     async fn lookup(
         &self,
         name: &LowerName,

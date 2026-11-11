@@ -23,6 +23,13 @@ pub struct Pool {
     slots: Vec<RwLock<&'static Client>>,
     next: AtomicUsize,
     tx_lock: tokio::sync::Mutex<()>,
+    cfg: Config,
+}
+
+/// A PostgreSQL session advisory lock held on a dedicated connection. The lock is released
+/// when the guard is dropped (the connection closes), or by the server if this process dies.
+pub struct AdvisoryLock {
+    _client: Client,
 }
 
 /// Exclusive use of the reserved connection. Statements issued through
@@ -59,7 +66,7 @@ impl Pool {
         for _ in 0..=size {
             slots.push(RwLock::new(open(&cfg).await?));
         }
-        let pool = Arc::new(Pool { slots, next: AtomicUsize::new(0), tx_lock: tokio::sync::Mutex::new(()) });
+        let pool = Arc::new(Pool { slots, next: AtomicUsize::new(0), tx_lock: tokio::sync::Mutex::new(()), cfg: cfg.clone() });
         for i in 0..=size {
             let p = pool.clone();
             let cfg = cfg.clone();
@@ -91,6 +98,17 @@ impl Pool {
                 }
             }
         }
+    }
+
+    /// Take the cluster-wide advisory lock `key`, waiting until it is free. Used to serialise
+    /// publication across several API instances that share a database and a zone directory.
+    pub async fn advisory_lock(&self, key: i64) -> Result<AdvisoryLock, tokio_postgres::Error> {
+        let (client, conn) = self.cfg.connect(NoTls).await?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        client.execute("SELECT pg_advisory_lock($1)", &[&key]).await?;
+        Ok(AdvisoryLock { _client: client })
     }
 
     /// Number of general-purpose connections currently usable.

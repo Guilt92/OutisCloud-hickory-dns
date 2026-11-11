@@ -36,10 +36,7 @@ impl<'a> Lexer<'a> {
         let mut char_data_vec: Option<Vec<String>> = None;
         let mut char_data: Option<String> = None;
 
-        for i in 0..4_096 {
-            // max chars in a single lex, helps with issues in the lexer...
-            assert!(i < 4095); // keeps the bounds of the loop defined (nothing lasts forever)
-
+        loop {
             // This is to get around mutability rules such that we can peek at the iter without moving next...
             let ch: Option<char> = self.peek();
 
@@ -258,8 +255,6 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-
-        unreachable!("The above match statement should have found a terminal state");
     }
 
     fn push_to_str(collect: &mut Option<String>, ch: char) -> LexerResult<()> {
@@ -764,5 +759,19 @@ $INCLUDE <SUBSYS>ISI-MAILBOXES.TXT",
             Token::CharData("<SUBSYS>ISI-MAILBOXES.TXT".to_string())
         );
         assert!(next_token(&mut lexer).is_none());
+    }
+
+    /// A single token longer than the old 4,095 character bound used to hit an `assert!`
+    /// (a panic reachable from any user-supplied zone data).
+    #[test]
+    fn very_long_tokens_do_not_panic() {
+        for len in [4_094usize, 4_095, 4_096, 10_000, 70_000] {
+            let long = "a".repeat(len);
+            let mut lexer = Lexer::new(&long);
+            assert_eq!(next_token(&mut lexer).unwrap(), Token::CharData(long.clone()));
+            let quoted = format!("\"{}\"", "b".repeat(len));
+            let mut lexer = Lexer::new(&quoted);
+            assert_eq!(next_token(&mut lexer).unwrap(), Token::CharData("b".repeat(len)));
+        }
     }
 }

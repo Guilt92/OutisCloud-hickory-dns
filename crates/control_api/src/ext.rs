@@ -648,6 +648,18 @@ pub async fn query_metrics(data: web::Data<AppState>, req: HttpRequest) -> impl 
 // Audit pagination, filters and retention
 // ---------------------------------------------------------------------------
 
+/// Opt-in pagination for list endpoints: without `limit` everything is returned
+/// (backward compatible); `X-Total-Count` always carries the full match count.
+#[derive(Deserialize, Default)]
+pub struct PageQuery { limit: Option<i64>, offset: Option<i64>, q: Option<String> }
+impl PageQuery {
+    /// (limit (None = unlimited), offset, search text)
+    pub fn parts(&self) -> (Option<i64>, i64, Option<String>) {
+        (self.limit.map(|l| l.clamp(1, 1000)), self.offset.unwrap_or(0).max(0),
+         self.q.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct AuditQuery {
     limit: Option<i64>, offset: Option<i64>, action: Option<String>, user_id: Option<String>,

@@ -357,9 +357,14 @@ impl DnsServer {
                     .ok()
                     .and_then(|v| v.trim().parse::<u32>().ok())
                     .unwrap_or(qps.saturating_mul(2)),
+                // DNS_RATE_LIMIT_SLIP: answer every Nth dropped UDP query with a truncated reply (default 2, 0 = never)
+                slip: std::env::var("DNS_RATE_LIMIT_SLIP")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u32>().ok())
+                    .unwrap_or(2),
             });
         if let Some(r) = &rate_limit {
-            info!("rate limiting: {} queries/s per source (burst {})", r.queries_per_second, r.burst);
+            info!("rate limiting: {} queries/s per source (burst {}, slip {})", r.queries_per_second, r.burst, r.slip);
         }
         let handler = SwapHandler::new(catalog, rate_limit);
         let mut server = Server::with_access(handler.clone(), deny_networks, allow_networks);
@@ -440,7 +445,7 @@ impl DnsServer {
         #[cfg(target_family = "unix")]
         check_drop_privs(
             user.as_deref().unwrap_or(DEFAULT_USER),
-            group.as_deref().unwrap_or(DEFAULT_GROUP),
+            group.as_deref().unwrap_or(&default_group()),
         )?;
         #[cfg(not(target_family = "unix"))]
         if user.is_some() || group.is_some() {
@@ -462,6 +467,28 @@ impl DnsServer {
         // Watch config / zone files / GeoIP database and hot-reload the zones
         // in place. A changed listener configuration still restarts the process.
         let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // DNSSEC signatures are produced when a zone is loaded and are valid for 52
+        // weeks. Reloading every RESIGN_INTERVAL_HOURS (default 168 = weekly, 0 = off)
+        // keeps the validity window sliding so a quiet zone never serves expired
+        // signatures (which would make it fail validation everywhere).
+        {
+            let hours: f64 = std::env::var("RESIGN_INTERVAL_HOURS").ok().and_then(|v| v.parse().ok()).unwrap_or(168.0);
+            let secs = (hours * 3600.0) as u64;
+            if secs >= 1 {
+                let tx = reload_tx.clone();
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(StdDuration::from_secs(secs));
+                    tick.tick().await; // the first tick fires immediately; zones were just loaded
+                    loop {
+                        tick.tick().await;
+                        tracing::info!("periodic reload to refresh DNSSEC signatures");
+                        if tx.send(()).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        }
         let cfg_watch_path = config_path.to_path_buf();
         let zone_watch_dir = zone_dir.clone();
         let geoip_path = std::env::var_os("GEOIP_DB_PATH").map(PathBuf::from);
@@ -926,6 +953,22 @@ fn parse_nsid_payload(raw_payload: &str) -> Result<NSIDPayload, ProtoError> {
 const DEFAULT_USER: &str = "nobody";
 #[cfg(target_family = "unix")]
 const DEFAULT_GROUP: &str = "nobody";
+
+/// Debian/Ubuntu have no `nobody` group (it is called `nogroup`); fall back to
+/// it so the privilege drop does not abort when run as root with defaults.
+#[cfg(target_family = "unix")]
+fn default_group() -> String {
+    let exists = |name: &str| {
+        std::ffi::CString::new(name)
+            .map(|c| !unsafe { libc::getgrnam(c.as_ptr()) }.is_null())
+            .unwrap_or(false)
+    };
+    if !exists(DEFAULT_GROUP) && exists("nogroup") {
+        "nogroup".to_string()
+    } else {
+        DEFAULT_GROUP.to_string()
+    }
+}
 
 #[cfg(test)]
 mod tests {

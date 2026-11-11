@@ -130,9 +130,11 @@ kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 cp "$W/zone.plain.lab.test" "$W/zone.geo.lab.test"
 sed -i 's/plain.lab.test/geo.lab.test/g' "$W/zone.geo.lab.test"; echo 'www.geo.lab.test. 300 IN A 192.0.2.11' >> "$W/zone.geo.lab.test"; echo 'api.geo.lab.test. 300 IN A 192.0.2.12' >> "$W/zone.geo.lab.test"
 start_server DNS_RATE_LIMIT_QPS=5 DNS_RATE_LIMIT_BURST=10
-# 120 queries in parallel from one source, well beyond burst 10 + 5/s
-answered=$(seq 1 120 | xargs -P 60 -I{} ip netns exec outis-cli dig +time=2 +tries=1 +short -b 5.9.0.1 @$SERVER api.geo.lab.test A | grep -c '^192.0.2.12$')
-ok=$answered; fail_q=$((120-answered))
-[ $fail_q -gt 60 ] && [ $ok -ge 8 ]; ok_if "rate limit drops excess queries from one source (answered $ok, dropped $fail_q of 120)" $?
+# 120 UDP queries in parallel from one source, well beyond burst 10 + 5/s (+ignore: no automatic TCP retry on TC)
+out=$(seq 1 120 | xargs -P 60 -I{} ip netns exec outis-cli dig +time=2 +tries=1 +ignore +noall +comments +answer -b 5.9.0.1 @$SERVER api.geo.lab.test A)
+answered=$(echo "$out" | grep -c 'ANSWER: 1,'); truncated=$(echo "$out" | grep -c 'flags:.* tc\|flags: qr tc'); fail_q=$((120-answered))
+[ $fail_q -gt 60 ] && [ $answered -ge 8 ]; ok_if "rate limit drops excess UDP queries from one source (answered $answered, not answered $fail_q of 120)" $?
+[ $truncated -ge 5 ] && [ $truncated -lt $((fail_q)) ]; ok_if "slip: some over-budget queries get a TC=1 reply, the rest are dropped ($truncated truncated)" $?
 got=$(q -b 41.0.0.1 +short @$SERVER api.geo.lab.test A | head -1); [ "$got" = "192.0.2.12" ]; ok_if "a different source is unaffected" $?
+got=$(q -b 5.9.0.1 +tcp +short @$SERVER api.geo.lab.test A | head -1); [ "$got" = "192.0.2.12" ]; ok_if "the flooding source still gets answers over TCP (exempt from the limit)" $?
 exit $fail

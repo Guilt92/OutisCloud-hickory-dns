@@ -109,7 +109,9 @@ tech.   3600    in      soa     ns0.centralnic.net.     hostmaster.centralnic.ne
     let soa_record = lookup.iter().next().cloned().unwrap();
     assert_eq!(RecordType::SOA, soa_record.record_type());
     assert_eq!(&Name::from_str("isi.edu.").unwrap(), soa_record.name()); // i.e. the origin or domain
-    assert_eq!(3_600_000, soa_record.ttl());
+    // an SOA line without an explicit TTL takes the SOA MINIMUM (60 in this zone),
+    // not the EXPIRE value older releases used (see commit 65741f113)
+    assert_eq!(60, soa_record.ttl());
     assert_eq!(DNSClass::IN, soa_record.dns_class());
     if let RData::SOA(soa) = soa_record.data() {
         // this should all be lowercased

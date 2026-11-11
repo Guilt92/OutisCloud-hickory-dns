@@ -385,6 +385,8 @@ pub struct TomlConfigBuilder {
     zones: Vec<TomlZone>,
     listen_ipv4: Vec<String>,
     listen_ipv6: Vec<String>,
+    /// address of the DNS server's Prometheus exporter (`PROMETHEUS_LISTEN_ADDR`)
+    prometheus_listen: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -395,6 +397,8 @@ struct TomlZone {
     geodns_enabled: bool,
     ecs: bool,
     geo_rules: Vec<TomlGeoRule>,
+    /// DNSSEC signing keys: (private key file, algorithm name)
+    keys: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +419,7 @@ impl TomlConfigBuilder {
             zones: Vec::new(),
             listen_ipv4: vec!["0.0.0.0".to_string()],
             listen_ipv6: Vec::new(),
+            prometheus_listen: None,
         }
     }
 
@@ -433,6 +438,15 @@ impl TomlConfigBuilder {
         let mut b = Self::new();
         if let Some(v4) = list::<std::net::Ipv4Addr>("LISTEN_ADDRS_IPV4") { if !v4.is_empty() { b.listen_ipv4 = v4; } }
         if let Some(v6) = list::<std::net::Ipv6Addr>("LISTEN_ADDRS_IPV6") { b.listen_ipv6 = v6; }
+        if let Ok(v) = std::env::var("PROMETHEUS_LISTEN_ADDR") {
+            let v = v.trim();
+            if v.is_empty() {
+            } else if v.parse::<std::net::SocketAddr>().is_ok() {
+                b.prometheus_listen = Some(v.to_string());
+            } else {
+                warn!("ignoring invalid PROMETHEUS_LISTEN_ADDR {:?} (expected ip:port)", v);
+            }
+        }
         b
     }
 
@@ -466,9 +480,17 @@ impl TomlConfigBuilder {
             geodns_enabled,
             ecs: false,
             geo_rules: rules,
+            keys: Vec::new(),
         });
 
         Ok(())
+    }
+
+    /// Sign the most recently added zone with these key files.
+    pub fn set_last_zone_keys(&mut self, keys: Vec<(String, String)>) {
+        if let Some(z) = self.zones.last_mut() {
+            z.keys = keys;
+        }
     }
 
     /// Mark the most recently added zone as ECS-aware.
@@ -500,6 +522,9 @@ impl TomlConfigBuilder {
             }
             result.push_str("]\n");
         }
+        if let Some(p) = &self.prometheus_listen {
+            result.push_str(&format!("prometheus_listen_addr = \"{}\"\n", toml_escape(p)));
+        }
         result.push('\n');
 
         for zone in &self.zones {
@@ -525,6 +550,14 @@ impl TomlConfigBuilder {
                     result.push_str("},\n");
                 }
                 result.push_str("] }\n\n");
+            }
+
+            if !zone.keys.is_empty() {
+                result.push_str("nx_proof_kind = \"nsec\"\nkeys = [\n");
+                for (path, alg) in &zone.keys {
+                    result.push_str(&format!("  {{ key_path = \"{}\", algorithm = \"{}\" }},\n", toml_escape(path), toml_escape(alg)));
+                }
+                result.push_str("]\n\n");
             }
 
             result.push_str("[[zones.stores]]\n");

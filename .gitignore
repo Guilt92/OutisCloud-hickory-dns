@@ -28,3 +28,13 @@ fuzz/corpus/**
 
 # Code coverage output
 /coverage
+
+# Node / frontend build output and test artefacts
+node_modules/
+web/ui/dist/
+web/ui/test-results/
+
+# Runtime data that must never be committed: DNSSEC private keys, logs, local env overrides
+dnssec-keys/
+*.log
+.env.local

@@ -422,6 +422,18 @@ impl Catalog {
             .await;
         };
         let handlers = self.find(request_info.query.name());
+        // RFC 4035 section 3.1.4.1: a DS RRset lives in the *parent* zone. When this server
+        // is authoritative for both the child and its parent, a DS query for the child's
+        // apex must be answered from the parent, otherwise the chain of trust cannot be
+        // built (the child zone has no DS for itself and would answer NODATA).
+        let handlers = if request_info.query.query_type() == RecordType::DS
+            && !request_info.query.name().is_root()
+            && self.handlers.contains_key(request_info.query.name())
+        {
+            self.find(&request_info.query.name().base_name()).or(handlers)
+        } else {
+            handlers
+        };
 
         let Some(handlers) = handlers else {
             // There are no zone handlers registered that can handle the request

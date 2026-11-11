@@ -1,7 +1,7 @@
 //! Prometheus gauges for publication health (exposed on /metrics).
 use crate::dns_manager::LastPublish;
 use once_cell::sync::Lazy;
-use prometheus013::{IntGauge, register_int_gauge};
+use prometheus::{IntGauge, register_int_gauge};
 
 static ZONES_PUBLISHED: Lazy<IntGauge> = Lazy::new(|| register_int_gauge!("outis_zones_published", "zones published in the last run").unwrap());
 static ZONES_FAILED: Lazy<IntGauge> = Lazy::new(|| register_int_gauge!("outis_zones_failed", "zones that failed in the last run").unwrap());

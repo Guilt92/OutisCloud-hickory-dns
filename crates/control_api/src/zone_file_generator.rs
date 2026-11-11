@@ -366,6 +366,21 @@ pub fn generate_with_ecs(
     geo_rules_map: HashMap<String, Vec<GeoRuleRow>>, // key is zone_id
     nameservers: Vec<NameserverRow>, // nameservers from database
 ) -> anyhow::Result<PublishReport> {
+    generate_full(base_dir, zones, ecs_zones, &HashMap::new(), records_map, geo_rules_map, nameservers)
+}
+
+/// Like [`generate_with_ecs`]; `dnssec_keys` maps a zone id to its signing key
+/// files `(absolute path, algorithm name)`. A signed zone never gets a GeoDNS
+/// handler: synthesised per-client answers cannot carry a valid signature.
+pub fn generate_full(
+    base_dir: &str,
+    zones: Vec<(String, String, bool)>,
+    ecs_zones: &HashSet<String>,
+    dnssec_keys: &HashMap<String, Vec<(String, String)>>,
+    records_map: HashMap<String, Vec<RecordRow>>,
+    geo_rules_map: HashMap<String, Vec<GeoRuleRow>>,
+    nameservers: Vec<NameserverRow>,
+) -> anyhow::Result<PublishReport> {
     let base_path = Path::new(base_dir);
     std::fs::create_dir_all(base_path).with_context(|| format!("failed to create dir {}", base_dir))?;
 
@@ -478,8 +493,11 @@ pub fn generate_with_ecs(
             Vec::new()
         };
 
-        toml_builder.add_zone(domain_norm.clone(), zone_path_str, *geodns_enabled, geo_rules)?;
-        toml_builder.set_last_zone_ecs(ecs_zones.contains(zone_id));
+        let keys = dnssec_keys.get(zone_id).cloned().unwrap_or_default();
+        let geo_on = *geodns_enabled && keys.is_empty();
+        toml_builder.add_zone(domain_norm.clone(), zone_path_str, geo_on, if geo_on { geo_rules } else { Vec::new() })?;
+        toml_builder.set_last_zone_ecs(ecs_zones.contains(zone_id) && geo_on);
+        toml_builder.set_last_zone_keys(keys);
     }
 
     // Zone files that no longer belong to any zone are moved aside (not
@@ -620,9 +638,13 @@ pub async fn generate_all(base_dir: &str, db: Arc<crate::db_pool::Pool>) -> anyh
     }
 
     let nameservers = load_nameservers(&db).await?;
+    let dnssec_keys = crate::dnssec::load_key_paths(&db, &base).await.unwrap_or_else(|e| {
+        warn!("could not read DNSSEC keys (zones are published unsigned): {:#}", e);
+        HashMap::new()
+    });
 
     // blocking filesystem work off the async runtime
-    task::spawn_blocking(move || generate_with_ecs(&base, zones_vec, &ecs_zones, records_map, geo_rules_map, nameservers))
+    task::spawn_blocking(move || generate_full(&base, zones_vec, &ecs_zones, &dnssec_keys, records_map, geo_rules_map, nameservers))
         .await?
 }
 

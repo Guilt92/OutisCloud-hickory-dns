@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-maxminddb = "0.23"
+maxminddb = "0.27"
 serde = { version = "1.0", features = ["derive"] }
 geoip2 = "0.1"
 

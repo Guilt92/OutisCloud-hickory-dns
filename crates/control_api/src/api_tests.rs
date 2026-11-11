@@ -1156,7 +1156,7 @@ async fn publication_gauges_are_exported_on_metrics() {
     // the gauges live in the registry shared with the HTTP metrics middleware
     let app = test::init_service(
         App::new()
-            .wrap(actix_web_prom::PrometheusMetricsBuilder::new("t").registry(prometheus013::default_registry().clone()).endpoint("/metrics").build().unwrap())
+            .wrap(actix_web_prom::PrometheusMetricsBuilder::new("t").registry(prometheus::default_registry().clone()).endpoint("/metrics").build().unwrap())
             .route("/x", web::get().to(|| async { HttpResponse::Ok().finish() })),
     ).await;
     let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
@@ -1164,5 +1164,269 @@ async fn publication_gauges_are_exported_on_metrics() {
     for g in ["outis_zones_published", "outis_zones_failed", "outis_last_publish_ok 1", "outis_last_publish_timestamp_seconds", "outis_bundle_version"] {
         assert!(body.contains(g), "missing {g} in /metrics");
     }
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn zones_records_users_support_opt_in_pagination_and_search() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    for d in ["a1.test", "a2.test", "a3.test", "b1.test", "b2.test"] {
+        make_zone(&env, &app, &t, d).await;
+    }
+    for i in 0..5 {
+        add_user(&env.state, &format!("pgu{i}"), "pg-user-pass-1", "user").await;
+    }
+    // helper: GET and return (body, X-Total-Count)
+    macro_rules! get_total {
+        ($uri:expr) => {{
+            let r = test::TestRequest::get().uri($uri).insert_header(("Authorization", format!("Bearer {t}"))).to_request();
+            let resp = test::call_service(&app, r).await;
+            let total = resp.headers().get("X-Total-Count").map(|v| v.to_str().unwrap().to_string());
+            let body: serde_json::Value = test::read_body_json(resp).await;
+            (body, total)
+        }};
+    }
+    // zones: unchanged without params, windowed with them, searchable
+    let (b, total) = get_total!("/api/v1/zones");
+    assert_eq!(b["data"].as_array().unwrap().len(), 5);
+    assert_eq!(total.as_deref(), Some("5"));
+    let (b, total) = get_total!("/api/v1/zones?limit=2&offset=0");
+    assert_eq!(b["data"].as_array().unwrap().len(), 2);
+    assert_eq!(total.as_deref(), Some("5"));
+    assert_eq!(b["data"][0]["domain"], "a1.test");
+    let (b, _) = get_total!("/api/v1/zones?limit=2&offset=4");
+    assert_eq!(b["data"].as_array().unwrap().len(), 1, "last partial page");
+    let (b, total) = get_total!("/api/v1/zones?q=b");
+    assert_eq!(b["data"].as_array().unwrap().len(), 2);
+    assert_eq!(total.as_deref(), Some("2"));
+    // records
+    let zid = make_zone(&env, &app, &t, "rec.test").await;
+    for i in 0..7 {
+        let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t),
+            j(serde_json::json!({"name": format!("h{i}"), "record_type": "A", "value": format!("192.0.2.{}", i + 1), "ttl": 300})));
+        assert_eq!(st, 201, "{raw}");
+    }
+    let (b, total) = get_total!(&format!("/api/v1/zones/{zid}/records?limit=3&offset=3"));
+    assert_eq!(b.as_array().unwrap().len(), 3);
+    assert_eq!(total.as_deref(), Some("10"), "7 added + 3 default apex records");
+    let (b, total) = get_total!(&format!("/api/v1/zones/{zid}/records?q=192.0.2.5"));
+    assert_eq!(b.as_array().unwrap().len(), 1);
+    assert_eq!(total.as_deref(), Some("1"));
+    let (b, _) = get_total!(&format!("/api/v1/zones/{zid}/records"));
+    assert_eq!(b.as_array().unwrap().len(), 10, "no params = everything (backward compatible)");
+    // users
+    let (b, total) = get_total!("/api/v1/users?limit=2&offset=2&q=pgu");
+    assert_eq!(b.as_array().unwrap().len(), 2);
+    assert_eq!(total.as_deref(), Some("5"));
+    // limit is clamped and negative offsets are treated as 0
+    let (b, _) = get_total!("/api/v1/users?limit=1000000&offset=-5&q=pgu");
+    assert_eq!(b.as_array().unwrap().len(), 5);
+    // authorization is unchanged: a tenant only pages their own zones
+    let u = add_user(&env.state, "tenant1", "tenant-pass-123", "user").await;
+    let tt = env.token(&u, "user");
+    let (st, _, _) = call!(app, get, "/api/v1/users?limit=1", Some(&tt), None);
+    assert_eq!(st, 403);
+    let r = test::TestRequest::get().uri("/api/v1/zones?limit=10").insert_header(("Authorization", format!("Bearer {tt}"))).to_request();
+    let resp = test::call_service(&app, r).await;
+    assert_eq!(resp.headers().get("X-Total-Count").unwrap(), "0");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "signed.test").await;
+    let named = || std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(!named().contains("keys = ["), "unsigned zones have no keys");
+
+    // GeoDNS rules block enabling DNSSEC (their answers cannot be signed)
+    let (st, _, raw) = call!(app, post, "/api/v1/georules", Some(&t), j(serde_json::json!({"zone_id": zid, "match_type": "country", "match_value": "US", "target": "192.0.2.1"})));
+    assert_eq!(st, 201, "{raw}");
+    let (st, b, _) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({})));
+    assert_eq!((st, b["error"].as_str()), (409, Some("geodns_rules_present")));
+    let rules = call!(app, get, "/api/v1/georules", Some(&t), None).1;
+    let rid = rules.as_array().or(rules["data"].as_array()).unwrap()[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(call!(app, delete, &format!("/api/v1/georules/{rid}"), Some(&t), None).0, 200);
+
+    // bad algorithm; then enable with the default
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({"algorithm": "RSASHA1"})));
+    assert_eq!(st, 400);
+    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({})));
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(b["enabled"], true);
+    let key = &b["keys"][0];
+    assert_eq!(key["algorithm"], "ECDSAP256SHA256");
+    assert_eq!(key["flags"], 257);
+    assert_eq!(key["ds"].as_array().unwrap().len(), 2);
+    assert!(key["ds"][0]["text"].as_str().unwrap().starts_with("signed.test. IN DS "));
+    assert!(!raw.contains("PRIVATE KEY"), "private key material is never returned");
+    // key file on disk with restricted mode; named.toml references it; geodns is off for the zone
+    let tag = key["key_tag"].as_i64().unwrap();
+    let kf = env.dir.path().join("dnssec-keys").join(format!("signed.test.{tag}.pem"));
+    assert!(kf.is_file());
+    assert_eq!(std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777, 0o640);
+    assert!(std::fs::read_to_string(&kf).unwrap().starts_with("-----BEGIN PRIVATE KEY-----"));
+    let n = named();
+    assert!(n.contains(&format!("key_path = \"{}\"", kf.display())) && n.contains("algorithm = \"ECDSAP256SHA256\""), "{n}");
+    // twice is refused
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({}))).0, 409);
+
+    // a signed zone refuses GeoDNS, renames
+    let (st, b, _) = call!(app, post, "/api/v1/georules", Some(&t), j(serde_json::json!({"zone_id": zid, "match_type": "country", "match_value": "US", "target": "192.0.2.1"})));
+    assert_eq!((st, b["error"].as_str()), (409, Some("dnssec_enabled")));
+    assert_eq!(call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"geodns_enabled": true}))).0, 409);
+    assert_eq!(call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"domain": "renamed.test"}))).0, 409);
+    // records can still change; the zone stays signed
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t), j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.9","ttl":300}))).0, 201);
+    assert!(named().contains("keys = ["));
+
+    // authorization: other tenants cannot see or change it, viewers can read but not change
+    let other = add_user(&env.state, "other", "other-pass-123", "user").await;
+    let ot = env.token(&other, "user");
+    assert_eq!(call!(app, get, &format!("/api/v1/zones/{zid}/dnssec"), Some(&ot), None).0, 403);
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&ot), j(serde_json::json!({}))).0, 403);
+    assert_eq!(call!(app, get, &format!("/api/v1/zones/{zid}/dnssec"), None::<&str>, None).0, 401);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&t), j(serde_json::json!({"username": "other", "role": "viewer"})));
+    assert_eq!(st, 200, "share");
+    assert_eq!(call!(app, get, &format!("/api/v1/zones/{zid}/dnssec"), Some(&ot), None).0, 200);
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&ot), j(serde_json::json!({}))).0, 403);
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/disable"), Some(&ot), j(serde_json::json!({"confirm_ds_removed": true}))).0, 403);
+
+    // rollover: second key joins, both are referenced; a second rollover is refused
+    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&t), j(serde_json::json!({"algorithm": "ED25519"})));
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(b["keys"].as_array().unwrap().len(), 2);
+    assert_eq!(b["keys"][1]["status"], "new");
+    assert_eq!(b["keys"][1]["algorithm"], "ED25519");
+    assert_eq!(named().matches("key_path").count(), 2);
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&t), j(serde_json::json!({}))).0, 409);
+    // completing retires the named key, keeps the other, and archives (not deletes) the private key
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"), Some(&t), j(serde_json::json!({"retire_key_tag": 1}))).0, 404);
+    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"), Some(&t), j(serde_json::json!({"retire_key_tag": tag})));
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["keys"].as_array().unwrap().len(), 1);
+    assert_eq!(b["keys"][0]["algorithm"], "ED25519");
+    assert_eq!(b["keys"][0]["status"], "active");
+    assert_eq!(named().matches("key_path").count(), 1);
+    assert!(!kf.exists() && env.dir.path().join("dnssec-keys/retired").join(format!("signed.test.{tag}.pem")).is_file());
+    // the last key cannot be "completed" away
+    let last = b["keys"][0]["key_tag"].as_i64().unwrap();
+    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"), Some(&t), j(serde_json::json!({"retire_key_tag": last}))).0, 409);
+
+    // disabling needs confirmation that the DS is gone
+    let (st, b, _) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/disable"), Some(&t), j(serde_json::json!({})));
+    assert_eq!((st, b["error"].as_str()), (409, Some("ds_not_confirmed")));
+    assert!(named().contains("keys = ["), "nothing changed without confirmation");
+    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/disable"), Some(&t), j(serde_json::json!({"confirm_ds_removed": true})));
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["enabled"], false);
+    assert!(!named().contains("keys = ["));
+    // after disabling, rename/GeoDNS work again
+    assert_eq!(call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"geodns_enabled": true}))).0, 200);
+    // audit trail
+    let (_, logs, _) = call!(app, get, "/api/v1/audit/logs?resource_type=zone&limit=100", Some(&t), None);
+    let actions: Vec<String> = logs["data"].as_array().unwrap().iter().map(|l| l["action"].as_str().unwrap().to_string()).collect();
+    for a in ["dnssec_enable", "dnssec_rollover", "dnssec_rollover_complete", "dnssec_disable"] { assert!(actions.contains(&a.to_string()), "missing audit action {a}: {actions:?}"); }
+    env.cleanup().await;
+}
+
+/// A database created by the *original* migrations (committed fixtures from the first
+/// release) must upgrade in place: data kept, new columns/tables added, running twice is a no-op.
+#[actix_web::test]
+async fn legacy_schema_upgrades_in_place_keeping_data() {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else { eprintln!("SKIPPED: TEST_DATABASE_URL not set"); return };
+    let schema = format!("t_{}", Uuid::new_v4().simple());
+    let (c, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { let _ = conn.await; });
+    c.batch_execute(&format!("CREATE SCHEMA {schema}; SET search_path TO {schema}")).await.unwrap();
+    drop(c);
+    let pool = Pool::connect(&url, 2, Some(&schema)).await.unwrap();
+    for f in ["legacy_001_initial_schema.sql", "legacy_002_add_nameservers.sql", "legacy_002_add_release_channels.sql"] {
+        let sql = std::fs::read_to_string(format!("{}/tests/fixtures/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        pool.batch_execute(&sql).await.unwrap_or_else(|e| panic!("legacy fixture {f}: {}", full_error_string(&e)));
+    }
+    // data written by the old release
+    let hash = Argon2::default().hash_password(b"old-admin-pass-1", &generate_salt()).unwrap().to_string();
+    let (uid, zid) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    pool.execute("INSERT INTO users (id, username, password_hash, role) VALUES ($1::text::uuid, 'legacyadmin', $2, 'admin')", &[&uid, &hash]).await.unwrap();
+    pool.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'legacy.example', $2::text::uuid)", &[&zid, &uid]).await.unwrap();
+    for (i, v) in ["192.0.2.1", "192.0.2.2"].iter().enumerate() {
+        pool.execute("INSERT INTO records (id, zone_id, name, type, value) VALUES ($1::text::uuid, $2::text::uuid, 'www', 'A', $3)", &[&Uuid::new_v4().to_string(), &zid, v]).await
+            .unwrap_or_else(|e| panic!("record {i}: {}", full_error_string(&e)));
+    }
+    // upgrade, twice (idempotent)
+    migrate_db(&*pool).await.unwrap_or_else(|e| panic!("first upgrade: {}", full_error_string(&e)));
+    migrate_db(&*pool).await.unwrap_or_else(|e| panic!("second upgrade: {}", full_error_string(&e)));
+    // data intact
+    assert_eq!(pool.query_one("SELECT count(*) FROM records WHERE name = 'www'", &[]).await.unwrap().get::<_, i64>(0), 2);
+    let z = pool.query_one("SELECT status, ecs_enabled, dnssec_enabled FROM zones WHERE domain = 'legacy.example'", &[]).await.unwrap();
+    assert_eq!((z.get::<_, String>(0), z.get::<_, bool>(1), z.get::<_, bool>(2)), ("active".to_string(), false, false));
+    for t in ["zone_members", "zone_revisions", "dnssec_keys", "publish_state"] {
+        let n: i64 = pool.query_one(&format!("SELECT count(*) FROM {t}"), &[]).await.unwrap_or_else(|e| panic!("table {t} missing: {}", full_error_string(&e))).get(0);
+        assert!(n >= 0);
+    }
+    // the old unique constraint no longer prevents an RRset with several values (already inserted above) and
+    // the upgraded database serves the legacy account and publishes the legacy zone
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState {
+        db: pool.clone(), jwt_secret: "unit-test-secret-unit-test-secret-1234".into(),
+        dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
+        verify_resolver: "127.0.0.1:9".parse().unwrap(), verify_domains: false, dns_metrics_url: None,
+    };
+    let full = FullState { inner: state.clone(), geo: Arc::new(tokio::sync::Mutex::new(GeoState { db: None })), processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())) };
+    let env = Env { state, full, dir, schema: schema.clone(), admin: uid };
+    let app = app!(env);
+    let (st, b, raw) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username": "legacyadmin", "password": "old-admin-pass-1"})));
+    assert_eq!(st, 200, "{raw}");
+    let tok = b["token"].as_str().unwrap().to_string();
+    let (_, recs, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&tok), None);
+    assert_eq!(recs.as_array().unwrap().len(), 2);
+    let rep = env.state.dns_manager.regenerate_zones(env.state.db.clone()).await.unwrap();
+    assert!(rep.failed.is_empty(), "{:?}", rep.failed);
+    let zf = std::fs::read_to_string(env.zone_file("legacy.example")).unwrap();
+    assert!(zf.contains("192.0.2.1") && zf.contains("192.0.2.2"));
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn very_long_record_values_never_crash_the_api() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "long.test").await;
+    for len in [255usize, 4_095, 4_096, 20_000] {
+        let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t),
+            j(serde_json::json!({"name": format!("t{len}"), "record_type": "TXT", "value": "a".repeat(len), "ttl": 300})));
+        assert!(st == 201 || st == 400, "TXT of {len} chars must be accepted or refused cleanly, got {st}: {}", &raw[..raw.len().min(200)]);
+    }
+    // the API is still serving and the published zone is intact
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&t), None);
+    assert_eq!(st, 200);
+    let zf = std::fs::read_to_string(env.zone_file("long.test")).unwrap();
+    assert!(zf.contains("SOA"));
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn publication_is_serialised_across_api_instances() {
+    let Some(env) = setup().await else { return };
+    // a second "instance" holding the cluster lock blocks publication until it lets go
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let other = Pool::connect(&url, 1, Some(&env.schema)).await.unwrap();
+    let held = other.advisory_lock(0x4f55_5449_5350_5542).await.unwrap();
+    let st = env.state.clone();
+    let started = std::time::Instant::now();
+    let publish = tokio::spawn(async move { st.dns_manager.regenerate_zones(st.db.clone()).await });
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    assert!(!publish.is_finished(), "publication must wait for the other instance");
+    drop(held);
+    let rep = publish.await.unwrap().unwrap();
+    assert!(rep.failed.is_empty());
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1200));
     env.cleanup().await;
 }

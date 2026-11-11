@@ -9,9 +9,10 @@ use std::sync::{Arc, RwLock};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 
 use crate::net::runtime::Time;
+use crate::net::xfer::Protocol;
 use crate::proto::op::{Header, ResponseCode};
 use crate::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use crate::zone_handler::Catalog;
+use crate::zone_handler::{Catalog, MessageResponseBuilder};
 
 /// Per-source query budget. IPv4 sources are counted per address, IPv6
 /// sources per /64 (a single subscriber commonly owns a whole /64).
@@ -19,6 +20,13 @@ use crate::zone_handler::Catalog;
 pub struct RateLimitConfig {
     pub queries_per_second: u32,
     pub burst: u32,
+    /// Response Rate Limiting "slip": every `slip`-th over-budget UDP query is answered with an
+    /// empty truncated (TC=1) response instead of being dropped, so a legitimate client that
+    /// shares a (spoofed) address with a flood retries over TCP and still gets an answer, while
+    /// the small response gives a reflection attacker no amplification. 0 = always drop,
+    /// 1 = always truncate. Queries over TCP are never rate limited: the handshake proves the
+    /// source address.
+    pub slip: u32,
 }
 
 fn limiter_key(ip: IpAddr) -> IpAddr {
@@ -44,6 +52,8 @@ struct Shared {
     catalog: RwLock<Arc<Catalog>>,
     limiter: Option<DefaultKeyedRateLimiter<IpAddr>>,
     limited: AtomicU64,
+    slipped: AtomicU64,
+    slip: u32,
     reloads: AtomicU64,
 }
 
@@ -65,6 +75,8 @@ impl SwapHandler {
                 catalog: RwLock::new(Arc::new(catalog)),
                 limiter,
                 limited: AtomicU64::new(0),
+                slipped: AtomicU64::new(0),
+                slip: limit.map(|l| l.slip).unwrap_or(0),
                 reloads: AtomicU64::new(0),
             }),
         }
@@ -80,6 +92,11 @@ impl SwapHandler {
     /// Number of queries dropped by the rate limiter so far.
     pub fn rate_limited(&self) -> u64 {
         self.shared.limited.load(Ordering::Relaxed)
+    }
+
+    /// Number of over-budget queries answered with a truncated response (slip).
+    pub fn slipped(&self) -> u64 {
+        self.shared.slipped.load(Ordering::Relaxed)
     }
 
     /// Number of successful hot reloads so far.
@@ -113,11 +130,23 @@ impl RequestHandler for SwapHandler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
-        if !self.allow(request.src().ip()) {
-            // Over budget: drop without answering. Replying (even REFUSED)
-            // would let spoofed-source floods reflect traffic at the victim.
-            self.shared.limited.fetch_add(1, Ordering::Relaxed);
+        if request.protocol() != Protocol::Tcp && !self.allow(request.src().ip()) {
+            // Over budget. Replying with a full answer (or even REFUSED) would let spoofed-source
+            // floods reflect traffic at the victim, so the query is dropped, except for the
+            // occasional tiny TC=1 "slip" that lets a real client retry over TCP.
+            let n = self.shared.limited.fetch_add(1, Ordering::Relaxed) + 1;
             let mut header = Header::response_from_request(request.header());
+            let slip = self.shared.slip;
+            if slip > 0 && request.protocol() == Protocol::Udp && n % u64::from(slip) == 0 {
+                self.shared.slipped.fetch_add(1, Ordering::Relaxed);
+                header.set_truncated(true);
+                let response = MessageResponseBuilder::new(request.raw_queries(), None).build_no_records(header);
+                let mut response_handle = response_handle;
+                return match response_handle.send_response(response).await {
+                    Ok(info) => info,
+                    Err(_) => ResponseInfo::from(header),
+                };
+            }
             header.set_response_code(ResponseCode::Refused);
             return ResponseInfo::from(header);
         }
@@ -141,7 +170,7 @@ mod tests {
 
     #[test]
     fn limiter_enforces_burst_then_blocks_per_source() {
-        let h = SwapHandler::new(Catalog::new(), Some(RateLimitConfig { queries_per_second: 1, burst: 5 }));
+        let h = SwapHandler::new(Catalog::new(), Some(RateLimitConfig { queries_per_second: 1, burst: 5, slip: 0 }));
         let a: IpAddr = "192.0.2.1".parse().unwrap();
         let b: IpAddr = "192.0.2.2".parse().unwrap();
         let allowed = (0..20).filter(|_| h.allow(a)).count();
