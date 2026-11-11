@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Navigate, useSearchParams } from 'react-router-dom';
-import { Globe, Mail, Lock, AlertCircle, Eye, EyeOff, Loader2, Shield, Zap, Database, Network } from 'lucide-react';
+import { User, Lock, AlertCircle, Eye, EyeOff, Loader2, ShieldCheck, Zap, MapPin, Radio } from 'lucide-react';
 import { useAuthStore } from '../store';
 import clsx from 'clsx';
-import { motion } from 'framer-motion';
+import { Brand, FlowArt, ThemeToggle } from '../components/ui';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -86,210 +86,96 @@ export default function Login() {
   const showSessionExpiredMessage = sessionExpiredParam === 'true' || sessionExpired;
 
   const features = [
-    { icon: Zap, label: 'High Performance', desc: 'Lightning fast DNS queries' },
-    { icon: Shield, label: 'Secure', desc: 'DNSSEC & TSIG support' },
-    { icon: Database, label: 'Cloud Native', desc: 'PostgreSQL backed' },
-    { icon: Network, label: 'Geo DNS', desc: 'Global load balancing' },
+    { icon: Zap, label: 'Fast authoritative DNS', desc: 'Hot-reloaded zones, no downtime' },
+    { icon: ShieldCheck, label: 'DNSSEC built in', desc: 'Signing, DS records, key rollover' },
+    { icon: MapPin, label: 'GeoDNS', desc: 'Country, region and city routing' },
+    { icon: Radio, label: 'Replicated', desc: 'Signed config sync to every node' },
   ];
-  
+
   return (
-    <div className="min-h-screen flex">
-      {/* Left side - Branding */}
-      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary-600 via-primary-700 to-primary-900 relative overflow-hidden">
-        {/* Animated background patterns */}
-        <div className="absolute inset-0">
-          <div className="absolute top-20 left-20 w-72 h-72 bg-white/10 rounded-full blur-3xl animate-pulse"></div>
-          <div className="absolute bottom-20 right-20 w-96 h-96 bg-primary-400/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }}></div>
-          <div className="absolute top-1/2 left-1/2 w-64 h-64 bg-primary-300/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '2s' }}></div>
-        </div>
-        
-        {/* Grid pattern */}
-        <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IjEiIGZpbGwtb3BhY2l0eT0iMC4wNSI+PHBhdGggZD0iTTM2IDM0djItSDI0di0yaDEyek0zNiA0OHYySDI0di0yaDEyeiIvPjwvZz48L2c+PC9zdmc+')] opacity-30"></div>
-        
-        <div className="relative z-10 flex flex-col justify-center items-center w-full p-12 text-white">
-          <motion.div 
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ duration: 0.6 }}
-            className="text-center mb-12"
-          >
-            <div className="inline-flex items-center justify-center w-24 h-24 rounded-3xl bg-white/10 backdrop-blur-sm mb-6">
-              <Globe className="w-14 h-14 text-white" />
-            </div>
-            <h1 className="text-5xl font-bold mb-4">OutisCloud</h1>
-            <p className="text-xl text-primary-100">Enterprise DNS Management Platform</p>
-          </motion.div>
-          
-          <motion.div 
-            initial={{ y: 30, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="grid grid-cols-2 gap-6 w-full max-w-lg"
-          >
-            {features.map((feature, index) => (
-              <motion.div 
-                key={index}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.3 + index * 0.1 }}
-                className="bg-white/10 backdrop-blur-sm rounded-2xl p-5 border border-white/20"
-              >
-                <feature.icon className="w-8 h-8 mb-3 text-primary-200" />
-                <h3 className="font-semibold mb-1">{feature.label}</h3>
-                <p className="text-sm text-primary-100">{feature.desc}</p>
-              </motion.div>
-            ))}
-          </motion.div>
-          
-          <motion.p 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.6, delay: 0.8 }}
-            className="mt-12 text-primary-200 text-sm"
-          >
-            {/* Trusted by companies worldwide */}
-          </motion.p>
+    <div className="min-h-screen flex" data-testid="login-page">
+      {/* Brand panel */}
+      <div className="hidden lg:flex lg:w-[52%] relative overflow-hidden bg-[#0B0D12] text-white">
+        <FlowArt className="absolute inset-0 w-full h-full opacity-90" />
+        <div className="absolute inset-0 bg-[radial-gradient(60%_50%_at_20%_10%,rgba(245,240,32,0.10),transparent_70%)]" />
+        <div className="relative z-10 flex flex-col justify-between w-full p-12 xl:p-16">
+          <span className="inline-flex items-center gap-2.5"><span className="inline-block"><Brand /></span></span>
+          <div className="max-w-lg">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#F5F020] mb-4">DNS control plane</p>
+            <h1 className="font-display text-5xl xl:text-6xl font-semibold tracking-tight leading-[1.05]">DNS that moves at the speed of your data.</h1>
+            <p className="mt-5 text-lg text-white/70">One place to run zones, servers, agents and GeoDNS — with the audit trail to prove it.</p>
+            <ul className="mt-10 grid grid-cols-2 gap-x-8 gap-y-6">
+              {features.map((f) => (
+                <li key={f.label} className="flex gap-3">
+                  <f.icon className="w-5 h-5 text-[#F5F020] flex-shrink-0 mt-0.5" />
+                  <div><p className="text-sm font-semibold">{f.label}</p><p className="text-xs text-white/60 mt-0.5">{f.desc}</p></div>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="text-xs text-white/40">&copy; {new Date().getFullYear()} OutisCloud</p>
         </div>
       </div>
-      
-      {/* Right side - Login form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-gray-50 dark:bg-gray-900">
-        <div className="w-full max-w-md">
-          {/* Mobile logo */}
-          <div className="lg:hidden text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary-100 dark:bg-primary-900/30 mb-4">
-              <Globe className="w-8 h-8 text-primary-600 dark:text-primary-400" />
-            </div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">OutisCloud</h1>
-          </div>
-          
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700 p-8"
-          >
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Welcome back</h2>
-            <p className="text-gray-500 dark:text-gray-400 mb-6">Sign in to manage your DNS infrastructure</p>
-            
+
+      {/* Form */}
+      <div className="w-full lg:w-[48%] flex flex-col">
+        <div className="flex items-center justify-between p-4 lg:p-6">
+          <div className="lg:hidden"><Brand /></div>
+          <div className="flex-1" />
+          <ThemeToggle />
+        </div>
+        <div className="flex-1 flex items-center justify-center px-5 pb-10">
+          <div className="w-full max-w-md animate-slide-in">
+            <p className="eyebrow mb-2">Sign in</p>
+            <h2 className="font-display text-3xl font-semibold tracking-tight text-ink">Welcome back</h2>
+            <p className="text-muted mt-1.5 mb-7">Sign in to manage your DNS.</p>
+
             {showSessionExpiredMessage && (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="mb-6 p-4 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 flex items-start gap-3"
-              >
-                <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-amber-600 dark:text-amber-400">Your session has expired. Please log in again.</p>
-              </motion.div>
+              <div role="status" className="mb-5 p-3.5 rounded-lg border border-warning-500/40 bg-warning-500/10 flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-warning-500 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-ink">Your session has expired. Please log in again.</p>
+              </div>
             )}
-            
             {error && (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="mb-6 p-4 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 flex items-start gap-3"
-              >
-                <AlertCircle className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-              </motion.div>
+              <div role="alert" className="mb-5 p-3.5 rounded-lg border border-danger-500/40 bg-danger-500/10 flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-danger-500 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-ink">{error}</p>
+              </div>
             )}
-            
-            <form onSubmit={handleSubmit} className="space-y-5">
+
+            <form onSubmit={handleSubmit} className="space-y-5" noValidate>
               <div>
-                <label htmlFor="username" className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                  Username
-                </label>
+                <label htmlFor="username" className="form-label">Username</label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <Mail className="h-5 w-5 text-gray-400" />
-                  </div>
-                  <input
-                    id="username"
-                    type="text"
-                    autoComplete="username"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className={clsx(
-                      "block w-full pl-12 pr-4 py-3.5 border rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white transition-all",
-                      error && !username ? "border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/10" : "border-gray-200 dark:border-gray-600"
-                    )}
-                    placeholder="Enter your username"
-                  />
+                  <User className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted pointer-events-none" />
+                  <input id="username" type="text" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)}
+                    className={clsx('input pl-10 py-3', error && !username && 'input-error')} placeholder="Enter your username" />
                 </div>
               </div>
-              
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label htmlFor="password" className="block text-sm font-semibold text-gray-700 dark:text-gray-300">
-                    Password
-                  </label>
-                  <a href="#" className="text-sm text-primary-600 hover:text-primary-500 dark:text-primary-400 font-medium">
-                    Forgot password?
-                  </a>
-                </div>
+                <label htmlFor="password" className="form-label">Password</label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <Lock className="h-5 w-5 text-gray-400" />
-                  </div>
-                  <input
-                    id="password"
-                    type={showPassword ? 'text' : 'password'}
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className={clsx(
-                      "block w-full pl-12 pr-12 py-3.5 border rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white transition-all",
-                      error && !password ? "border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/10" : "border-gray-200 dark:border-gray-600"
-                    )}
-                    placeholder="Enter your password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  >
-                    {showPassword ? (
-                      <EyeOff className="h-5 w-5" />
-                    ) : (
-                      <Eye className="h-5 w-5" />
-                    )}
+                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted pointer-events-none" />
+                  <input id="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
+                    className={clsx('input pl-10 pr-11 py-3', error && !password && 'input-error')} placeholder="Enter your password" />
+                  <button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute inset-y-0 right-0 px-3.5 flex items-center text-muted hover:text-ink">
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
               </div>
-              
               {needOtp && (
                 <div>
-                  <label htmlFor="otp" className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Authentication code</label>
+                  <label htmlFor="otp" className="form-label">Authentication code</label>
                   <input id="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp}
-                    onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
-                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    placeholder="123456" />
+                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} className="input py-3 font-mono tracking-[0.4em] text-center" placeholder="123456" />
                 </div>
               )}
-              <button
-                type="submit"
-                disabled={isLoading}
-                className={clsx(
-                  "w-full flex items-center justify-center gap-2 py-3.5 px-4 border border-transparent rounded-xl shadow-lg text-sm font-semibold text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-[1.02] active:scale-[0.98]",
-                  isLoading && "cursor-wait"
-                )}
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>Signing in...</span>
-                  </>
-                ) : (
-                  'Sign in to Dashboard'
-                )}
+              <button type="submit" disabled={isLoading} className="btn-primary w-full py-3 text-sm">
+                {isLoading ? (<><Loader2 className="w-4 h-4 animate-spin" /><span>Signing in…</span></>) : 'Sign in'}
               </button>
             </form>
-            
-          </motion.div>
-          
-          <p className="mt-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            &copy; {new Date().getFullYear()} OutisCloud. Enterprise DNS Management.
-          </p>
+          </div>
         </div>
       </div>
     </div>

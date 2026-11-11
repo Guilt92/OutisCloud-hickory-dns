@@ -1,8 +1,10 @@
 import React from 'react'
 import { Upload } from 'lucide-react'
 import api from '../api/client'
+import Notifications from './Notifications'
 
 export default function BulkImport({ endpoint, onComplete, accept='text/csv,application/json' }){
+  const notify = React.useContext(Notifications)
   const [file, setFile] = React.useState(null)
   const [loading, setLoading] = React.useState(false)
 
@@ -36,7 +38,7 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
   }
 
   const submit = async ()=>{
-    if (!file) return alert('Select a file')
+    if (!file) return notify?.warning('Select a file')
     setLoading(true)
     try {
       const text = await file.text()
@@ -47,20 +49,20 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
       if (records.length === 0) throw new Error('no records found in file')
       const res = await api.post(endpoint, { records })
       const d = res.data || {}
-      if (typeof d.imported === 'number') alert(`Imported ${d.imported} record(s)` + (d.skipped ? `, skipped ${d.skipped} duplicate(s)` : ''))
+      if (typeof d.imported === 'number') notify?.success(`Imported ${d.imported} record(s)` + (d.skipped ? `, skipped ${d.skipped} duplicate(s)` : ''))
       onComplete && onComplete()
       setFile(null)
     } catch (e) {
       console.error(e)
       const d = e.response?.data
-      alert('Import failed: ' + (d?.details || d?.error || e.message || ''))
+      notify?.error('Import failed: ' + (d?.details || d?.error || e.message || ''))
     }
     setLoading(false)
   }
 
   return (
     <div className="flex items-center gap-2">
-      <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors border border-dashed border-gray-300 dark:border-gray-600">
+      <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer hover:text-gray-800 dark:hover:text-gray-200 px-3 py-1.5 rounded-lg hover:bg-ink/5 transition-colors border border-dashed border-line">
         <Upload className="w-4 h-4" />
         <span className="truncate max-w-[120px]">{file ? file.name : 'Choose file'}</span>
         <input type="file" accept={accept} onChange={e=>{setFile(e.target.files[0]); e.target.value=''}} className="hidden" />

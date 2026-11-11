@@ -147,84 +147,28 @@ export function useAdvancedSearch(items, searchableFields = []) {
   };
 }
 
-// Pagination UI Component
+// Pagination UI component (design-system styled)
 export function PaginationControls({ pagination }) {
   const { currentPage, totalPages, goToPage } = pagination;
-  
   if (totalPages <= 1) return null;
-  
+
   const pages = [];
-  const startPage = Math.max(1, currentPage - 2);
-  const endPage = Math.min(totalPages, currentPage + 2);
-  
-  if (startPage > 1) {
-    pages.push(
-      <button
-        key="first"
-        onClick={() => goToPage(1)}
-        className="px-3 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-      >
-        1
-      </button>
-    );
-    if (startPage > 2) {
-      pages.push(
-        <span key="ellipsis1" className="px-3 py-2 text-gray-700 dark:text-gray-300">...</span>
-      );
-    }
-  }
-  
-  for (let i = startPage; i <= endPage; i++) {
-    pages.push(
-      <button
-        key={i}
-        onClick={() => goToPage(i)}
-        className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
-          i === currentPage
-            ? 'bg-blue-600 text-white'
-            : 'border border-gray-300 text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700'
-        }`}
-      >
-        {i}
-      </button>
-    );
-  }
-  
-  if (endPage < totalPages) {
-    if (endPage < totalPages - 1) {
-      pages.push(
-        <span key="ellipsis2" className="px-3 py-2 text-gray-700 dark:text-gray-300">...</span>
-      );
-    }
-    pages.push(
-      <button
-        key="last"
-        onClick={() => goToPage(totalPages)}
-        className="px-3 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-      >
-        {totalPages}
-      </button>
-    );
-  }
-  
+  for (let i = Math.max(1, currentPage - 1); i <= Math.min(totalPages, currentPage + 1); i++) pages.push(i);
+  if (pages[0] > 1) { if (pages[0] > 2) pages.unshift('…'); pages.unshift(1); }
+  if (pages[pages.length - 1] < totalPages) { if (pages[pages.length - 1] < totalPages - 1) pages.push('…'); pages.push(totalPages); }
+
+  const base = 'min-w-[2rem] h-8 px-2 rounded-md text-sm font-medium transition-colors';
   return (
-    <div className="flex items-center justify-center gap-2 mt-6">
-      <button
-        onClick={() => pagination.prevPage()}
-        disabled={currentPage === 1}
-        className="px-3 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-      >
-        Previous
-      </button>
-      {pages}
-      <button
-        onClick={() => pagination.nextPage()}
-        disabled={currentPage === totalPages}
-        className="px-3 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-      >
-        Next
-      </button>
-    </div>
+    <nav className="flex items-center gap-1" aria-label="Pagination">
+      <button type="button" onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1}
+        className={`${base} text-muted hover:text-ink hover:bg-ink/5 disabled:opacity-40 disabled:hover:bg-transparent`}>Prev</button>
+      {pages.map((p, i) => p === '…'
+        ? <span key={`e${i}`} className="px-1 text-muted" aria-hidden="true">…</span>
+        : <button type="button" key={p} onClick={() => goToPage(p)} aria-current={p === currentPage ? 'page' : undefined}
+            className={`${base} ${p === currentPage ? 'bg-accent text-on-accent' : 'text-muted hover:text-ink hover:bg-ink/5'}`}>{p}</button>)}
+      <button type="button" onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages}
+        className={`${base} text-muted hover:text-ink hover:bg-ink/5 disabled:opacity-40 disabled:hover:bg-transparent`}>Next</button>
+    </nav>
   );
 }
 

@@ -5,6 +5,7 @@ import App from './App';
 import { setAuthToken } from './api/client';
 import { useAuthStore } from './store';
 import { NotificationsProvider } from './components/Notifications';
+import { ConfirmProvider } from './components/ui';
 import './index.css';
 
 // Initialize auth state from persisted store (if any)
@@ -38,7 +39,9 @@ root.render(
   <React.StrictMode>
     <BrowserRouter>
       <NotificationsProvider>
-        <App />
+        <ConfirmProvider>
+          <App />
+        </ConfirmProvider>
       </NotificationsProvider>
     </BrowserRouter>
   </React.StrictMode>

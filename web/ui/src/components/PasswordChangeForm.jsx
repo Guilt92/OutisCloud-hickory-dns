@@ -86,7 +86,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
 
   const PasswordInput = ({ field, label, value, onChange, placeholder, required = true, disabled = false }) => (
     <div className="relative">
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+      <label className="block text-sm font-medium text-ink/80 mb-1.5">
         {label} {required && <span className="text-red-500">*</span>}
       </label>
       <div className="relative">
@@ -96,7 +96,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           disabled={disabled}
-          className="w-full px-4 py-2.5 pr-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full px-4 py-2.5 pr-10 rounded-lg border border-line bg-white dark:bg-gray-700 text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         />
         <button
           type="button"
@@ -118,17 +118,17 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
+      className="card p-6"
     >
       <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
+        <div className="icon-box">
           <KeyRound className="w-5 h-5 text-white" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+          <h2 className="text-lg font-semibold text-ink">
             {isAdmin ? 'Reset User Password' : 'Change Password'}
           </h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
+          <p className="text-sm text-muted">
             {isAdmin ? 'Reset password for another user' : 'Update your account password'}
           </p>
         </div>
@@ -137,7 +137,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
       <form onSubmit={handleSubmit} className="space-y-4">
         {isAdmin && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+            <label className="block text-sm font-medium text-ink/80 mb-1.5">
               User ID <span className="text-red-500">*</span>
             </label>
             <input
@@ -146,7 +146,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
               onChange={(e) => setFormData((prev) => ({ ...prev, userIdForAdmin: e.target.value }))}
               placeholder="Enter user ID"
               required
-              className="w-full px-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+              className="w-full px-4 py-2.5 rounded-lg border border-line bg-white dark:bg-gray-700 text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
             />
           </div>
         )}
@@ -183,7 +183,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800"
+              className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-danger-500/40"
             >
               <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
               <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
@@ -208,7 +208,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-primary-500 to-primary-600 text-white font-medium hover:from-primary-600 hover:to-primary-700 focus:ring-4 focus:ring-primary-300 dark:focus:ring-primary-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg btn-primary font-medium hover:from-primary-600 hover:to-primary-700 focus:ring-4 focus:ring-primary-300 dark:focus:ring-primary-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
           {isLoading ? (
             <>

@@ -2,8 +2,12 @@ import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../../api/client'
 import { Globe, Plus, Trash2, MapPin, Play, Edit3 } from 'lucide-react'
+import { useConfirm } from '../../components/ui'
+import Notifications from '../../components/Notifications'
 
 export default function GeoRules(){
+  const askConfirm = useConfirm()
+  const notify = React.useContext(Notifications)
   const [rules, setRules] = React.useState([])
   const [zones, setZones] = React.useState([])
   const [zone, setZone] = React.useState('')
@@ -56,15 +60,15 @@ export default function GeoRules(){
       setZone(''); setPriority(0); setEnabled(true); setRecordName(''); setRecordType('');
       setEditingRule(null);
       load()
-    } catch (e) { alert('Error saving rule') }
+    } catch (e) { notify?.error('Error saving rule') }
   }
 
   const remove = async (id)=>{ 
-    if(!confirm('Delete rule?')) return; 
+    if(!(await askConfirm({ title: 'Delete GeoDNS rule?', message: 'Matching clients will fall back to the next rule or the zone data.', confirmLabel: 'Delete rule' }))) return; 
     try { 
       await api.delete(`/api/v1/georules/${id}`); 
       load() 
-    } catch(e){ alert('Delete failed') } 
+    } catch(e){ notify?.error('Delete failed') } 
   }
 
   const startEditRule = (r) => {
@@ -80,12 +84,12 @@ export default function GeoRules(){
   }
 
   const testResolve = async () => {
-    if (!zone) { alert('Select a zone'); return }
+    if (!zone) { notify?.warning('Select a zone'); return }
     setTesting(true)
     try { 
       const r = await api.post('/api/v1/georules/resolve', { zone_id: zone, client_ip: testIp }); 
       setResolveResult(r.data) 
-    } catch (e) { alert('Error resolving') }
+    } catch (e) { notify?.error('Error resolving') }
     setTesting(false)
   }
 
@@ -99,7 +103,7 @@ export default function GeoRules(){
       await api.put(`/api/v1/georules/${rule.id}`, { enabled: !rule.enabled });
       load();
     } catch (e) {
-      alert('Failed to update rule');
+      notify?.error('Failed to update rule');
     }
   }
 
@@ -115,7 +119,7 @@ export default function GeoRules(){
             <div className="icon-box bg-green-100 dark:bg-green-900/30">
               <Globe className="w-5 h-5 text-green-600 dark:text-green-400" />
             </div>
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white">GeoDNS Rules</h3>
+            <h1 className="section-title">GeoDNS Rules</h1>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -147,8 +151,8 @@ export default function GeoRules(){
               <input type="number" min="0" className="input" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
             </div>
             <div className="flex items-end pb-0.5">
-              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
-                <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500" />
+              <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
+                <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="w-4 h-4 rounded border-line text-green-600 focus:ring-green-500" />
                 Enabled
               </label>
             </div>
@@ -162,7 +166,7 @@ export default function GeoRules(){
             </div>
           </div>
           <div className="form-actions mt-4">
-            <button className="btn-success" onClick={create}>
+            <button className="btn-primary" onClick={create}>
               <Plus className="w-4 h-4" />
               {editingRule ? 'Update Rule' : 'Add Rule'}
             </button>
@@ -184,7 +188,7 @@ export default function GeoRules(){
           <div className="icon-box bg-blue-100 dark:bg-blue-900/30">
             <Play className="w-5 h-5 text-blue-600 dark:text-blue-400" />
           </div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-white">Test Resolution</h3>
+          <h3 className="text-lg font-bold text-ink">Test Resolution</h3>
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
@@ -224,7 +228,7 @@ export default function GeoRules(){
         {rules.length === 0 ? (
           <div className="p-12 text-center">
             <Globe className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-            <p className="text-gray-500 dark:text-gray-400">No GeoDNS rules configured yet</p>
+            <p className="text-muted">No GeoDNS rules configured yet</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -249,7 +253,7 @@ export default function GeoRules(){
                     animate={{ opacity: 1 }}
                     transition={{ delay: i * 0.03 }}
                   >
-                    <td className="font-medium text-gray-900 dark:text-white">{getZoneName(r.zone_id)}</td>
+                    <td className="font-medium text-ink">{getZoneName(r.zone_id)}</td>
                     <td>
                       <span className="badge badge-info capitalize">{r.match_type}</span>
                     </td>
@@ -259,12 +263,12 @@ export default function GeoRules(){
                         <span>{r.match_value}</span>
                       </div>
                     </td>
-                    <td className="font-mono text-gray-600 dark:text-gray-300">{r.target}</td>
-                    <td className="text-gray-500 dark:text-gray-400">{r.priority}</td>
+                    <td className="font-mono text-muted">{r.target}</td>
+                    <td className="text-muted">{r.priority}</td>
                     <td>
-                      <input type="checkbox" checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500" />
+                      <input type="checkbox" checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-line text-green-600 focus:ring-green-500" />
                     </td>
-                    <td className="text-gray-500 dark:text-gray-400">
+                    <td className="text-muted">
                       {r.record_name || '-'}{r.record_type ? `/${r.record_type}` : ''}
                     </td>
                     <td className="text-right">

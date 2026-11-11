@@ -1,61 +1,93 @@
-import React, { useState } from 'react';
-import { motion } from 'framer-motion';
-import { Globe, Settings as SettingsIcon } from 'lucide-react';
-import ZonesComponent from './Admin/Zones';
-import UserSettings from './UserSettings';
+import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Globe, FileText, Search, ShieldCheck, LifeBuoy, ArrowRight, Plus, CheckCircle2, Clock, Lock } from 'lucide-react';
+import api from '../api/client';
+import { useAuthStore } from '../store';
+import { StatCard, EmptyState, FlowArt, StatusBadge } from '../components/ui';
 
-export default function User() {
-  const [activeTab, setActiveTab] = useState('zones');
+const total = (res) => {
+  const h = Number(res?.headers?.['x-total-count']);
+  return Number.isFinite(h) ? h : (Array.isArray(res?.data) ? res.data.length : 0);
+};
 
-  const tabs = [
-    { id: 'zones', label: 'My Zones', icon: Globe },
-    { id: 'settings', label: 'Settings', icon: SettingsIcon },
-  ];
+// Customer overview: only the customer's own zones (the API enforces tenancy), nothing about infrastructure.
+export default function UserOverview() {
+  const { user } = useAuthStore();
+  const [d, setD] = useState({ loading: true });
+  const canWrite = user?.role !== 'viewer';
+
+  useEffect(() => {
+    const t = localStorage.getItem('token'); if (t) api.setToken(t);
+    (async () => {
+      const r = await api.get('/api/v1/zones', { params: { limit: 100 } }).catch(() => null);
+      const zones = r?.data || [];
+      const counts = await Promise.all(zones.map((z) => api.get(`/api/v1/zones/${z.id}/records`, { params: { limit: 1 } }).then(total).catch(() => 0)));
+      setD({ loading: false, error: !r, zones, zoneTotal: r ? total(r) : 0, records: counts.reduce((a, b) => a + b, 0) });
+    })();
+  }, []);
+
+  const pending = (d.zones || []).filter((z) => z.status === 'pending');
+  const recent = (d.zones || []).slice(0, 6);
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">User Panel</h2>
-        <p className="text-gray-600 dark:text-gray-400">View your DNS zones and manage settings</p>
+    <div className="page" data-testid="user-overview">
+      <div className="relative overflow-hidden rounded-2xl border border-line bg-surface p-6 sm:p-8">
+        <FlowArt className="absolute inset-0 w-full h-full opacity-50 dark:opacity-70" />
+        <div className="relative max-w-xl">
+          <p className="eyebrow mb-2">Welcome back</p>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-ink">Hello, {user?.username}</h1>
+          <p className="text-muted mt-2">Manage your domains and DNS records.</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Link to="/user/zones" className="btn-primary">{canWrite ? <><Plus className="w-4 h-4" />Add or manage zones</> : <>View zones <ArrowRight className="w-4 h-4" /></>}</Link>
+            <Link to="/user/dns-lookup" className="btn-secondary"><Search className="w-4 h-4" />Check a domain</Link>
+          </div>
+        </div>
       </div>
 
-      <div className="flex gap-2 mb-6">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                activeTab === tab.id
-                  ? 'bg-primary-500 text-white'
-                  : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard icon={Globe} label="Your zones" value={d.zoneTotal ?? '—'} to="/user/zones" loading={d.loading} />
+        <StatCard icon={FileText} label="DNS records" value={d.records ?? '—'} hint="across your zones" loading={d.loading} />
+        <StatCard icon={ShieldCheck} label="Needs verification" value={pending.length} tone={pending.length ? 'warn' : 'ok'} hint={pending.length ? 'publish the TXT challenge' : 'all zones verified'} loading={d.loading} />
       </div>
 
-      {activeTab === 'zones' && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        >
-          <ZonesComponent />
-        </motion.div>
-      )}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="card xl:col-span-2">
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Your zones</h2><Link to="/user/zones" className="text-xs text-primary-700 dark:text-accent hover:underline">View all</Link></div>
+          {d.error ? <EmptyState title="Could not load your zones" description="Please try again in a moment." /> :
+            !d.loading && recent.length === 0 ? <EmptyState icon={Globe} title="No zones yet" description="Add your first domain to start serving DNS." action={canWrite && <Link to="/user/zones" className="btn-primary btn-sm">Add a zone</Link>} /> : (
+              <ul className="divide-y divide-line">
+                {d.loading && [0, 1, 2].map((i) => <li key={i} className="px-5 py-4"><div className="skeleton h-4 w-48" /></li>)}
+                {recent.map((z) => (
+                  <li key={z.id}>
+                    <Link to={`/user/zones/${z.id}/records`} className="flex items-center gap-3 px-5 py-3.5 hover:bg-ink/[0.03]">
+                      <span className={z.status === 'pending' ? 'dot-warn' : 'dot-ok'} />
+                      <span className="font-medium text-ink">{z.domain}</span>
+                      {z.access && z.access !== 'owner' && <span className="badge-info">shared · {z.access}</span>}
+                      <span className="flex-1" />
+                      <StatusBadge status={z.status === 'pending' ? 'pending' : 'active'}>{z.status === 'pending' ? 'Pending verification' : 'Active'}</StatusBadge>
+                      <ArrowRight className="w-4 h-4 text-muted" />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+        </div>
 
-      {activeTab === 'settings' && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        >
-          <UserSettings />
-        </motion.div>
-      )}
+        <div className="space-y-6">
+          <div className="card p-5">
+            <h2 className="panel-title mb-3">Service status</h2>
+            <div className="flex items-center gap-2 text-sm text-ink"><CheckCircle2 className="w-4 h-4 text-success-500" />{pending.length ? `${pending.length} zone(s) not served yet` : 'Your zones are being served'}</div>
+            <p className="text-xs text-muted mt-2 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" />Record changes are published automatically.</p>
+          </div>
+          <div className="card p-5">
+            <h2 className="panel-title mb-3">Help</h2>
+            <div className="space-y-2 text-sm">
+              <Link to="/user/help" className="flex items-center gap-2 text-ink hover:underline"><LifeBuoy className="w-4 h-4 text-muted" />Guides & DNS basics</Link>
+              <Link to="/user/settings" className="flex items-center gap-2 text-ink hover:underline"><Lock className="w-4 h-4 text-muted" />Password & two-factor authentication</Link>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -8,9 +8,11 @@ import BulkImport from '../../components/BulkImport'
 import ZoneTools from '../../components/ZoneTools'
 import Notifications from '../../components/Notifications'
 import { useFormValidation, validators, FormField, downloadTemplate } from '../../hooks/useFormValidation'
-import { useServerPagination, PaginationControls, FadeIn, SkeletonTable } from '../../hooks/useAdvancedUI'
+import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
+import { useConfirm, SkeletonRows } from '../../components/ui'
 
 export default function Zones(){
+  const askConfirm = useConfirm()
   const { user } = useAuthStore()
   const canWrite = user?.role !== 'viewer'          // viewers are read-only
   const [toolsZone, setToolsZone] = React.useState(null)
@@ -115,7 +117,7 @@ export default function Zones(){
   }
 
   const deleteZone = async (zone) => {
-    if (!window.confirm(`Delete zone ${zone.domain}?`)) return
+    if (!(await askConfirm({ title: `Delete ${zone.domain}?`, message: 'The zone and all of its records are removed and stop being served. This cannot be undone.', confirmLabel: 'Delete zone' }))) return
     try {
       await api.delete(`/api/v1/zones/${zone.id}`)
       notify?.success('Zone deleted')
@@ -181,12 +183,12 @@ export default function Zones(){
                 </FormField>
               </div>
               <div className="flex items-center gap-3 pb-0.5">
-                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+                <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={geodnsEnabled}
                     onChange={e => setGeodnsEnabled(e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+                    className="w-4 h-4 rounded border-line text-primary-600 focus:ring-primary-500"
                   />
                   GeoDNS
                 </label>
@@ -220,12 +222,12 @@ export default function Zones(){
                 </FormField>
               </div>
               <div className="flex items-center gap-3 pb-0.5">
-                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+                <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={editGeodns}
                     onChange={e => setEditGeodns(e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+                    className="w-4 h-4 rounded border-line text-primary-600 focus:ring-primary-500"
                   />
                   GeoDNS
                 </label>
@@ -245,8 +247,9 @@ export default function Zones(){
       </motion.div>}
 
       {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+      <div>
+       <div className="relative">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none" />
         <input
           type="text"
           placeholder="Search zones by domain..."
@@ -254,8 +257,9 @@ export default function Zones(){
           onChange={(e) => paged.setQuery(e.target.value)}
           className="input pl-10"
         />
+       </div>
         {paged.total > 0 && (
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
+          <p className="text-xs text-muted mt-1.5">
             {paged.total} zone{paged.total !== 1 ? 's' : ''} found
           </p>
         )}
@@ -277,12 +281,12 @@ export default function Zones(){
             </thead>
             <tbody>
               {loading ? (
-                <SkeletonTable rows={5} columns={6} />
+                <SkeletonRows rows={5} cols={6} />
               ) : pagination.currentItems.length > 0 ? (
                 pagination.currentItems.map(z => (
-                  <FadeIn key={z.id}>
+                  <React.Fragment key={z.id}>
                     <tr>
-                      <td className="font-medium text-gray-900 dark:text-white">
+                      <td className="font-medium text-ink">
                         {z.domain}
                         {z.status === 'pending' && <span className="badge badge-warning ml-2">pending verification</span>}
                         {z.access && z.access !== 'admin' && z.access !== 'owner' && <span className="badge badge-info ml-2">shared: {z.access}</span>}
@@ -292,7 +296,7 @@ export default function Zones(){
                           {zoneNameservers[z.id] ? (
                             zoneNameservers[z.id].length > 0 ? (
                               zoneNameservers[z.id].map((ns, i) => (
-                                <span key={i} className="text-xs text-gray-500 dark:text-gray-400 font-mono">{ns}</span>
+                                <span key={i} className="text-xs text-muted font-mono">{ns}</span>
                               ))
                             ) : (
                               <span className="text-xs text-gray-400 italic">No NS records</span>
@@ -302,7 +306,7 @@ export default function Zones(){
                           )}
                         </div>
                       </td>
-                      <td className="text-sm text-gray-500 dark:text-gray-400">
+                      <td className="text-sm text-muted">
                         {z.created_at ? new Date(z.created_at).toLocaleDateString() : 'N/A'}
                       </td>
                       <td>
@@ -362,13 +366,13 @@ export default function Zones(){
                         </div>
                       </td>
                     </tr>
-                  </FadeIn>
+                  </React.Fragment>
                 ))
               ) : (
                 <tr>
                   <td colSpan="6" className="text-center text-gray-400 dark:text-gray-500 py-12">
                     <Globe className="w-12 h-12 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
-                    <p className="font-medium text-gray-600 dark:text-gray-400 mb-1">No zones found</p>
+                    <p className="font-medium text-muted mb-1">No zones found</p>
                     <p className="text-sm">Create a zone to get started.</p>
                   </td>
                 </tr>
@@ -376,7 +380,7 @@ export default function Zones(){
             </tbody>
           </table>
         </div>
-        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700">
+        <div className="px-5 py-3 border-t border-line">
           <PaginationControls pagination={pagination} />
         </div>
       </div>

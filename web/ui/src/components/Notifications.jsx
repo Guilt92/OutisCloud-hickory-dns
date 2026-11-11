@@ -4,10 +4,10 @@ import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react'
 const NotificationsContext = React.createContext()
 
 const typeStyles = {
-  success: 'bg-green-600 dark:bg-green-700 text-white',
-  error: 'bg-red-600 dark:bg-red-700 text-white',
-  warning: 'bg-amber-500 dark:bg-amber-600 text-white',
-  info: 'bg-blue-600 dark:bg-blue-700 text-white',
+  success: 'border-success-500/50 [&_svg:first-child]:text-success-500',
+  error: 'border-danger-500/50 [&_svg:first-child]:text-danger-500',
+  warning: 'border-warning-500/50 [&_svg:first-child]:text-warning-500',
+  info: 'border-accent/50 [&_svg:first-child]:text-primary-700 dark:[&_svg:first-child]:text-accent',
 }
 
 const typeIcons = {
@@ -20,11 +20,11 @@ const typeIcons = {
 function NotificationItem({ m, onRemove }){
   const Icon = typeIcons[m.type] || Info
   return (
-    <div className={`flex items-start gap-3 px-4 py-3 rounded-xl shadow-lg ${typeStyles[m.type] || typeStyles.info}`}>
+    <div role="status" className={`flex items-start gap-3 px-4 py-3 rounded-xl border bg-surface text-ink shadow-pop animate-slide-in ${typeStyles[m.type] || typeStyles.info}`}>
       <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" />
-      <p className="text-sm flex-1">{m.text}</p>
+      <p className="text-sm flex-1 break-words">{m.text}</p>
       <button
-        className="flex-shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+        aria-label="Dismiss" className="flex-shrink-0 text-muted hover:text-ink transition-colors"
         onClick={() => onRemove(m.id)}
       >
         <X className="w-4 h-4" />
@@ -60,7 +60,7 @@ export function NotificationsProvider({ children }){
   return (
     <NotificationsContext.Provider value={notify}>
       {children}
-      <div className="fixed bottom-4 right-4 space-y-2 z-50 max-w-sm">
+      <div className="fixed bottom-4 right-4 left-4 sm:left-auto space-y-2 z-[70] sm:max-w-sm" aria-live="polite">
         {messages.map(m => (
           <NotificationItem key={m.id} m={m} onRemove={remove} />
         ))}

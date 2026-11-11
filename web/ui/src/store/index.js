@@ -166,13 +166,20 @@ export const useZonesStore = create((set, get) => ({
 }));
 
 // UI Store
+const initialTheme = () => {
+  try { return localStorage.getItem('outis-theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+};
+
 export const useUIStore = create((set) => ({
   sidebarOpen: true,
-  theme: 'light',
+  theme: initialTheme(),
   notifications: [],
   
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-  setTheme: (theme) => set({ theme }),
+  setTheme: (theme) => {
+    try { localStorage.setItem('outis-theme', theme); } catch (e) { /* private mode */ }
+    set({ theme });
+  },
   
   addNotification: (notification) => set((state) => ({
     notifications: [...state.notifications, { 

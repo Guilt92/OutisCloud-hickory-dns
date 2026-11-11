@@ -2,8 +2,12 @@ import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../../api/client'
 import { Server, MapPin, Plus, Trash2, RefreshCw, Play, Square, Shield, Clock, FileText, Settings, X, Check, AlertTriangle } from 'lucide-react'
+import { useConfirm } from '../../components/ui'
+import Notifications from '../../components/Notifications'
 
 export default function Servers(){
+  const askConfirm = useConfirm()
+  const notify = React.useContext(Notifications)
   const [servers, setServers] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const [showModal, setShowModal] = React.useState(false)
@@ -65,15 +69,15 @@ export default function Servers(){
       await api.post('/api/v1/servers', form)
       setShowModal(false)
       load() 
-    } catch (e) { alert('Error saving server') }
+    } catch (e) { notify?.error('Error saving server') }
   }
 
   const remove = async (id) => {
-    if (!confirm('Delete this server?')) return
+    if (!(await askConfirm({ title: 'Delete server?', message: 'It is removed from monitoring. The DNS server itself is not touched.', confirmLabel: 'Delete server' }))) return
     try {
       await api.delete(`/api/v1/servers/${id}`)
       load()
-    } catch (e) { alert('Error deleting server') }
+    } catch (e) { notify?.error('Error deleting server') }
   }
 
 
@@ -90,7 +94,7 @@ export default function Servers(){
         className="section-header"
       >
         <div className="flex items-center gap-3">
-          <div className="icon-box bg-gradient-to-br from-blue-600 to-blue-700">
+          <div className="icon-box">
             <Server className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -113,8 +117,8 @@ export default function Servers(){
       {servers.length === 0 ? (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card p-12 text-center">
           <Server className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">No DNS Servers Configured</h3>
-          <p className="text-gray-500 dark:text-gray-400 mb-5">Add your first DNS server to start serving zone data</p>
+          <h3 className="text-lg font-semibold text-ink mb-1">No DNS Servers Configured</h3>
+          <p className="text-muted mb-5">Add your first DNS server to start serving zone data</p>
           <button onClick={openCreate} className="btn-primary">
             <Plus className="w-4 h-4" />
             Add Server
@@ -135,8 +139,8 @@ export default function Servers(){
                   <div className="flex items-center gap-3">
                     <div className={`w-3 h-3 rounded-full ${getStatus(server) === 'running' ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`}></div>
                     <div>
-                      <h3 className="text-lg font-bold text-gray-900 dark:text-white">{server.name}</h3>
-                      <p className="text-sm text-gray-500 dark:text-gray-400">{server.address}:{server.port || 53}</p>
+                      <h3 className="text-lg font-bold text-ink">{server.name}</h3>
+                      <p className="text-sm text-muted">{server.address}:{server.port || 53}</p>
                     </div>
                   </div>
                   <span className={`badge ${getStatus(server) === 'running' ? 'badge-success' : 'badge-default'}`}>
@@ -145,25 +149,25 @@ export default function Servers(){
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 mb-4">
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                  <div className="flex items-center gap-2 text-sm text-muted">
                     <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" />
                     <span>{server.region || 'No region'}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                  <div className="flex items-center gap-2 text-sm text-muted">
                     <Clock className="w-4 h-4 text-gray-400 flex-shrink-0" />
                     <span>Cache: {server.min_cache_ttl || 60}s - {server.max_cache_ttl || 3600}s</span>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                  <div className="flex items-center gap-2 text-sm text-muted">
                     {server.dnssec ? <Shield className="w-4 h-4 text-green-500 flex-shrink-0" /> : <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0" />}
                     <span>{server.dnssec ? 'DNSSEC Enabled' : 'DNSSEC Disabled'}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                  <div className="flex items-center gap-2 text-sm text-muted">
                     <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
                     <span>{server.enable_logging !== false ? 'Logging On' : 'Logging Off'}</span>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-4 border-t border-gray-100 dark:border-gray-700">
+                <div className="flex items-center gap-2 pt-4 border-t border-line">
                   <span className="text-xs text-gray-400 dark:text-gray-500 flex-1">Process runs externally; manage config only</span>
                   <button onClick={() => openEdit(server)} className="btn-secondary btn-sm">
                     <Settings className="w-3.5 h-3.5" />
@@ -192,11 +196,11 @@ export default function Servers(){
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+              className="card w-full max-w-2xl max-h-[90vh] overflow-y-auto"
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-200 dark:border-gray-700">
-                <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+              <div className="flex items-center justify-between px-6 py-5 border-b border-line">
+                <h3 className="text-lg font-bold text-ink">
                   {editingServer ? 'Edit Server' : 'Add DNS Server'}
                 </h3>
                 <button onClick={() => setShowModal(false)} className="btn-sm btn-ghost"><X className="w-4 h-4" /></button>
@@ -222,8 +226,8 @@ export default function Servers(){
                   </div>
                 </div>
 
-                <div className="border-t border-gray-100 dark:border-gray-700 pt-5">
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">DNS Configuration</h4>
+                <div className="border-t border-line pt-5">
+                  <h4 className="text-sm font-semibold text-ink mb-4">DNS Configuration</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="form-label">Max Cache TTL (seconds)</label>
@@ -236,24 +240,24 @@ export default function Servers(){
                   </div>
                 </div>
 
-                <div className="border-t border-gray-100 dark:border-gray-700 pt-5">
-                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">Security & Logging</h4>
+                <div className="border-t border-line pt-5">
+                  <h4 className="text-sm font-semibold text-ink mb-4">Security & Logging</h4>
                   <div className="space-y-3">
                     {[
                       { key: 'enabled', label: 'Enable Server', desc: 'Allow this server to respond to queries' },
                       { key: 'dnssec', label: 'Enable DNSSEC', desc: 'Sign zone data with DNSSEC' },
                       { key: 'enable_logging', label: 'Enable Query Logging', desc: 'Log all DNS queries received' },
                     ].map(item => (
-                      <label key={item.key} className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                      <label key={item.key} className="flex items-center gap-3 p-3 rounded-lg border border-line cursor-pointer hover:bg-ink/5 transition-colors">
                         <input
                           type="checkbox"
                           checked={form[item.key]}
                           onChange={e=>setForm({...form, [item.key]: e.target.checked})}
-                          className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+                          className="w-4 h-4 rounded border-line text-blue-600 focus:ring-blue-500"
                         />
                         <div>
-                          <span className="font-medium text-sm text-gray-900 dark:text-white">{item.label}</span>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{item.desc}</p>
+                          <span className="font-medium text-sm text-ink">{item.label}</span>
+                          <p className="text-xs text-muted">{item.desc}</p>
                         </div>
                       </label>
                     ))}
@@ -261,7 +265,7 @@ export default function Servers(){
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-line bg-surface-2">
                 <button onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
                 <button onClick={save} className="btn-primary">
                   <Check className="w-4 h-4" />

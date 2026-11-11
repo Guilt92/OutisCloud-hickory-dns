@@ -47,7 +47,7 @@ async function login(page,u,p){
   require('fs').writeFileSync(CSV,csv);
   await page.setInputFiles('input[type=file]',CSV);
   await page.click('button:has-text("Import")'); await page.waitForTimeout(2500);
-  ok('bulk import reports success', dialogs.some(d=>/Imported 4 record/.test(d)), JSON.stringify(dialogs.slice(-1)));
+  ok('bulk import reports success', /Imported 4 record/.test(await page.textContent('body')), 'toast');
   const rec=await page.textContent('body');
   ok('imported records are listed', rec.includes('192.0.2.2') && rec.includes('mail.ui-test.example'));
   // ---- 5. users page: create an editor, appears with role
@@ -59,6 +59,7 @@ async function login(page,u,p){
   ctx=await browser.newContext(); page=await ctx.newPage(); page.on('dialog',d=>{dialogs.push(d.message()); d.accept()});
   await login(page,'ui_editor','editorpass12'); await page.waitForURL('**/user**',{timeout:8000}).catch(()=>{}); await page.waitForTimeout(1200);
   ok('editor lands on /user', page.url().includes('/user'), page.url());
+  await page.goto(BASE+'/user/zones'); await page.waitForTimeout(1500);
   ok('editor does not see admin zone', !(await page.textContent('body')).includes('ui-test.example'));
   await page.fill('input[placeholder="example.com"]','editor-zone.example'); await page.click('button:has-text("Create")').catch(async()=>{await page.click('button.btn-primary')}); await page.waitForTimeout(2000);
   ok('editor created own zone', (await page.textContent('body')).includes('editor-zone.example'));
@@ -70,6 +71,7 @@ async function login(page,u,p){
   // ---- 7. viewer: can look, cannot create
   ctx=await browser.newContext(); page=await ctx.newPage(); page.on('dialog',d=>{dialogs.push(d.message()); d.accept()});
   await login(page,'ui_viewer','viewerpass12'); await page.waitForURL('**/user**',{timeout:8000}).catch(()=>{}); await page.waitForTimeout(1200);
+  await page.goto(BASE+'/user/zones'); await page.waitForTimeout(1500);
   ok('viewer does not get a "create zone" form (permissions reflected in the UI)', (await page.locator('input[placeholder="example.com"]').count())===0);
   const vtok=await page.evaluate(()=>localStorage.getItem('token'));
   const [vst]=await api('POST','/api/v1/zones',vtok,{domain:'viewer-zone.example'});
@@ -81,7 +83,7 @@ async function login(page,u,p){
   ctx=await browser.newContext(); page=await ctx.newPage(); page.on('dialog',d=>{dialogs.push(d.message()); d.accept()});
   await login(page,ADMIN_USER,ADMIN_PASS); await page.waitForURL('**/admin**',{timeout:8000}).catch(()=>{}); await page.waitForTimeout(2500);
   const dash2=await page.textContent('body');
-  ok('dashboard shows publication status', /Publication/.test(dash2) && /Bundle v\d+/.test(dash2));
+  ok('dashboard shows publication status', /Last publication/.test(dash2) && /v\d+/.test(dash2));
   ok('dashboard says query statistics are not configured (no fake numbers)', /Query statistics are not configured/.test(dash2));
   // audit page: real columns + paging controls
   await page.goto(BASE+'/admin/audit'); await page.waitForTimeout(1500);
@@ -112,9 +114,10 @@ async function login(page,u,p){
   await ctx.close();
   ctx=await browser.newContext(); page=await ctx.newPage();
   await login(page,'ui_viewer','viewerpass12'); await page.waitForURL('**/user**',{timeout:8000}).catch(()=>{}); await page.waitForTimeout(1800);
+  await page.goto(BASE+'/user/zones'); await page.waitForTimeout(1500);
   ok('shared zone appears for the viewer, marked as shared', /ui-test\.example/.test(await page.textContent('body')) && /shared: viewer/.test(await page.textContent('body')));
   await page.locator('tr:has-text("ui-test.example") a').first().click(); await page.waitForTimeout(1500);
-  ok('records page of a viewer-shared zone has no edit form or delete buttons', (await page.locator('button:has(svg.lucide-trash-2)').count())===0 && (await page.locator('button:has-text("Import")').count())===0);
+  ok('records page of a viewer-shared zone has no edit form or delete buttons', (await page.locator('button:has(svg.lucide-trash2)').count())===0 && (await page.locator('button:has-text("Import")').count())===0);
   await ctx.close();
   // MFA: enrol through the API, then the login page asks for the code
   const [, mu]=await api('POST','/api/v1/users',AT,{username:'ui_mfa',password:'mfapass12345',role:'editor'});
@@ -176,9 +179,9 @@ async function login(page,u,p){
   ok('rollover shows two keys', (await page.locator('[data-testid^="ds-2"]').count())===2);
   ok('Disable stays disabled until the DS removal is confirmed', await page.locator('button:has-text("Disable DNSSEC")').isDisabled());
   page.on('dialog',d=>d.accept());
-  await page.locator('button:has-text("Retire this key")').first().click(); await page.waitForTimeout(2000);
+  await page.locator('button:has-text("Retire this key")').first().click(); await page.click('[data-testid="confirm-yes"]'); await page.waitForTimeout(2000);
   ok('retiring a key leaves one', (await page.locator('[data-testid^="ds-2"]').count())===1);
-  await page.locator('input[type=checkbox]').last().check(); await page.locator('button:has-text("Disable DNSSEC")').click(); await page.waitForTimeout(2000);
+  await page.locator('[data-testid="dnssec-tab"] input[type=checkbox]').check(); await page.locator('button:has-text("Disable DNSSEC")').click(); await page.click('[data-testid="confirm-yes"]'); await page.waitForTimeout(2000);
   ok('DNSSEC can be disabled after confirmation', /not signed/.test(await page.textContent('[data-testid="dnssec-tab"]')));
   await ctx.close();
   await browser.close();

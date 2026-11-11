@@ -1,267 +1,204 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  Menu, 
-  X, 
-  Home, 
-  Globe, 
-  FileText, 
-  Users, 
-  Server, 
-  Settings, 
-  LogOut,
-  ChevronDown,
-  MapPin,
-  Key,
-  BarChart3,
-  Activity,
-  Moon,
-  Sun,
-  Search,
-  User,
-  Lock
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
+import {
+  Menu, X, LayoutDashboard, Globe, Users, Server, Settings, LogOut, ChevronDown, MapPin,
+  BarChart3, Activity, Search, User, Radio, Network, RefreshCw, LifeBuoy, ShieldCheck,
 } from 'lucide-react';
-import { useAuthStore, useUIStore } from '../store';
+import { useAuthStore } from '../store';
 import clsx from 'clsx';
+import { Brand, ThemeToggle, ThemeSync } from './ui';
 
-const NavItem = ({ to, icon: Icon, label, badge, exact }) => {
-  const location = useLocation();
-  const isActive = exact 
-    ? location.pathname === to 
-    : location.pathname === to || location.pathname.startsWith(to + '/');
-  
-  return (
-    <Link
-      to={to}
-      className={clsx(
-        'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200',
-        isActive 
-          ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300' 
-          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700/50'
-      )}
-    >
-      <Icon className={clsx("w-5 h-5", isActive && "text-primary-600 dark:text-primary-400")} />
-      <span className="flex-1">{label}</span>
-      {badge && (
-        <span className="px-2 py-0.5 text-xs font-semibold bg-primary-100 text-primary-700 rounded-full dark:bg-primary-900 dark:text-primary-300">
-          {badge}
-        </span>
-      )}
-    </Link>
-  );
+// Navigation is defined per role. Administrators get the whole control surface; customers only see
+// their own zones, lookups, settings and help. (Routes are additionally protected in App.jsx and by the API.)
+const ADMIN_NAV = [
+  { title: 'Overview', items: [
+    { to: '/admin', icon: LayoutDashboard, label: 'Overview', exact: true },
+    { to: '/admin/metrics', icon: BarChart3, label: 'Analytics' },
+  ]},
+  { title: 'DNS', items: [
+    { to: '/admin/zones', icon: Globe, label: 'Zones' },
+    { to: '/admin/nameservers', icon: Network, label: 'Nameservers' },
+    { to: '/admin/georules', icon: MapPin, label: 'GeoDNS' },
+    { to: '/admin/dns-lookup', icon: Search, label: 'DNS Lookup' },
+  ]},
+  { title: 'Infrastructure', items: [
+    { to: '/admin/servers', icon: Server, label: 'DNS Servers' },
+    { to: '/admin/agents', icon: Radio, label: 'Agents' },
+    { to: '/admin/config', icon: RefreshCw, label: 'Config Sync' },
+  ]},
+  { title: 'Administration', items: [
+    { to: '/admin/users', icon: Users, label: 'Users & Roles' },
+    { to: '/admin/audit', icon: Activity, label: 'Audit Log' },
+    { to: '/admin/settings', icon: Settings, label: 'Settings' },
+  ]},
+];
+
+const USER_NAV = [
+  { title: null, items: [
+    { to: '/user', icon: LayoutDashboard, label: 'Overview', exact: true },
+    { to: '/user/zones', icon: Globe, label: 'My Zones' },
+    { to: '/user/dns-lookup', icon: Search, label: 'DNS Lookup' },
+  ]},
+  { title: 'Account', items: [
+    { to: '/user/settings', icon: Settings, label: 'Account & Security' },
+    { to: '/user/help', icon: LifeBuoy, label: 'Help & Docs' },
+  ]},
+];
+
+const CRUMBS = {
+  admin: 'Overview', zones: 'Zones', records: 'Records', nameservers: 'Nameservers', georules: 'GeoDNS', 'dns-lookup': 'DNS Lookup',
+  servers: 'DNS Servers', agents: 'Agents', config: 'Config Sync', users: 'Users & Roles', audit: 'Audit Log', settings: 'Settings',
+  metrics: 'Analytics', user: 'Overview', help: 'Help & Docs',
 };
 
+function NavItem({ to, icon: Icon, label, exact, onNavigate }) {
+  return (
+    <NavLink
+      to={to}
+      end={!!exact}
+      onClick={onNavigate}
+      className={({ isActive }) => clsx(
+        'group relative flex items-center gap-3 pl-3 pr-2 py-2 rounded-lg text-sm font-medium transition-colors',
+        isActive ? 'bg-ink/[0.07] text-ink' : 'text-muted hover:text-ink hover:bg-ink/[0.04]'
+      )}
+    >
+      {({ isActive }) => (
+        <>
+          {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r bg-accent" aria-hidden="true" />}
+          <Icon className={clsx('w-[18px] h-[18px] flex-shrink-0', isActive ? 'text-primary-700 dark:text-accent' : 'text-muted group-hover:text-ink')} />
+          <span className="flex-1 truncate">{label}</span>
+        </>
+      )}
+    </NavLink>
+  );
+}
+
+function Breadcrumbs() {
+  const { pathname } = useLocation();
+  const parts = pathname.split('/').filter(Boolean);
+  const crumbs = parts.filter((p) => CRUMBS[p]).map((p) => CRUMBS[p]);
+  const dedup = crumbs.filter((c, i) => crumbs.indexOf(c) === i);
+  return (
+    <nav aria-label="Breadcrumb" className="hidden sm:flex items-center gap-1.5 text-sm text-muted min-w-0">
+      <span>{parts[0] === 'admin' ? 'Admin' : 'Workspace'}</span>
+      {dedup.slice(parts[0] === 'admin' || parts[0] === 'user' ? 0 : 0).filter((c) => c !== 'Overview' || dedup.length === 1).map((c, i) => (
+        <React.Fragment key={c + i}><span aria-hidden="true">/</span><span className={i === dedup.length - 1 ? 'text-ink font-medium truncate' : ''}>{c}</span></React.Fragment>
+      ))}
+    </nav>
+  );
+}
+
 export default function Layout({ children }) {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef(null);
   const { user, isAuthenticated, logout } = useAuthStore();
-  const { theme } = useUIStore();
   const navigate = useNavigate();
-  
-  // Close user menu when clicking outside
+  const location = useLocation();
+  const isAdmin = user?.role === 'admin';
+
+  useEffect(() => { setMenuOpen(false); setUserMenuOpen(false); }, [location.pathname]);
   useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(event.target)) {
-        setUserMenuOpen(false);
-      }
-    };
-    
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    const onDown = (e) => { if (userMenuRef.current && !userMenuRef.current.contains(e.target)) setUserMenuOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') { setUserMenuOpen(false); setMenuOpen(false); } };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
   }, []);
-  
+
   // Prevent back button navigation after logout
   useEffect(() => {
-    const handlePopState = (event) => {
-      if (!isAuthenticated && window.location.pathname !== '/login') {
-        navigate('/login', { replace: true });
-      }
+    const handlePopState = () => {
+      if (!isAuthenticated && window.location.pathname !== '/login') navigate('/login', { replace: true });
     };
-    
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, [isAuthenticated, navigate]);
-  
+
   const handleLogout = async () => {
     await logout();
-    // Clear browser history to prevent back button
     window.history.replaceState(null, '', '/login');
     navigate('/login');
   };
-  
-  const isAdmin = user?.role === 'admin';
-  const isAgent = user?.role === 'agent';
-  
-  const adminNavItems = [
-    { to: '/admin', icon: Home, label: 'Dashboard', exact: true },
-    { to: '/admin/zones', icon: Globe, label: 'Zones' },
-    { to: '/admin/records', icon: FileText, label: 'Records' },
-    { to: '/admin/nameservers', icon: Globe, label: 'Nameservers' },
-    { to: '/admin/dns-lookup', icon: Search, label: 'DNS Lookup' },
-    { to: '/admin/users', icon: Users, label: 'Users' },
-    { to: '/admin/servers', icon: Server, label: 'DNS Servers' },
-    { to: '/admin/agents', icon: Server, label: 'Agents' },
-    { to: '/admin/georules', icon: MapPin, label: 'GeoDNS' },
-    { to: '/admin/certificates', icon: Key, label: 'SSL' },
-    { to: '/admin/metrics', icon: BarChart3, label: 'Metrics' },
-    { to: '/admin/audit', icon: Activity, label: 'Audit Logs' },
-    { to: '/admin/settings', icon: Settings, label: 'Settings' },
-  ];
-  
-  const userNavItems = [
-    { to: '/user', icon: Home, label: 'Dashboard', exact: true },
-    { to: '/user/dns-lookup', icon: Search, label: 'DNS Lookup' },
-  ];
-  
-  // Agents can see some admin items but not all
-  const agentNavItems = [
-    { to: '/admin', icon: Home, label: 'Dashboard', exact: true },
-    { to: '/admin/zones', icon: Globe, label: 'Zones' },
-    { to: '/admin/records', icon: FileText, label: 'Records' },
-    { to: '/admin/nameservers', icon: Globe, label: 'Nameservers' },
-    { to: '/admin/dns-lookup', icon: Search, label: 'DNS Lookup' },
-    { to: '/admin/georules', icon: MapPin, label: 'GeoDNS' },
-  ];
-  
-  let navItems;
-  if (isAdmin) {
-    navItems = adminNavItems;
-  } else if (isAgent) {
-    navItems = agentNavItems;
-  } else {
-    navItems = userNavItems;
-  }
-  
-  // Initialize theme
-  React.useEffect(() => {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [theme]);
-  
-  const toggleThemeHandler = () => {
-    useUIStore.getState().setTheme(theme === 'dark' ? 'light' : 'dark');
-  };
-  
+
   if (!isAuthenticated) {
-    return <>{children}</>;
+    return (<><ThemeSync />{children}</>);
   }
-  
+
+  const nav = isAdmin ? ADMIN_NAV : USER_NAV;
+  const settingsPath = isAdmin ? '/admin/settings' : '/user/settings';
+
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      {/* Mobile menu button */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
-        <button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
-          {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-        </button>
-        <h1 className="text-lg font-semibold text-gray-900 dark:text-white">OutisCloud</h1>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={toggleThemeHandler}
-            className="p-2 rounded-lg text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-          >
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
-        </div>
-      </div>
-      
+    <div className="min-h-screen">
+      <ThemeSync />
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[80] btn-primary">Skip to content</a>
+
       {/* Sidebar */}
       <aside
+        aria-label="Primary"
         className={clsx(
-          "fixed top-0 left-0 z-40 h-full w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 transition-transform duration-300 lg:translate-x-0",
-          mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+          'fixed top-0 left-0 z-40 h-full w-64 flex flex-col bg-surface border-r border-line transition-transform duration-200 lg:translate-x-0',
+          menuOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
-        {/* Logo */}
-        <div className="h-16 flex items-center px-6 border-b border-gray-200 dark:border-gray-700">
-          <Globe className="w-8 h-8 text-primary-600" />
-          <span className="ml-2 text-xl font-bold text-gray-900 dark:text-white">OutisCloud</span>
+        <div className="h-16 flex items-center justify-between px-5 border-b border-line">
+          <Link to={isAdmin ? '/admin' : '/user'} aria-label="OutisCloud home"><Brand /></Link>
+          <button className="btn-icon lg:hidden" onClick={() => setMenuOpen(false)} aria-label="Close menu"><X className="w-5 h-5" /></button>
         </div>
-        
-        {/* Navigation */}
-        <nav className="p-4 space-y-1 overflow-y-auto h-[calc(100vh-8rem)]">
-          {navItems.map((item) => (
-            <NavItem 
-              key={item.to} 
-              to={item.to} 
-              icon={item.icon} 
-              label={item.label}
-              badge={item.badge}
-              exact={item.exact}
-            />
+
+        <nav className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4 space-y-5">
+          {nav.map((group, gi) => (
+            <div key={gi}>
+              {group.title && <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted/80">{group.title}</p>}
+              <div className="space-y-0.5">
+                {group.items.map((it) => <NavItem key={it.to} {...it} onNavigate={() => setMenuOpen(false)} />)}
+              </div>
+            </div>
           ))}
         </nav>
-        
-        {/* User section */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 dark:border-gray-700">
-          <div className="relative" ref={userMenuRef}>
-            <button
-              onClick={() => setUserMenuOpen(!userMenuOpen)}
-              className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-            >
-              <div className="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
-                <span className="text-sm font-medium text-primary-700 dark:text-primary-300">
-                  {user?.username?.charAt(0).toUpperCase() || 'U'}
-                </span>
-              </div>
-              <div className="flex-1 text-left">
-                <p className="text-sm font-medium text-gray-900 dark:text-white">{user?.username || 'User'}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">{user?.role || 'user'}</p>
-              </div>
-              <ChevronDown className="w-4 h-4 text-gray-500" />
-            </button>
-            
-            {userMenuOpen && (
-              <div className="absolute bottom-full left-0 right-0 mb-2 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-2 animate-fade-in z-50">
-                <Link
-                  to={isAdmin ? "/admin/settings" : "/user/settings"}
-                  className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onClick={() => setUserMenuOpen(false)}
-                >
-                  <User className="w-4 h-4" />
-                  Profile
-                </Link>
-                <Link
-                  to={isAdmin ? "/admin/settings" : "/user/settings"}
-                  className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onClick={() => setUserMenuOpen(false)}
-                >
-                  <Lock className="w-4 h-4" />
-                  Change Password
-                </Link>
-                <hr className="my-2 border-gray-200 dark:border-gray-700" />
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
-                >
-                  <LogOut className="w-4 h-4" />
-                  Logout
-                </button>
-              </div>
-            )}
-          </div>
+
+        <div className="p-3 border-t border-line text-[11px] text-muted flex items-center gap-2">
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span>{isAdmin ? 'Administrator workspace' : 'Customer workspace'}</span>
         </div>
       </aside>
-      
-      {/* Mobile overlay */}
-      {mobileMenuOpen && (
-        <div 
-          className="fixed inset-0 z-30 bg-black/50 lg:hidden"
-          onClick={() => setMobileMenuOpen(false)}
-        />
-      )}
-      
-      {/* Main content */}
-      <main className="lg:ml-64 pt-16 lg:pt-0">
-        <div className="p-4 lg:p-8 mt-16 lg:mt-0">
-          {children}
+
+      {menuOpen && <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+
+      {/* Top bar */}
+      <header className="sticky top-0 z-20 lg:ml-64 h-16 flex items-center gap-3 px-4 lg:px-8 border-b border-line bg-app/80 backdrop-blur-md">
+        <button className="btn-icon lg:hidden" onClick={() => setMenuOpen(true)} aria-label="Open menu" aria-expanded={menuOpen}><Menu className="w-5 h-5" /></button>
+        <div className="lg:hidden"><Brand compact /></div>
+        <Breadcrumbs />
+        <div className="flex-1" />
+        <ThemeToggle />
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setUserMenuOpen((v) => !v)}
+            className="flex items-center gap-2.5 pl-1 pr-2 py-1 rounded-lg hover:bg-ink/5 transition-colors"
+            aria-haspopup="menu" aria-expanded={userMenuOpen} data-testid="user-menu"
+          >
+            <span className="w-8 h-8 rounded-full bg-accent text-on-accent flex items-center justify-center text-sm font-semibold">
+              {user?.username?.charAt(0).toUpperCase() || 'U'}
+            </span>
+            <span className="hidden sm:block text-left leading-tight">
+              <span className="block text-sm font-medium text-ink">{user?.username || 'User'}</span>
+              <span className="block text-[11px] text-muted capitalize">{user?.role || 'user'}</span>
+            </span>
+            <ChevronDown className="w-4 h-4 text-muted" />
+          </button>
+          {userMenuOpen && (
+            <div role="menu" className="absolute right-0 top-full mt-2 w-56 card shadow-pop py-1.5 animate-fade-in z-50">
+              <Link role="menuitem" to={settingsPath} className="flex items-center gap-2 px-4 py-2 text-sm text-ink hover:bg-ink/5"><User className="w-4 h-4 text-muted" />Account & security</Link>
+              <hr className="my-1.5 border-line" />
+              <button role="menuitem" onClick={handleLogout} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-danger-500 hover:bg-danger-500/10"><LogOut className="w-4 h-4" />Sign out</button>
+            </div>
+          )}
         </div>
+      </header>
+
+      <main id="main" className="lg:ml-64">
+        <div className="px-4 py-6 lg:px-8 lg:py-8 max-w-[1400px]">{children}</div>
       </main>
     </div>
   );

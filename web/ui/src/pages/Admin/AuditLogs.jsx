@@ -48,7 +48,7 @@ export default function AuditLogs(){
         className="section-header"
       >
         <div className="flex items-center gap-3">
-          <div className="icon-box bg-gradient-to-br from-amber-500 to-amber-600">
+          <div className="icon-box">
             <ClipboardList className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -56,13 +56,13 @@ export default function AuditLogs(){
             <p className="section-desc">Track all administrative actions and system events</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="relative">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          <div className="relative w-full sm:w-auto">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input className="input pl-9" placeholder="Filter this page..." value={q} onChange={e=>setQ(e.target.value)} />
           </div>
-          <input className="input w-36" placeholder="action" value={action} onChange={e=>{setPage(0); setAction(e.target.value.trim())}} />
-          <select className="select w-36" value={resource} onChange={e=>{setPage(0); setResource(e.target.value)}}>
+          <input className="input w-full sm:w-36" placeholder="action" value={action} onChange={e=>{setPage(0); setAction(e.target.value.trim())}} />
+          <select className="select w-full sm:w-36" value={resource} onChange={e=>{setPage(0); setResource(e.target.value)}}>
             <option value="">all resources</option>
             {['user','zone','record','georule','nameserver','agent'].map(r => <option key={r} value={r}>{r}</option>)}
           </select>
@@ -81,7 +81,7 @@ export default function AuditLogs(){
         {filtered.length === 0 ? (
           <div className="p-12 text-center">
             <ClipboardList className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-            <p className="text-gray-500 dark:text-gray-400">No audit logs found</p>
+            <p className="text-muted">No audit logs found</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -104,12 +104,12 @@ export default function AuditLogs(){
                     animate={{ opacity: 1 }}
                     transition={{ delay: i * 0.01 }}
                   >
-                    <td className="text-gray-500 dark:text-gray-400 whitespace-nowrap">{l.createdAt ? new Date(l.createdAt).toLocaleString() : ''}</td>
-                    <td className="font-mono text-xs text-gray-900 dark:text-white">{l.userId ? l.userId.slice(0, 8) : '-'}</td>
+                    <td className="text-muted whitespace-nowrap">{l.createdAt ? new Date(l.createdAt).toLocaleString() : ''}</td>
+                    <td className="font-mono text-xs text-ink">{l.userId ? l.userId.slice(0, 8) : '-'}</td>
                     <td><span className="badge badge-info">{l.action}</span></td>
                     <td className="text-xs">{l.resourceType}{l.resourceId ? ` ${String(l.resourceId).slice(0, 8)}` : ''}</td>
                     <td className="text-xs text-gray-500">{l.ipAddress || '-'}</td>
-                    <td className="text-gray-600 dark:text-gray-300 max-w-xs truncate font-mono text-xs" title={l.details}>{l.details}</td>
+                    <td className="text-muted max-w-xs truncate font-mono text-xs" title={l.details}>{l.details}</td>
                   </motion.tr>
                 ))}
               </tbody>
@@ -117,7 +117,7 @@ export default function AuditLogs(){
           </div>
         )}
         {error && <p className="p-3 text-sm text-red-600">{error}</p>}
-        <div className="flex items-center justify-between px-5 py-3 border-t border-gray-100 dark:border-gray-700 text-sm">
+        <div className="flex items-center justify-between px-5 py-3 border-t border-line text-sm">
           <span className="text-gray-500">{total} event(s)</span>
           <div className="flex items-center gap-2">
             <button className="btn-sm btn-ghost" disabled={page === 0} onClick={()=>setPage(page-1)}>Previous</button>

@@ -19,6 +19,9 @@ const AdminDnsLookup = lazy(() => import('./pages/Admin/DnsLookup'));
 const AdminSettings = lazy(() => import('./pages/Admin/Settings'));
 const Records = lazy(() => import('./pages/Records'));
 const UserDashboard = lazy(() => import('./pages/User'));
+const UserSettings = lazy(() => import('./pages/UserSettings'));
+const AdminAnalytics = lazy(() => import('./pages/Admin/Analytics'));
+const Help = lazy(() => import('./pages/Help'));
 
 function ProtectedRoute({ children, requireAdmin = false }) {
   const { isAuthenticated, user, sessionExpired } = useAuthStore();
@@ -40,10 +43,10 @@ function ProtectedRoute({ children, requireAdmin = false }) {
 
 function LoadingScreen() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-[60vh] flex items-center justify-center" role="status" aria-live="polite">
       <div className="text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
-        <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+        <div className="animate-spin rounded-full h-9 w-9 border-2 border-line border-t-accent mx-auto mb-3"></div>
+        <p className="text-sm text-muted">Loading…</p>
       </div>
     </div>
   );
@@ -95,9 +98,8 @@ export default function App() {
             <Route path="nameservers" element={<AdminNameservers />} />
             <Route path="agents" element={<AdminAgents />} />
             <Route path="georules" element={<AdminGeoRules />} />
-            <Route path="metrics" element={<AdminDashboard />} />
+            <Route path="metrics" element={<AdminAnalytics />} />
             <Route path="audit" element={<AdminAuditLogs />} />
-            <Route path="certificates" element={<AdminDashboard />} />
             <Route path="config" element={<AdminConfigPush />} />
             <Route path="settings" element={<AdminSettings />} />
           </Route>
@@ -111,9 +113,11 @@ export default function App() {
             }
           >
             <Route index element={<UserDashboard />} />
+            <Route path="zones" element={<AdminZones />} />
             <Route path="zones/:id/records" element={<Records />} />
             <Route path="dns-lookup" element={<AdminDnsLookup />} />
-            <Route path="settings" element={<AdminSettings />} />
+            <Route path="settings" element={<UserSettings />} />
+            <Route path="help" element={<Help />} />
           </Route>
 
           <Route

@@ -26,11 +26,11 @@ export default function MfaCard() {
 
   return (
     <div className="card p-5 space-y-3">
-      <h3 className="font-semibold text-gray-900 dark:text-white">Two-factor authentication</h3>
+      <h3 className="font-semibold text-ink">Two-factor authentication</h3>
       {msg && <div className={`text-sm px-3 py-2 rounded-lg ${msg.bad ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>{msg.text}</div>}
       {enabled === null && <p className="text-sm text-gray-500">Loading...</p>}
       {enabled === false && !setup && (
-        <><p className="text-sm text-gray-600 dark:text-gray-300">Protect your account with an authenticator app (TOTP).</p>
+        <><p className="text-sm text-muted">Protect your account with an authenticator app (TOTP).</p>
           <button className="btn-primary" onClick={start}>Set up</button></>
       )}
       {setup && (

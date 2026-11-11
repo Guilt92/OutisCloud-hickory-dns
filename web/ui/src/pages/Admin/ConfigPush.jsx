@@ -26,7 +26,7 @@ export default function ConfigPush(){
         className="section-header"
       >
         <div className="flex items-center gap-3">
-          <div className="icon-box bg-gradient-to-br from-indigo-500 to-indigo-600">
+          <div className="icon-box">
             <Upload className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -42,9 +42,9 @@ export default function ConfigPush(){
         className="card max-w-xl"
       >
         <div className="p-5 space-y-4">
-          <div className="flex items-center gap-3 pb-3 border-b border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-3 pb-3 border-b border-line">
             <Server className="w-5 h-5 text-indigo-500" />
-            <span className="font-medium text-gray-900 dark:text-white">Agent & Zone Configuration</span>
+            <span className="font-medium text-ink">Agent & Zone Configuration</span>
           </div>
           <div className="space-y-3">
             <div>
@@ -62,9 +62,9 @@ export default function ConfigPush(){
             </button>
           </div>
           {result && (
-            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-              <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Result</p>
-              <pre className="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 p-3 rounded-lg text-xs font-mono overflow-x-auto border border-gray-200 dark:border-gray-700">{JSON.stringify(result, null, 2)}</pre>
+            <div className="mt-4 pt-4 border-t border-line">
+              <p className="text-sm font-medium text-ink/80 mb-2">Result</p>
+              <pre className="bg-gray-50 dark:bg-gray-900 text-ink p-3 rounded-lg text-xs font-mono overflow-x-auto border border-line">{JSON.stringify(result, null, 2)}</pre>
             </div>
           )}
         </div>

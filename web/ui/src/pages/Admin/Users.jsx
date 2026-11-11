@@ -7,6 +7,8 @@ import SearchInput from '../../components/SearchInput'
 import { useAuthStore } from '../../store'
 import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
 import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Mail, User, Eye, Edit, ShieldCheck, ShieldOff, Lock } from 'lucide-react'
+import { useConfirm } from '../../components/ui'
+import Notifications from '../../components/Notifications'
 
 const ROLES = [
   { value: 'admin', label: 'Admin', description: 'Full access to all features', icon: ShieldCheck },
@@ -21,6 +23,8 @@ const roleColors = {
 }
 
 export default function Users(){
+  const askConfirm = useConfirm()
+  const notify = React.useContext(Notifications)
   const { user } = useAuthStore()
   const paged = useServerPagination(api, user?.role === 'admin' ? '/api/v1/users' : null, { pageSize: 15 })
   const users = paged.items
@@ -37,8 +41,8 @@ export default function Users(){
     return (
       <div className="p-8 text-center">
         <Shield className="w-16 h-16 text-red-500 mx-auto mb-4" />
-        <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-2">Access Denied</h2>
-        <p className="text-gray-500 dark:text-gray-400">You don't have permission to manage users.</p>
+        <h2 className="text-xl font-bold text-ink mb-2">Access Denied</h2>
+        <p className="text-muted">You don't have permission to manage users.</p>
       </div>
     )
   }
@@ -51,7 +55,7 @@ export default function Users(){
   const save = async ()=>{
     try {
       if (!form.username || form.username.length < 3) {
-        alert('Username must be at least 3 characters')
+        notify?.warning('Username must be at least 3 characters')
         return
       }
       if (editing) {
@@ -59,17 +63,17 @@ export default function Users(){
         await api.put(`/api/v1/users/${editing.id}`, updateData)
       } else {
         if (!form.password || form.password.length < 8) {
-          alert('Password must be at least 8 characters')
+          notify?.warning('Password must be at least 8 characters')
           return
         }
         await api.post('/api/v1/users', { username: form.username, password: form.password, role: form.role })
       }
       setOpen(false)
       load()
-    } catch(e){ alert('Save failed: ' + (e.response?.data?.error || e.message)) }
+    } catch(e){ notify?.error('Save failed: ' + (e.response?.data?.error || e.message)) }
   }
 
-  const remove = async (id)=>{ if(!confirm('Delete user?')) return; try { await api.delete(`/api/v1/users/${id}`); load() } catch(e){ alert('Delete failed') } }
+  const remove = async (id)=>{ if(!(await askConfirm({ title: 'Delete user?', message: 'The account loses access immediately. Their zones are not deleted.', confirmLabel: 'Delete user' }))) return; try { await api.delete(`/api/v1/users/${id}`); load() } catch(e){ notify?.error('Delete failed') } }
 
   const filtered = users
 
@@ -78,7 +82,7 @@ export default function Users(){
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white dark:bg-gray-800 shadow-lg rounded-xl p-6 border border-gray-100 dark:border-gray-700"
+        className="bg-surface shadow-lg rounded-xl p-6 border border-line"
       >
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center space-x-3">
@@ -86,13 +90,13 @@ export default function Users(){
               <UsersIcon className="w-6 h-6 text-purple-600 dark:text-purple-400" />
             </div>
             <div>
-              <h3 className="text-xl font-bold text-gray-800 dark:text-white">User Management</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Manage users and access levels</p>
+              <h1 className="section-title">User Management</h1>
+              <p className="text-sm text-muted">Manage users and access levels</p>
             </div>
           </div>
           <button 
             onClick={openCreate}
-            className="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-4 py-2 rounded-lg hover:from-purple-700 hover:to-purple-800 transition-all flex items-center space-x-2 font-medium"
+            className="btn-primary px-4 py-2 rounded-lg hover:from-purple-700 hover:to-purple-800 transition-all flex items-center space-x-2 font-medium"
           >
             <Plus className="w-5 h-5" />
             <span>New User</span>
@@ -108,41 +112,41 @@ export default function Users(){
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
-        className="bg-white dark:bg-gray-800 shadow-lg rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden"
+        className="bg-surface shadow-lg rounded-xl border border-line overflow-hidden"
       >
         {filtered.length === 0 ? (
           <div className="p-12 text-center">
             <UsersIcon className="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-500 dark:text-gray-400">No users found</p>
+            <p className="text-muted">No users found</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 dark:bg-gray-700">
+              <thead className="bg-surface-2">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">User</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">Role</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">Created</th>
-                  <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">Actions</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">User</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Role</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Created</th>
+                  <th className="px-6 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+              <tbody className="divide-y divide-line">
                 {filtered.map((u, i) => (
                   <motion.tr 
                     key={u.id}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: i * 0.05 }}
-                    className="hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                    className="hover:bg-ink/5"
                   >
                     <td className="px-6 py-4">
                       <div className="flex items-center space-x-3">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center text-white font-semibold">
+                        <div className="w-10 h-10 rounded-full bg-accent text-on-accent flex items-center justify-center font-semibold font-semibold">
                           {u.username?.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <p className="text-sm font-medium text-gray-900 dark:text-white">{u.username}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{u.email || 'No email'}</p>
+                          <p className="text-sm font-medium text-ink">{u.username}</p>
+                          <p className="text-xs text-muted">{u.email || 'No email'}</p>
                         </div>
                       </div>
                     </td>
@@ -154,7 +158,7 @@ export default function Users(){
                         <span className="capitalize">{u.role || 'viewer'}</span>
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">
+                    <td className="px-6 py-4 text-sm text-muted">
                       {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '-'}
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -179,7 +183,7 @@ export default function Users(){
             </table>
           </div>
         )}
-        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+        <div className="px-5 py-3 border-t border-line flex items-center justify-between text-xs text-muted">
           <span>{paged.total} user{paged.total !== 1 ? 's' : ''}</span>
           <PaginationControls pagination={paged.pagination} />
         </div>
@@ -195,9 +199,9 @@ export default function Users(){
               className="space-y-4"
             >
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Username</label>
+                <label className="block text-sm font-medium text-ink/80 mb-1">Username</label>
                 <input 
-                  className="w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
+                  className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
                   placeholder="username" 
                   value={form.username} 
                   onChange={e=>setForm({...form, username:e.target.value})} 
@@ -205,10 +209,10 @@ export default function Users(){
               </div>
               {!editing && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Password</label>
+                  <label className="block text-sm font-medium text-ink/80 mb-1">Password</label>
                   <input 
                     type="password"
-                    className="w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
+                    className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
                     placeholder="min 8 characters" 
                     value={form.password} 
                     onChange={e=>setForm({...form, password:e.target.value})} 
@@ -216,7 +220,7 @@ export default function Users(){
                 </div>
               )}
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Role</label>
+                <label className="block text-sm font-medium text-ink/80 mb-2">Role</label>
                 <div className="grid grid-cols-1 gap-2">
                   {ROLES.map((role) => {
                     const Icon = role.icon
@@ -226,7 +230,7 @@ export default function Users(){
                         className={`flex items-center p-3 rounded-lg border-2 cursor-pointer transition-all ${
                           form.role === role.value
                             ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
-                            : 'border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500'
+                            : 'border-line hover:border-gray-300 dark:hover:border-gray-500'
                         }`}
                       >
                         <input
@@ -239,8 +243,8 @@ export default function Users(){
                         />
                         <Icon className={`w-5 h-5 mr-3 ${form.role === role.value ? 'text-purple-600 dark:text-purple-400' : 'text-gray-400'}`} />
                         <div className="flex-1">
-                          <p className="text-sm font-medium text-gray-900 dark:text-white">{role.label}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{role.description}</p>
+                          <p className="text-sm font-medium text-ink">{role.label}</p>
+                          <p className="text-xs text-muted">{role.description}</p>
                         </div>
                         {form.role === role.value && (
                           <ShieldCheck className="w-5 h-5 text-purple-600 dark:text-purple-400" />
@@ -252,7 +256,7 @@ export default function Users(){
               </div>
               <div className="flex justify-end space-x-3 pt-4">
                 <button 
-                  className="px-4 py-2 text-gray-700 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" 
+                  className="px-4 py-2 text-gray-700 bg-surface-2 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" 
                   onClick={()=>setOpen(false)}
                 >
                   Cancel

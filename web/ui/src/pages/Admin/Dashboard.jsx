@@ -1,421 +1,205 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { 
-  Globe, 
-  FileText, 
-  Server, 
-  Users, 
-  Activity, 
-  TrendingUp, 
-  Clock,
-  CheckCircle,
-  AlertCircle,
-  Database,
-  Network,
-  Zap,
-  ArrowRight,
-  RefreshCw,
-  Play,
-  Square,
-  Pause
-} from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { Globe, FileText, Server, Radio, Users, RefreshCw, ArrowRight, Activity, AlertTriangle, CheckCircle2, BarChart3 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import api from '../../api/client';
-import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { useUIStore } from '../../store';
+import { PageHeader, StatCard, StatusBadge, EmptyState, FlowArt } from '../../components/ui';
 
-const StatCard = ({ icon: Icon, label, value, trend, color = 'primary', delay = 0, onClick }) => {
-  const colors = {
-    primary: 'from-primary-500 to-primary-600',
-    success: 'from-success-500 to-success-600',
-    warning: 'from-warning-500 to-warning-600',
-    danger: 'from-danger-500 to-danger-600',
-  };
-  
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay }}
-      onClick={onClick}
-      className={`bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-xl transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
-    >
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${colors[color]} flex items-center justify-center shadow-lg`}>
-            <Icon className="w-6 h-6 text-white" />
-          </div>
-          {trend && (
-            <span className="flex items-center text-sm font-medium text-success-600 dark:text-success-400">
-              <TrendingUp className="w-4 h-4 mr-1" />
-              {trend}
-            </span>
-          )}
-        </div>
-        <div className="space-y-1">
-          <p className="text-3xl font-bold text-gray-900 dark:text-white">{value || '0'}</p>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
-        </div>
-      </div>
-      <div className={`h-1 bg-gradient-to-r ${colors[color]}`}></div>
-    </motion.div>
-  );
+const total = (res) => {
+  const h = Number(res?.headers?.['x-total-count']);
+  return Number.isFinite(h) ? h : (Array.isArray(res?.data) ? res.data.length : 0);
 };
 
-const QuickAction = ({ icon: Icon, label, description, to, color = 'primary', delay = 0, onClick }) => {
-  const colors = {
-    primary: 'group-hover:bg-primary-50 dark:group-hover:bg-primary-900/20',
-    success: 'group-hover:bg-success-50 dark:group-hover:bg-success-900/20',
-    warning: 'group-hover:bg-warning-50 dark:group-hover:bg-warning-900/20',
-  };
-  
-  const iconColors = {
-    primary: 'text-primary-600 dark:text-primary-400',
-    success: 'text-success-600 dark:text-success-400',
-    warning: 'text-warning-600 dark:text-warning-400',
-  };
-  
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -20 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.4, delay }}
-    >
-      <Link
-        to={to}
-        onClick={onClick}
-        className={`group flex items-center gap-4 p-4 rounded-xl transition-all duration-200 ${colors[color]} hover:shadow-md`}
-      >
-        <div className="w-10 h-10 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center group-hover:scale-110 transition-transform">
-          <Icon className={`w-5 h-5 ${iconColors[color]}`} />
-        </div>
-        <div className="flex-1">
-          <h3 className="font-semibold text-gray-900 dark:text-white">{label}</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{description}</p>
-        </div>
-        <ArrowRight className="w-5 h-5 text-gray-400 group-hover:translate-x-1 transition-transform" />
-      </Link>
-    </motion.div>
-  );
-};
-
-const ServerCard = ({ server, delay = 0 }) => {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay }}
-      className="p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-600"
-    >
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className={`w-3 h-3 rounded-full ${server.status === 'running' ? 'bg-success-500 animate-pulse' : 'bg-gray-300'}`}></div>
-          <div>
-            <p className="font-semibold text-gray-900 dark:text-white">{server.name}</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400">{server.address}</p>
-          </div>
-        </div>
-        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-          server.status === 'running' 
-            ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400' 
-            : 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'
-        }`}>
-          {server.status === 'running' ? 'Active' : 'Registered'}
-        </span>
-      </div>
-    </motion.div>
-  );
-};
-
-
+// All numbers on this page come from the API. Anything that is unavailable is shown as such, never invented.
 export default function Dashboard() {
-  const [stats, setStats] = useState({ zones: 0, records: 0, servers: 0, agents: 0 });
-  const [servers, setServers] = useState([]);
-  const [agents, setAgents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [pub, setPub] = useState(null);
-  const [queries, setQueries] = useState({ state: 'loading' });
-  // DNS server lifecycle is managed externally; dashboard does not track it
+  const [data, setData] = useState({ loading: true });
+  const theme = useUIStore((s) => s.theme);
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [zonesRes, serversRes, agentsRes] = await Promise.all([
-        api.get('/api/v1/zones').catch(() => ({ data: [] })),
-        api.get('/api/v1/servers').catch(() => ({ data: [] })),
-        api.get('/api/v1/agents').catch(() => ({ data: [] })),
-      ]);
-      
-      const zones = zonesRes.data || [];
-      // count the records of every zone (in parallel), not just the first three
-      const counts = await Promise.all(
-        zones.map((zone) =>
-          api.get(`/api/v1/zones/${zone.id}/records`)
-            .then((r) => (r.data?.length || 0))
-            .catch((e) => { console.warn('Failed to load records for zone:', zone.id, e); return 0; })
-        )
-      );
-      const recordCount = counts.reduce((a, b) => a + b, 0);
-      
-      setStats({
-        zones: zones.length,
-        records: recordCount,
-        servers: serversRes.data?.length || 0,
-        agents: agentsRes.data?.length || 0,
-      });
-      
-      setServers(serversRes.data || []);
-      try { setPub((await api.get('/api/v1/dns/status')).data); } catch (e) { setPub(null); }
-      try { setQueries({ state: 'ok', ...(await api.get('/api/v1/metrics/queries')).data }); }
-      catch (e) { setQueries({ state: e.response?.status === 503 ? 'unconfigured' : 'error', message: e.response?.data?.details || e.response?.data?.error || e.message }); }
-      setAgents(agentsRes.data || []);
-    } catch (e) {
-      console.warn('Failed to load dashboard data:', e);
+  const load = useCallback(async () => {
+    const ok = (p) => p.catch(() => null);
+    const [zones, servers, agents, users, pub, queries, audit] = await Promise.all([
+      ok(api.get('/api/v1/zones', { params: { limit: 1 } })),
+      ok(api.get('/api/v1/servers')),
+      ok(api.get('/api/v1/agents')),
+      ok(api.get('/api/v1/users', { params: { limit: 1 } })),
+      ok(api.get('/api/v1/dns/status')),
+      api.get('/api/v1/metrics/queries').then((r) => ({ state: 'ok', ...r.data })).catch((e) => ({ state: e.response?.status === 503 ? 'unconfigured' : 'error' })),
+      ok(api.get('/api/v1/audit/logs', { params: { limit: 8 } })),
+    ]);
+    // record total = sum of the per-zone totals (one cheap request per zone, count only)
+    let records = null;
+    const zoneList = zones ? (await api.get('/api/v1/zones', { params: { limit: 200 } }).catch(() => null))?.data || [] : [];
+    if (zones) {
+      const counts = await Promise.all(zoneList.map((z) => api.get(`/api/v1/zones/${z.id}/records`, { params: { limit: 1 } }).then(total).catch(() => 0)));
+      records = counts.reduce((a, b) => a + b, 0);
     }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      api.setToken(token);
-    }
-    loadData();
-    
-    const interval = setInterval(loadData, 30000);
-    return () => clearInterval(interval);
+    setData({
+      loading: false,
+      zones: zones ? total(zones) : null, zoneList, records,
+      servers: servers?.data || [], agents: agents?.data || [], users: users ? total(users) : null,
+      pub: pub?.data || null, queries, audit: audit?.data || [],
+    });
   }, []);
 
+  useEffect(() => {
+    const t = localStorage.getItem('token'); if (t) api.setToken(t);
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const d = data;
+  const enabledAgents = (d.agents || []).filter((a) => a.enabled);
+  const behind = enabledAgents.filter((a) => !a.in_sync);
+  const serversUp = (d.servers || []).filter((s) => s.status === 'running').length;
+  const pending = (d.zoneList || []).filter((z) => z.status === 'pending').length;
+  const failedZones = d.pub?.last_publish?.failed || [];
+  const publishFailed = d.pub?.last_publish && !d.pub.last_publish.ok;
+
+  const attention = [];
+  if (publishFailed) attention.push({ tone: 'bad', text: `Last publication failed${d.pub.last_publish.error ? `: ${d.pub.last_publish.error}` : ''}`, to: '/admin/zones' });
+  failedZones.forEach((f) => attention.push({ tone: 'bad', text: `Zone ${f.zone} was not published: ${f.error}`, to: '/admin/zones' }));
+  if (behind.length) attention.push({ tone: 'warn', text: `${behind.length} agent${behind.length > 1 ? 's' : ''} behind the published configuration`, to: '/admin/agents' });
+  if ((d.servers || []).length && serversUp < d.servers.length) attention.push({ tone: 'warn', text: `${d.servers.length - serversUp} DNS server${d.servers.length - serversUp > 1 ? 's' : ''} not responding`, to: '/admin/servers' });
+  if (pending) attention.push({ tone: 'warn', text: `${pending} zone${pending > 1 ? 's' : ''} waiting for domain verification`, to: '/admin/zones' });
+
+  const grid = theme === 'dark' ? '#232836' : '#E2E2DA';
+  const tick = theme === 'dark' ? '#9AA3B5' : '#5F6677';
+  const agentBars = [
+    { name: 'In sync', value: enabledAgents.length - behind.length, fill: '#F5F020' },
+    { name: 'Behind', value: behind.length, fill: '#F59E0B' },
+    { name: 'Disabled', value: (d.agents || []).length - enabledAgents.length, fill: '#5B7CFA' },
+  ];
+  const counters = d.queries?.state === 'ok' ? Object.entries(d.queries.counters || {}).map(([k, v]) => ({ name: k.replace(/^hickory_/, '').replace(/_total$/, ''), value: v })).sort((a, b) => b.value - a.value).slice(0, 6) : [];
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <motion.div 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex flex-col md:flex-row md:items-center md:justify-between gap-4"
-      >
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-          <p className="text-gray-500 dark:text-gray-400">Monitor your DNS infrastructure</p>
+    <div className="page" data-testid="admin-overview">
+      <div className="relative overflow-hidden rounded-2xl border border-line bg-surface p-6 sm:p-8">
+        <FlowArt className="absolute inset-0 w-full h-full opacity-60 dark:opacity-80" />
+        <div className="relative max-w-2xl">
+          <p className="eyebrow mb-2">Operations</p>
+          <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-ink">DNS infrastructure overview</h1>
+          <p className="text-muted mt-2">Live state of publication, servers, agents and query traffic.</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Link to="/admin/zones" className="btn-primary">Manage zones <ArrowRight className="w-4 h-4" /></Link>
+            <button onClick={load} className="btn-secondary" disabled={d.loading}><RefreshCw className={`w-4 h-4 ${d.loading ? 'animate-spin' : ''}`} />Refresh</button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={loadData}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-          {/* DNS is managed separately; no controls shown here. */}
-        </div>
-      </motion.div>
+      </div>
 
-      {/* Publication status */}
-      {pub && (
-        <div className={`rounded-2xl border p-4 text-sm ${pub.last_publish && !pub.last_publish.ok ? 'border-red-300 bg-red-50 text-red-700' : 'border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300'}`}>
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-            <span className="font-semibold">Publication</span>
-            {pub.last_publish ? (
+      {/* needs attention */}
+      <section aria-label="Needs attention">
+        {attention.length === 0 && !d.loading ? (
+          <div className="card px-5 py-3.5 flex items-center gap-3 text-sm"><CheckCircle2 className="w-4 h-4 text-success-500" /><span className="text-ink">Everything is published and in sync.</span></div>
+        ) : (
+          <div className="card divide-y divide-line">
+            {attention.map((a, i) => (
+              <Link key={i} to={a.to} className="flex items-center gap-3 px-5 py-3 text-sm hover:bg-ink/[0.03]">
+                <AlertTriangle className={`w-4 h-4 ${a.tone === 'bad' ? 'text-danger-500' : 'text-warning-500'}`} />
+                <span className="flex-1 text-ink">{a.text}</span><ArrowRight className="w-4 h-4 text-muted" />
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <StatCard icon={Globe} label="Zones" value={d.zones ?? '—'} hint={pending ? `${pending} pending verification` : 'all active'} to="/admin/zones" loading={d.loading} />
+        <StatCard icon={FileText} label="Records" value={d.records ?? '—'} hint="across all zones" loading={d.loading} />
+        <StatCard icon={Server} label="DNS servers" value={`${serversUp}/${(d.servers || []).length}`} tone={(d.servers || []).length === 0 ? 'neutral' : serversUp === d.servers.length ? 'ok' : 'warn'} hint="responding" to="/admin/servers" loading={d.loading} />
+        <StatCard icon={Radio} label="Agents" value={`${enabledAgents.length - behind.length}/${enabledAgents.length}`} tone={enabledAgents.length === 0 ? 'neutral' : behind.length ? 'warn' : 'ok'} hint="in sync" to="/admin/agents" loading={d.loading} />
+        <StatCard icon={Users} label="Users" value={d.users ?? '—'} to="/admin/users" loading={d.loading} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        {/* publication + servers */}
+        <div className="card xl:col-span-2">
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between">
+            <h2 className="panel-title">Publication & servers</h2>
+            <Link to="/admin/servers" className="text-xs text-primary-700 dark:text-accent hover:underline">All servers</Link>
+          </div>
+          <div className="p-5 grid sm:grid-cols-3 gap-4 border-b border-line text-sm">
+            <div><p className="text-xs text-muted">Last publication</p>
+              <p className="mt-1 text-ink flex items-center gap-2">{d.pub?.last_publish ? <><span className={d.pub.last_publish.ok ? 'dot-ok' : 'dot-bad'} />{d.pub.last_publish.ok ? `${d.pub.last_publish.published} zone(s)` : 'Failed'}</> : (d.pub ? 'none since start' : '—')}</p>
+              {d.pub?.last_publish && <p className="text-xs text-muted mt-0.5">{new Date(d.pub.last_publish.at).toLocaleString()}</p>}</div>
+            <div><p className="text-xs text-muted">Configuration version</p><p className="mt-1 text-ink font-mono">{d.pub ? `v${d.pub.bundle_version}` : '—'}</p></div>
+            <div><p className="text-xs text-muted">Database connections</p><p className="mt-1 text-ink font-mono">{d.pub ? `${d.pub.db_connections.healthy}/${d.pub.db_connections.size}` : '—'}</p></div>
+          </div>
+          <ul className="divide-y divide-line">
+            {(d.servers || []).length === 0 && !d.loading && <li><EmptyState icon={Server} title="No DNS servers registered" description="Register the DNS servers that serve your zones to monitor them here." action={<Link to="/admin/servers" className="btn-primary btn-sm">Add a server</Link>} /></li>}
+            {(d.servers || []).map((s) => (
+              <li key={s.id} className="flex items-center gap-3 px-5 py-3 text-sm">
+                <span className={s.status === 'running' ? 'dot-ok' : 'dot-bad'} />
+                <span className="font-medium text-ink">{s.name}</span>
+                <span className="text-muted font-mono text-xs">{s.address}{s.port ? `:${s.port}` : ''}</span>
+                <span className="flex-1" />
+                {s.region && <span className="badge-default">{s.region}</span>}
+                <StatusBadge status={s.status === 'running' ? 'online' : 'offline'} />
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* agents chart */}
+        <div className="card">
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Agent synchronisation</h2><Link to="/admin/agents" className="text-xs text-primary-700 dark:text-accent hover:underline">Agents</Link></div>
+          <div className="p-5">
+            {(d.agents || []).length === 0 ? <EmptyState icon={Radio} title="No agents" description="Agents replicate your zones to remote DNS servers." /> : (
+              <div className="h-48" role="img" aria-label="Agents by synchronisation state">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={agentBars} layout="vertical" margin={{ left: 8, right: 16 }}>
+                    <XAxis type="number" allowDecimals={false} tick={{ fill: tick, fontSize: 11 }} stroke={grid} />
+                    <YAxis type="category" dataKey="name" width={64} tick={{ fill: tick, fontSize: 12 }} stroke={grid} />
+                    <Tooltip cursor={{ fill: 'rgba(128,128,128,0.08)' }} contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
+                    <Bar dataKey="value" radius={[0, 4, 4, 0]}>{agentBars.map((b) => <Cell key={b.name} fill={b.fill} />)}</Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="card xl:col-span-2">
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Query traffic</h2><Link to="/admin/metrics" className="text-xs text-primary-700 dark:text-accent hover:underline">Analytics</Link></div>
+          <div className="p-5">
+            {d.queries?.state === 'ok' ? (
               <>
-                <span>{pub.last_publish.ok ? 'OK' : 'FAILED'} - {pub.last_publish.published} zone(s) at {new Date(pub.last_publish.at).toLocaleTimeString()}</span>
-                {pub.last_publish.error && <span>{pub.last_publish.error}</span>}
+                <p className="font-display text-3xl font-semibold tabular-nums text-ink">{Number(d.queries.requests_total).toLocaleString()}</p>
+                <p className="text-xs text-muted mb-3">requests answered since the DNS server started</p>
+                {counters.length > 0 && (
+                  <div className="h-44"><ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={counters} margin={{ left: 0, right: 8 }}>
+                      <XAxis dataKey="name" tick={{ fill: tick, fontSize: 10 }} stroke={grid} interval={0} />
+                      <YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={48} />
+                      <Tooltip cursor={{ fill: 'rgba(128,128,128,0.08)' }} contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
+                      <Bar dataKey="value" fill="#F5F020" radius={[4, 4, 0, 0]} />
+                    </BarChart></ResponsiveContainer></div>
+                )}
               </>
-            ) : <span>no publication since the API started</span>}
-            <span>Bundle v{pub.bundle_version}</span>
-            <span>DB connections {pub.db_connections.healthy}/{pub.db_connections.size}</span>
-            {agents.filter(a => a.enabled && !a.in_sync).length > 0 && <span className="text-warning-600">{agents.filter(a => a.enabled && !a.in_sync).length} agent(s) behind</span>}
+            ) : d.queries?.state === 'unconfigured' ? (
+              <EmptyState icon={BarChart3} title="Query statistics are not configured" description="Set DNS_METRICS_URL on the control API to the DNS server's Prometheus endpoint to see live query counters." />
+            ) : (
+              <EmptyState icon={BarChart3} title="Query statistics unavailable" description="The DNS server's metrics endpoint could not be reached." />
+            )}
           </div>
-          {pub.last_publish?.failed?.map(f => <p key={f.zone} className="mt-1">Zone {f.zone}: {f.error}</p>)}
         </div>
-      )}
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard icon={Globe} label="Total Zones" value={stats.zones} color="primary" delay={0.1} />
-        <StatCard icon={FileText} label="DNS Records" value={stats.records} color="success" delay={0.2} />
-        <StatCard icon={Server} label="Servers" value={stats.servers} color="warning" delay={0.3} />
-        <StatCard icon={Users} label="Agents" value={stats.agents} color="danger" delay={0.4} />
-      </div>
-
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Chart Section */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
-        >
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">DNS Queries</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Query statistics</p>
-            </div>
-          </div>
-          <div className="h-64 flex items-center justify-center text-center">
-            {queries.state === 'ok' ? (
-              <div>
-                <p className="text-5xl font-bold text-gray-900 dark:text-white">{Math.round(queries.requests_total).toLocaleString()}</p>
-                <p className="text-gray-500 dark:text-gray-400 mt-2">DNS requests served since the DNS server last started</p>
-                <p className="text-xs text-gray-400 mt-1">from {queries.source}</p>
-              </div>
-            ) : (
-              <div>
-                <TrendingUp className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-                <p className="text-gray-600 dark:text-gray-300 font-medium">
-                  {queries.state === 'unconfigured' ? 'Query statistics are not configured' : queries.state === 'loading' ? 'Loading...' : 'Query statistics unavailable'}
-                </p>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
-                  {queries.state === 'unconfigured' ? 'Set DNS_METRICS_URL on the control API to the DNS server\'s Prometheus endpoint.' : queries.message}
-                </p>
-              </div>
-            )}
-          </div>
-        </motion.div>
-
-        {/* Quick Actions */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
-        >
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h3>
-          <div className="space-y-3">
-            <QuickAction icon={Globe} label="Manage Zones" description="Create & edit zones" to="/admin/zones" color="primary" delay={0.7} />
-            <QuickAction icon={Server} label="DNS Servers" description="Configure servers" to="/admin/servers" color="warning" delay={0.8} />
-            <QuickAction icon={Network} label="GeoDNS Rules" description="Geographic routing" to="/admin/georules" color="success" delay={0.9} />
-            <QuickAction icon={Users} label="User Management" description="Manage users" to="/admin/users" color="primary" delay={1.0} />
-          </div>
-        </motion.div>
-      </div>
-
-      {/* Servers & Agents Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Servers */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.7 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden"
-        >
-          <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">DNS Servers</h3>
-            <Link to="/admin/servers" className="text-sm text-primary-600 hover:text-primary-500 font-medium">
-              View all
-            </Link>
-          </div>
-          <div className="p-6">
-            {servers.length === 0 ? (
-              <div className="text-center py-8">
-                <Server className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-                <p className="text-gray-500 dark:text-gray-400">No servers configured</p>
-                <Link to="/admin/servers" className="text-primary-600 hover:text-primary-500 text-sm font-medium mt-2 inline-block">
-                  Add your first server
-                </Link>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {servers.slice(0, 4).map((server) => (
-                  <ServerCard 
-                    key={server.id} 
-                    server={server}
-                    delay={0.8}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </motion.div>
-
-        {/* Agents */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.8 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden"
-        >
-          <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Connected Agents</h3>
-            <Link to="/admin/agents" className="text-sm text-primary-600 hover:text-primary-500 font-medium">
-              View all
-            </Link>
-          </div>
-          <div className="p-6">
-            {agents.length === 0 ? (
-              <div className="text-center py-8">
-                <Activity className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-                <p className="text-gray-500 dark:text-gray-400">No agents connected</p>
-                <Link to="/admin/agents" className="text-primary-600 hover:text-primary-500 text-sm font-medium mt-2 inline-block">
-                  Learn about agents
-                </Link>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {agents.slice(0, 4).map((agent) => (
-                  <div key={agent.id} className="flex items-center justify-between p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${agent.online ? 'bg-success-500 animate-pulse' : 'bg-gray-300'}`}></div>
-                      <div>
-                        <p className="font-medium text-gray-900 dark:text-white">{agent.name}</p>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">{agent.addr}</p>
-                      </div>
-                    </div>
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                      agent.online 
-                        ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400' 
-                        : 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'
-                    }`}>
-                      {agent.online ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </motion.div>
-      </div>
-
-      {/* System Status */}
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.9 }}
-        className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
-      >
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">System Status</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            { name: 'API Server', status: 'healthy', icon: Server },
-            { name: 'Database', status: 'healthy', icon: Database },
-            // DNS service is external to the control API; do not report a status
-            { name: 'GeoDNS', status: 'ready', icon: Globe },
-          ].map((item) => (
-            <div key={item.name} className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50">
-              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                item.status === 'healthy' || item.status === 'running'
-                  ? 'bg-success-100 dark:bg-success-900/30' 
-                  : 'bg-warning-100 dark:bg-warning-900/30'
-              }`}>
-                <item.icon className={`w-4 h-4 ${
-                  item.status === 'healthy' || item.status === 'running'
-                    ? 'text-success-600 dark:text-success-400'
-                    : 'text-warning-600 dark:text-warning-400'
-                }`} />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-900 dark:text-white">{item.name}</p>
-                <p className={`text-xs ${
-                  item.status === 'healthy' || item.status === 'running'
-                    ? 'text-success-600 dark:text-success-400'
-                    : 'text-warning-600 dark:text-warning-400'
-                }`}>{item.status}</p>
-              </div>
-            </div>
-          ))}
+        <div className="card">
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Recent activity</h2><Link to="/admin/audit" className="text-xs text-primary-700 dark:text-accent hover:underline">Audit log</Link></div>
+          <ul className="divide-y divide-line">
+            {(d.audit || []).length === 0 && <li><EmptyState icon={Activity} title="No activity yet" /></li>}
+            {(d.audit || []).map((a) => (
+              <li key={a.id} className="px-5 py-3 text-sm">
+                <p className="text-ink font-medium truncate">{String(a.action).replace(/_/g, ' ')}</p>
+                <p className="text-xs text-muted">{a.resource_type}{a.ip_address ? ` · ${a.ip_address}` : ''} · {new Date(a.created_at).toLocaleString()}</p>
+              </li>
+            ))}
+          </ul>
         </div>
-      </motion.div>
+      </div>
     </div>
   );
 }

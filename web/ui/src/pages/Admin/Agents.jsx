@@ -14,6 +14,8 @@ import {
   X
 } from 'lucide-react';
 import api from '../../api/client';
+import { useConfirm } from '../../components/ui'
+import Notifications from '../../components/Notifications'
 
 const StatusBadge = ({ status, label }) => {
   const styles = {
@@ -36,27 +38,27 @@ const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, delay = 0 }) =
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay }}
-      className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 overflow-hidden hover:shadow-xl transition-shadow"
+      className="card overflow-hidden hover:shadow-xl transition-shadow"
     >
       <div className="p-6">
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-4">
             <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-              agent.online ? 'bg-success-100 dark:bg-success-900/30' : 'bg-gray-100 dark:bg-gray-700'
+              agent.online ? 'bg-success-100 dark:bg-success-900/30' : 'bg-surface-2'
             }`}>
               <Server className={`w-6 h-6 ${agent.online ? 'text-success-600' : 'text-gray-400'}`} />
             </div>
             <div>
-              <h3 className="font-semibold text-gray-900 dark:text-white">{agent.name}</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 font-mono">{agent.addr}</p>
+              <h3 className="font-semibold text-ink">{agent.name}</h3>
+              <p className="text-sm text-muted font-mono">{agent.addr}</p>
             </div>
           </div>
           <StatusBadge status={!agent.enabled ? 'disabled' : agent.online ? 'online' : 'offline'} />
         </div>
         
         <div className="grid grid-cols-2 gap-4 mb-4">
-          <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-3">
-            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 mb-1">
+          <div className="bg-surface-2 rounded-xl p-3">
+            <div className="flex items-center gap-2 text-xs text-muted mb-1">
               <Activity className="w-3 h-3" />
               Status
             </div>
@@ -64,20 +66,20 @@ const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, delay = 0 }) =
               {agent.online ? 'Online' : 'Offline'}
             </p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-3">
-            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 mb-1">
+          <div className="bg-surface-2 rounded-xl p-3">
+            <div className="flex items-center gap-2 text-xs text-muted mb-1">
               <Clock className="w-3 h-3" />
               Last Heartbeat
             </div>
-            <p className="font-semibold text-gray-900 dark:text-white text-sm">
+            <p className="font-semibold text-ink text-sm">
               {agent.last_heartbeat ? new Date(agent.last_heartbeat).toLocaleString() : 'Never'}
             </p>
           </div>
         </div>
         
-        <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-3 mb-4 text-sm">
+        <div className="bg-surface-2 rounded-xl p-3 mb-4 text-sm">
           <div className="flex items-center justify-between">
-            <span className="text-gray-500 dark:text-gray-400">Configuration</span>
+            <span className="text-muted">Configuration</span>
             <span className={`font-semibold ${agent.in_sync ? 'text-success-600' : 'text-warning-600'}`}>
               {agent.in_sync ? 'In sync' : 'Behind'} (v{agent.applied_version} / v{agent.desired_version})
             </span>
@@ -91,14 +93,14 @@ const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, delay = 0 }) =
           <button
             onClick={() => onSync(agent.id)}
             disabled={!agent.enabled}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-ink/80 bg-surface-2 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
           >
             <RefreshCw className="w-4 h-4" />
             Sync now
           </button>
           <button
             onClick={() => onRotate(agent.id)}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-ink/80 bg-surface-2 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
           >
             <RefreshCw className="w-4 h-4" />
             Rotate Token
@@ -160,19 +162,19 @@ const CreateAgentModal = ({ isOpen, onClose, onCreate }) => {
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
-        className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md"
+        className="card w-full max-w-md"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between p-6 border-b border-gray-100 dark:border-gray-700">
-          <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Register New Agent</h3>
-          <button onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl">
+        <div className="flex items-center justify-between p-6 border-b border-line">
+          <h3 className="text-xl font-semibold text-ink">Register New Agent</h3>
+          <button onClick={onClose} className="p-2 hover:bg-ink/5 rounded-xl">
             <X className="w-5 h-5 text-gray-500" />
           </button>
         </div>
         
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <label className="block text-sm font-medium text-ink/80 mb-2">
               Agent Name
             </label>
             <input
@@ -180,13 +182,13 @@ const CreateAgentModal = ({ isOpen, onClose, onCreate }) => {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g., us-east-1-agent"
-              className="w-full px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              className="w-full px-4 py-3 border border-line rounded-xl bg-white dark:bg-gray-700 text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               required
             />
           </div>
           
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <label className="block text-sm font-medium text-ink/80 mb-2">
               Agent Address
             </label>
             <input
@@ -194,7 +196,7 @@ const CreateAgentModal = ({ isOpen, onClose, onCreate }) => {
               value={addr}
               onChange={(e) => setAddr(e.target.value)}
               placeholder="e.g., 192.168.1.100:5353"
-              className="w-full px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              className="w-full px-4 py-3 border border-line rounded-xl bg-white dark:bg-gray-700 text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
               required
             />
           </div>
@@ -209,7 +211,7 @@ const CreateAgentModal = ({ isOpen, onClose, onCreate }) => {
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 px-4 py-3 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              className="flex-1 px-4 py-3 border border-line text-ink/80 rounded-xl font-medium hover:bg-ink/5 transition-colors"
             >
               Cancel
             </button>
@@ -228,6 +230,8 @@ const CreateAgentModal = ({ isOpen, onClose, onCreate }) => {
 };
 
 export default function Agents() {
+  const askConfirm = useConfirm()
+  const notify = React.useContext(Notifications)
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -266,7 +270,7 @@ export default function Agents() {
   };
   
   const handleDelete = async (id) => {
-    if (!confirm('Are you sure you want to delete this agent?')) return;
+    if (!(await askConfirm({ title: 'Delete agent?', message: 'The agent stops receiving configuration. Its credentials are revoked.', confirmLabel: 'Delete agent' }))) return;
     try {
       await api.delete(`/api/v1/agents/${id}`);
       await loadAgents();
@@ -280,7 +284,7 @@ export default function Agents() {
       await api.put(`/api/v1/agents/${agent.id}`, { enabled: !agent.enabled });
       await loadAgents();
     } catch (e) {
-      alert('Failed to change agent state: ' + (e.response?.data?.error || e.message));
+      notify?.error('Failed to change agent state: ' + (e.response?.data?.error || e.message));
     }
   };
 
@@ -289,7 +293,7 @@ export default function Agents() {
       await api.post('/api/v1/config/push', { agent_id: id, zone_id: '', zone_config: {} });
       await loadAgents();
     } catch (e) {
-      alert('Sync request failed: ' + (e.response?.data?.message || e.response?.data?.error || e.message));
+      notify?.error('Sync request failed: ' + (e.response?.data?.message || e.response?.data?.error || e.message));
     }
   };
   
@@ -321,13 +325,13 @@ export default function Agents() {
         className="flex flex-col md:flex-row md:items-center md:justify-between gap-4"
       >
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Agents</h1>
-          <p className="text-gray-500 dark:text-gray-400">Manage DNS agents and remote nodes</p>
+          <h1 className="text-2xl font-bold text-ink">Agents</h1>
+          <p className="text-muted">Manage DNS agents and remote nodes</p>
         </div>
         <div className="flex items-center gap-3">
           <button 
             onClick={loadAgents}
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 card rounded-xl text-sm font-medium text-ink/80 hover:bg-ink/5 transition-colors"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -348,15 +352,15 @@ export default function Agents() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
+          className="card p-6"
         >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
               <Server className="w-6 h-6 text-primary-600" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{agents.length}</p>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Total Agents</p>
+              <p className="text-2xl font-bold text-ink">{agents.length}</p>
+              <p className="text-sm text-muted">Total Agents</p>
             </div>
           </div>
         </motion.div>
@@ -365,15 +369,15 @@ export default function Agents() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
+          className="card p-6"
         >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-success-100 dark:bg-success-900/30 flex items-center justify-center">
               <CheckCircle className="w-6 h-6 text-success-600" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{onlineCount}</p>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Online</p>
+              <p className="text-2xl font-bold text-ink">{onlineCount}</p>
+              <p className="text-sm text-muted">Online</p>
             </div>
           </div>
         </motion.div>
@@ -382,15 +386,15 @@ export default function Agents() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-6"
+          className="card p-6"
         >
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+            <div className="w-12 h-12 rounded-xl bg-surface-2 flex items-center justify-center">
               <XCircle className="w-6 h-6 text-gray-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white">{offlineCount}</p>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Offline</p>
+              <p className="text-2xl font-bold text-ink">{offlineCount}</p>
+              <p className="text-sm text-muted">Offline</p>
             </div>
           </div>
         </motion.div>
@@ -409,7 +413,7 @@ export default function Agents() {
           placeholder="Search agents by name, address, or ID..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full pl-12 pr-4 py-3 border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+          className="w-full pl-12 pr-4 py-3 border border-line rounded-xl bg-surface text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
         />
       </motion.div>
       
@@ -417,18 +421,18 @@ export default function Agents() {
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {[1, 2, 3].map(i => (
-            <div key={i} className="bg-white dark:bg-gray-800 rounded-2xl h-48 animate-pulse" />
+            <div key={i} className="card h-48 animate-pulse" />
           ))}
         </div>
       ) : filteredAgents.length === 0 ? (
         <motion.div 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-12 text-center"
+          className="card p-12 text-center"
         >
           <Server className="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-          <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No Agents Found</h3>
-          <p className="text-gray-500 dark:text-gray-400 mb-6">
+          <h3 className="text-xl font-semibold text-ink mb-2">No Agents Found</h3>
+          <p className="text-muted mb-6">
             {searchTerm ? 'Try adjusting your search' : 'Register your first agent to get started'}
           </p>
           {!searchTerm && (
@@ -460,8 +464,8 @@ export default function Agents() {
       {/* Create Modal */}
       {credentials && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-xl p-6 space-y-3">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white">{credentials.title}</h3>
+          <div className="card w-full max-w-xl p-6 space-y-3">
+            <h3 className="text-lg font-bold text-ink">{credentials.title}</h3>
             <p className="text-sm text-amber-600">These values are shown once. Store them in the agent's environment now.</p>
             <pre className="bg-gray-50 dark:bg-gray-900 p-3 rounded-lg text-xs overflow-x-auto select-all">{`AGENT_ID=${credentials.id}
 AGENT_TOKEN=${credentials.token}

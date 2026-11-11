@@ -127,7 +127,7 @@ export default function Records(){
         className="section-header"
       >
         <div className="flex items-center gap-3">
-          <div className="icon-box bg-gradient-to-br from-orange-500 to-orange-600">
+          <div className="icon-box">
             <FileText className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -173,7 +173,7 @@ export default function Records(){
             <div>
               <label className="form-label">Priority</label>
               <input type="number" className="input" value={priority} onChange={e => setPriority(Number(e.target.value))} />
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Only used for MX/SRV</p>
+              <p className="text-xs text-muted mt-1">Only used for MX/SRV</p>
             </div>
             <div className="flex items-end gap-2">
               <button className="btn-primary flex-1" onClick={create}>
@@ -194,12 +194,12 @@ export default function Records(){
                 exit={{ opacity: 0, height: 0 }}
                 className="mt-4"
               >
-                <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-4 py-2 rounded-lg text-sm border border-red-200 dark:border-red-800">{error}</div>
+                <div className="bg-danger-500/10 text-danger-600 dark:text-danger-400 px-4 py-2 rounded-lg text-sm border border-danger-500/40">{error}</div>
               </motion.div>
             )}
           </AnimatePresence>
 
-          <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+          <div className="flex items-center gap-3 mt-4 pt-4 border-t border-line">
             <BulkImport endpoint={`/api/v1/zones/${zoneId}/import`} onComplete={onBulkComplete} />
             <button onClick={downloadTemplate} className="btn-sm btn-ghost">
               <Download className="w-4 h-4" />
@@ -222,7 +222,7 @@ export default function Records(){
         {records.length === 0 ? (
           <div className="p-12 text-center">
             <FileText className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-            <p className="text-gray-500 dark:text-gray-400">No records in this zone yet</p>
+            <p className="text-muted">No records in this zone yet</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -245,7 +245,7 @@ export default function Records(){
                     animate={{ opacity: 1 }}
                     transition={{ delay: i * 0.02 }}
                   >
-                    <td className="font-medium text-gray-900 dark:text-white">{r.name || '@'}</td>
+                    <td className="font-medium text-ink">{r.name || '@'}</td>
                     <td>
                       <span className={`badge ${
                         ['A','AAAA'].includes(r.record_type) ? 'badge-info' :
@@ -257,9 +257,9 @@ export default function Records(){
                         {r.record_type}
                       </span>
                     </td>
-                    <td className="font-mono text-gray-600 dark:text-gray-300 max-w-xs truncate">{r.value}</td>
-                    <td className="text-gray-500 dark:text-gray-400">{r.ttl}</td>
-                    <td className="text-gray-500 dark:text-gray-400">{r.priority || ''}</td>
+                    <td className="font-mono text-muted max-w-xs truncate">{r.value}</td>
+                    <td className="text-muted">{r.ttl}</td>
+                    <td className="text-muted">{r.priority || ''}</td>
                     <td className="text-right">
                       {!readOnly && <div className="flex items-center justify-end gap-1">
                         <button
@@ -286,7 +286,7 @@ export default function Records(){
             </table>
           </div>
         )}
-        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+        <div className="px-5 py-3 border-t border-line flex items-center justify-between text-xs text-muted">
           <span>{paged.total} record{paged.total !== 1 ? 's' : ''}</span>
           <PaginationControls pagination={paged.pagination} />
         </div>

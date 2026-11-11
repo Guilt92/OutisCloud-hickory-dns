@@ -2,9 +2,11 @@ import React from 'react'
 import api from '../api/client'
 import Modal from './Modal'
 import DnssecTab from './DnssecTab'
+import { useConfirm } from './ui'
 
 // Sharing, history/rollback and domain verification for one zone.
 export default function ZoneTools({ zone, onClose, onChanged }) {
+  const askConfirm = useConfirm()
   const [tab, setTab] = React.useState('sharing')
   const [members, setMembers] = React.useState([])
   const [revisions, setRevisions] = React.useState([])
@@ -35,7 +37,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
     setBusy(false)
   }
   const restore = async (r) => {
-    if (!confirm(`Restore the zone to the state of ${new Date(r.created_at).toLocaleString()}? The current state is saved as a revision first.`)) return
+    if (!(await askConfirm({ title: 'Restore this revision?', message: `Restore the zone to the state of ${new Date(r.created_at).toLocaleString()}? The current state is saved as a revision first.`, confirmLabel: 'Restore', danger: false }))) return
     setBusy(true); setMsg(null)
     try { await api.post(`/api/v1/zones/${zone.id}/revisions/${r.id}/restore`, {}); await load(); setMsg({ text: 'Restored and published' }); onChanged && onChanged() }
     catch (e) { err(e) }
