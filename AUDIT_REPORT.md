@@ -16,6 +16,23 @@ internet. **Nothing in this report is externally verified.**
 
 ---
 
+## Phase 4 — dashboard redesign (admin and customer)
+
+New visual identity (original, inspired by the requested direction): electric-yellow accent on deep ink, restrained blue/violet,
+Space Grotesk + Inter, flowing-line artwork, both themes first-class (dark default, light equal, persisted, applied before first paint on every route including login).
+
+| Area | What changed |
+|---|---|
+| Design system | CSS-variable tokens (`index.css`) bound to Tailwind (`tailwind.config.js`): palette, surfaces, radius, shadows, buttons, inputs, tables, badges, tabs, skeletons, focus ring, reduced-motion support; shared components in `components/ui.jsx` (page header, stat card, status badge, empty/error/skeleton states, themed confirmation dialog, theme toggle, logo, flow art). Legacy markup in 17 files was normalised onto the tokens. |
+| Navigation | Role-based sidebar with grouped sections (admin: Overview, Analytics, Zones, Nameservers, GeoDNS, DNS Lookup, DNS Servers, Agents, Config Sync, Users & Roles, Audit Log, Settings; customer: Overview, My Zones, DNS Lookup, Account & Security, Help & Docs), breadcrumb top bar, user menu, mobile drawer. Removed dead/fake entries (a fake "SSL" page, duplicate "Records" and "Metrics" routes). |
+| Admin overview | Real data only: "needs attention" list (failed publication, agents behind, servers down, pending zones), zone/record/server/agent/user counts, publication and server health, agent synchronisation chart, query counters (or an explicit "not configured"), recent audit activity. New **Analytics** page (query rate computed from consecutive samples of the real Prometheus counters). |
+| Customer dashboard | Separate, simpler overview (own zones, record count, verification status, service status, help), own-zones page, account & security page, help page. No infrastructure controls; `/admin/*` redirects customers to `/user`, and the API still enforces tenancy/RBAC. |
+| UX | Native `confirm()`/`alert()` replaced by themed confirmation dialogs and toasts (zones, records restore, users, servers, nameservers, GeoDNS rules, agents, DNSSEC key retirement/disable); restyled pagination; Escape closes dialogs/menus; skip link, ARIA labels, live regions. Fixed a layout bug where zone rows were wrapped in a `div` inside `tbody`. |
+| Tests | `web/ui/tests/redesign_qa.cjs`: **165/165** (every admin route and every customer route × dark/light × desktop/tablet/mobile: renders, no horizontal overflow, no console/page errors; theme toggle + persistence; sidebar/user-menu/mobile-drawer behaviour; role separation for editor and viewer; login/zone/user form validation; confirmation dialog; audit filter). `audit_ui_regression.cjs` (backend-integration flows, pagination, ECS, DNSSEC UI): **50/50**. |
+| Notes | Web fonts load from Google Fonts (system fonts are the fallback offline). Not done: per-user query analytics (the DNS server only exports global counters), tenant management beyond user ownership/sharing (no tenant entity exists in the API). |
+
+---
+
 ## Phase 3 — deferred work completed after the storage upgrade (supersedes the BLOCKED rows below)
 
 The host disk was enlarged (60 GB), so everything previously blocked by storage was done and tested. Where a row in Phase 2,
