@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 
 // Pagination hook for large datasets
 export function usePagination(items, itemsPerPage = 10) {
@@ -24,6 +24,57 @@ export function usePagination(items, itemsPerPage = 10) {
   }, [items, currentPage, itemsPerPage]);
   
   return paginationData;
+}
+
+// Server-side pagination + search. Calls `<path>?limit&offset&q` and reads the
+// total from the X-Total-Count header; `normalize` maps the response body to a
+// list. Returns an object compatible with <PaginationControls/>.
+export function useServerPagination(api, path, { pageSize = 20, normalize = (d) => d || [] } = {}) {
+  const [page, setPage] = useState(1);
+  const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [tick, setTick] = useState(0);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => { setDebounced(query.trim()); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
+    if (!path) return;
+    const my = ++seq.current;
+    setLoading(true);
+    const params = { limit: pageSize, offset: (page - 1) * pageSize };
+    if (debounced) params.q = debounced;
+    api.get(path, { params })
+      .then((r) => {
+        if (my !== seq.current) return; // a newer request superseded this one
+        const list = normalize(r.data);
+        const count = Number(r.headers?.['x-total-count']);
+        const totalCount = Number.isFinite(count) ? count : list.length;
+        const pages = Math.max(1, Math.ceil(totalCount / pageSize));
+        if (page > pages) { setPage(pages); return; } // e.g. last item on the page was deleted
+        setItems(list); setTotal(totalCount); setError(null);
+      })
+      .catch((e) => { if (my === seq.current) setError(e); })
+      .finally(() => { if (my === seq.current) setLoading(false); });
+  }, [api, path, page, pageSize, debounced, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const reload = useCallback(() => setTick((t) => t + 1), []);
+  const pagination = {
+    currentItems: items, currentPage: page, totalPages, totalItems: total, itemsPerPage: pageSize,
+    setCurrentPage: setPage,
+    goToPage: (n) => setPage(Math.min(Math.max(1, n), totalPages)),
+    nextPage: () => setPage((p) => Math.min(p + 1, totalPages)),
+    prevPage: () => setPage((p) => Math.max(p - 1, 1)),
+  };
+  return { items, total, loading, error, query, setQuery, reload, pagination };
 }
 
 // Table sorting hook

@@ -8,14 +8,15 @@ import BulkImport from '../../components/BulkImport'
 import ZoneTools from '../../components/ZoneTools'
 import Notifications from '../../components/Notifications'
 import { useFormValidation, validators, FormField, downloadTemplate } from '../../hooks/useFormValidation'
-import { usePagination, useTableSort, useAdvancedSearch, PaginationControls, SortableHeader, FadeIn, SkeletonTable } from '../../hooks/useAdvancedUI'
+import { useServerPagination, PaginationControls, FadeIn, SkeletonTable } from '../../hooks/useAdvancedUI'
 
 export default function Zones(){
   const { user } = useAuthStore()
   const canWrite = user?.role !== 'viewer'          // viewers are read-only
   const [toolsZone, setToolsZone] = React.useState(null)
-  const [zones, setZones] = React.useState([])
-  const [loading, setLoading] = React.useState(false)
+  const paged = useServerPagination(api, '/api/v1/zones', { pageSize: 10 })
+  const zones = paged.items
+  const loading = paged.loading
   const notify = React.useContext(Notifications)
   const { values, errors, bind, setFieldValue } = useFormValidation(
     { domain: '' },
@@ -29,42 +30,31 @@ export default function Zones(){
   const [zoneNameservers, setZoneNameservers] = React.useState({})
   const [creating, setCreating] = React.useState(false)
 
-  const { searchTerm, filteredItems, handleSearch } = useAdvancedSearch(zones, ['domain', 'id'])
-  const { sortedItems, sortConfig, requestSort } = useTableSort(filteredItems, { field: 'domain', order: 'asc' })
-  const pagination = usePagination(sortedItems, 10)
+  const pagination = paged.pagination
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const r = await api.get('/api/v1/zones')
-      const zonesData = r.data || []
-      setZones(zonesData)
-      const nameserversMap = {}
-      for (const zone of zonesData) {
+  const load = paged.reload
+
+  // nameservers are fetched only for the zones on the current page
+  React.useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const map = {}
+      for (const zone of zones) {
         try {
           const zoneRes = await api.get(`/api/v1/zones/${zone.id}`)
-          // the api client already unwraps { success, data } envelopes
           const ns = zoneRes.data?.nameservers ?? zoneRes.data?.data?.nameservers
-          if (ns) {
-            nameserversMap[zone.id] = ns
-          }
-        } catch (e) {
-          console.error('Error loading nameservers for zone', zone.id, e)
-        }
+          if (ns) map[zone.id] = ns
+        } catch (e) { console.error('Error loading nameservers for zone', zone.id, e) }
       }
-      setZoneNameservers(nameserversMap)
-    } catch (e) {
-      console.error('Error loading zones', e)
-      notify?.error(e.response?.data?.error || e.message || 'Failed to load zones')
-    } finally {
-      setLoading(false)
-    }
-  }
+      if (!cancelled) setZoneNameservers(map)
+    })()
+    return () => { cancelled = true }
+  }, [zones])
+  React.useEffect(() => { if (paged.error) notify?.error(paged.error.response?.data?.error || paged.error.message || 'Failed to load zones') }, [paged.error])
 
   React.useEffect(() => {
     const token = localStorage.getItem('token')
     if (token) api.setToken(token)
-    load()
   }, [])
 
   const handleCreateClick = async (e) => {
@@ -139,6 +129,16 @@ export default function Zones(){
   const toggleZoneGeo = async (zone) => {
     try {
       await api.put(`/api/v1/zones/${zone.id}`, { geodns_enabled: !zone.geodns_enabled })
+      load()
+    } catch (e) {
+      notify?.error(e.response?.data?.error || e.message || 'Failed to update zone')
+    }
+  }
+
+  const toggleZoneEcs = async (zone) => {
+    try {
+      await api.put(`/api/v1/zones/${zone.id}`, { ecs_enabled: !zone.ecs_enabled })
+      notify?.success(`EDNS Client Subnet ${!zone.ecs_enabled ? 'enabled' : 'disabled'} for ${zone.domain}`)
       load()
     } catch (e) {
       notify?.error(e.response?.data?.error || e.message || 'Failed to update zone')
@@ -249,14 +249,14 @@ export default function Zones(){
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
         <input
           type="text"
-          placeholder="Search zones by domain or ID..."
-          value={searchTerm}
-          onChange={(e) => handleSearch(e.target.value)}
+          placeholder="Search zones by domain..."
+          value={paged.query}
+          onChange={(e) => paged.setQuery(e.target.value)}
           className="input pl-10"
         />
-        {filteredItems.length > 0 && (
+        {paged.total > 0 && (
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
-            {filteredItems.length} zone{filteredItems.length !== 1 ? 's' : ''} found
+            {paged.total} zone{paged.total !== 1 ? 's' : ''} found
           </p>
         )}
       </div>
@@ -267,7 +267,7 @@ export default function Zones(){
           <table className="table">
             <thead>
               <tr>
-                <SortableHeader field="domain" label="Domain" sortConfig={sortConfig} onSort={requestSort} />
+                <th>Domain</th>
                 <th>Nameservers</th>
                 <th>Created</th>
                 <th>Type</th>
@@ -323,6 +323,22 @@ export default function Zones(){
                           {z.geodns_enabled ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
                           {z.geodns_enabled ? 'Enabled' : 'Disabled'}
                         </button>
+                        {z.geodns_enabled && (
+                          <button
+                            data-testid={`ecs-toggle-${z.domain}`}
+                            title="Use the EDNS Client Subnet sent by recursive resolvers to pick the GeoDNS answer"
+                            disabled={!canWrite || z.access === 'viewer'}
+                            onClick={() => toggleZoneEcs(z)}
+                            className={`mt-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                              z.ecs_enabled
+                                ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                                : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                            }`}
+                          >
+                            {z.ecs_enabled ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
+                            ECS {z.ecs_enabled ? 'on' : 'off'}
+                          </button>
+                        )}
                       </td>
                       <td className="text-right">
                         <div className="flex items-center justify-end gap-1">

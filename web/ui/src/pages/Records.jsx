@@ -6,12 +6,14 @@ import BulkImport from '../components/BulkImport'
 import Notifications from '../components/Notifications'
 import { useParams } from 'react-router-dom'
 import { useAuthStore } from '../store'
+import { useServerPagination, PaginationControls } from '../hooks/useAdvancedUI'
 import { FileText, Plus, Trash2, Download, RefreshCw, Edit3, X } from 'lucide-react'
 
 export default function Records(){
   const { id } = useParams()
   const zoneId = id
-  const [records, setRecords] = React.useState([])
+  const paged = useServerPagination(api, `/api/v1/zones/${zoneId}/records`, { pageSize: 25 })
+  const records = paged.items
   const [name, setName] = React.useState('')
   const [type, setType] = React.useState('A')
   const [value, setValue] = React.useState('')
@@ -19,7 +21,7 @@ export default function Records(){
   const [priority, setPriority] = React.useState(0)
   const [editing, setEditing] = React.useState(null)
   const [error, setError] = React.useState('')
-  const [loading, setLoading] = React.useState(false)
+  const loading = paged.loading
   const notify = React.useContext(Notifications)
   const { user } = useAuthStore()
   const [access, setAccess] = React.useState('')
@@ -27,22 +29,12 @@ export default function Records(){
   const readOnly = user?.role === 'viewer' || access === 'viewer'
   React.useEffect(() => { api.get(`/api/v1/zones/${zoneId}`).then(r => setAccess(r.data?.access || '')).catch(() => {}) }, [zoneId])
 
-  const load = async () => { 
-    setLoading(true)
-    try { 
-      const r = await api.get(`/api/v1/zones/${zoneId}/records`); 
-      setRecords(r.data || []) 
-    } catch (e) { 
-      console.error('load records', e)
-      notify?.error('Failed to load records: ' + (e.response?.data?.error || e.message))
-    }
-    setLoading(false)
-  }
-  React.useEffect(()=>{ 
+  const load = paged.reload
+  React.useEffect(()=>{
     const token = localStorage.getItem('token')
     if (token) api.setToken(token)
-    load() 
   }, [zoneId])
+  React.useEffect(() => { if (paged.error) notify?.error('Failed to load records: ' + (paged.error.response?.data?.error || paged.error.message)) }, [paged.error])
 
   const resetForm = () => {
     setName(''); setType('A'); setValue(''); setTtl(3600); setPriority(0); setEditing(null); setError('');
@@ -218,6 +210,8 @@ export default function Records(){
       </motion.div>
       )}
 
+      <input className="input" placeholder="Search records by name, value or type..." value={paged.query} onChange={e => paged.setQuery(e.target.value)} />
+
       {/* Table */}
       <motion.div
         initial={{ opacity: 0, y: 8 }}
@@ -292,6 +286,10 @@ export default function Records(){
             </table>
           </div>
         )}
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+          <span>{paged.total} record{paged.total !== 1 ? 's' : ''}</span>
+          <PaginationControls pagination={paged.pagination} />
+        </div>
       </motion.div>
     </div>
   )

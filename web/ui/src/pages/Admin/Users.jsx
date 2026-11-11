@@ -5,6 +5,7 @@ import api from '../../api/client'
 import Modal from '../../components/Modal'
 import SearchInput from '../../components/SearchInput'
 import { useAuthStore } from '../../store'
+import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
 import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Mail, User, Eye, Edit, ShieldCheck, ShieldOff, Lock } from 'lucide-react'
 
 const ROLES = [
@@ -21,12 +22,15 @@ const roleColors = {
 
 export default function Users(){
   const { user } = useAuthStore()
-  const [users, setUsers] = React.useState([])
-  const [q, setQ] = React.useState('')
+  const paged = useServerPagination(api, user?.role === 'admin' ? '/api/v1/users' : null, { pageSize: 15 })
+  const users = paged.items
+  const q = paged.query
+  const setQ = paged.setQuery
   const [open, setOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(null)
   const [form, setForm] = React.useState({ username:'', email:'', role:'viewer', password:'' })
-  const [loading, setLoading] = React.useState(false)
+  const loading = paged.loading
+  React.useEffect(()=>{ const t=localStorage.getItem('token'); if(t) api.setToken(t) }, [])
 
   // RBAC: Only admins can access user management
   if (!user || user.role !== 'admin') {
@@ -39,15 +43,7 @@ export default function Users(){
     )
   }
 
-  const load = async () => {
-    setLoading(true)
-    try { 
-      const r = await api.get('/api/v1/users')
-      setUsers(r.data || []) 
-    } catch(e){ console.error(e) }
-    setLoading(false)
-  }
-  React.useEffect(()=>{ const t=localStorage.getItem('token'); if(t) api.setToken(t); load() }, [])
+  const load = paged.reload
 
   const openCreate = ()=>{ setForm({ username:'', email:'', role:'viewer', password:'' }); setEditing(null); setOpen(true) }
   const openEdit = (u)=>{ setForm({ username:u.username, email:u.email || '', role:u.role || 'viewer', password:'' }); setEditing(u); setOpen(true) }
@@ -75,7 +71,7 @@ export default function Users(){
 
   const remove = async (id)=>{ if(!confirm('Delete user?')) return; try { await api.delete(`/api/v1/users/${id}`); load() } catch(e){ alert('Delete failed') } }
 
-  const filtered = users.filter(u=> (u.username||'').toLowerCase().includes(q.toLowerCase()) || (u.email||'').toLowerCase().includes(q.toLowerCase()))
+  const filtered = users
 
   return (
     <div className="space-y-6">
@@ -183,6 +179,10 @@ export default function Users(){
             </table>
           </div>
         )}
+        <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+          <span>{paged.total} user{paged.total !== 1 ? 's' : ''}</span>
+          <PaginationControls pagination={paged.pagination} />
+        </div>
       </motion.div>
 
       <AnimatePresence>

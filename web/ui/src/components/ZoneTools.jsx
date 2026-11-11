@@ -1,6 +1,7 @@
 import React from 'react'
 import api from '../api/client'
 import Modal from './Modal'
+import DnssecTab from './DnssecTab'
 
 // Sharing, history/rollback and domain verification for one zone.
 export default function ZoneTools({ zone, onClose, onChanged }) {
@@ -47,7 +48,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
     setBusy(false)
   }
 
-  const tabs = [['sharing', 'Sharing'], ['history', 'History'], ...(zone.status === 'pending' ? [['verify', 'Verification']] : [])]
+  const tabs = [['sharing', 'Sharing'], ['history', 'History'], ['dnssec', 'DNSSEC'], ...(zone.status === 'pending' ? [['verify', 'Verification']] : [])]
   return (
     <Modal open={true} onClose={onClose} title={`Manage ${zone.domain}`}>
       <div className="flex gap-2 mb-4">
@@ -79,6 +80,8 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
           ) : <p className="text-sm text-gray-500">Only the zone owner can change sharing.</p>}
         </div>
       )}
+
+      {tab === 'dnssec' && <DnssecTab zone={zone} canManage={owner} onChanged={onChanged} />}
 
       {tab === 'history' && (
         <div className="space-y-2">
