@@ -91,6 +91,9 @@ pub(crate) struct GeoRuleConfig {
 pub(crate) struct GeoConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// honour EDNS Client Subnet for geo decisions
+    #[serde(default)]
+    pub ecs: bool,
     #[serde(default)]
     pub rules: Vec<GeoRuleConfig>,
 }
@@ -300,15 +303,41 @@ impl ZoneConfig {
                         record_type: r.record_type.clone(),
                     });
                 }
-                let db = std::env::var("GEOIP_DB_PATH").ok().and_then(|p| {
-                    std::fs::read(p).ok().and_then(|b| geodns::GeoDB::open_from_bytes(b).ok())
-                });
+                // A missing database only disables geo routing (with a loud
+                // warning); a database that exists but is corrupt aborts the
+                // load, so a bad GeoIP update during a hot reload keeps the
+                // previous (working) data instead of silently disabling geo.
+                let db = match std::env::var("GEOIP_DB_PATH") {
+                    Ok(p) => match std::fs::read(&p) {
+                        Ok(bytes) => Some(geodns::GeoDB::open_from_bytes(bytes).map_err(|e| {
+                            ProtoError::from(format!("GeoIP database {p} is invalid: {e}"))
+                        })?),
+                        Err(e) => {
+                            tracing::warn!("GeoIP database {p} cannot be read ({e}); country/continent rules will not match");
+                            None
+                        }
+                    },
+                    Err(_) => {
+                        tracing::warn!("GEOIP_DB_PATH is not set; only default rules can match");
+                        None
+                    }
+                };
                 let mut engine = geodns::GeoRuleEngine::new(db);
                 engine.set_rules(rules);
-                let geo_handler = hickory_server::zone_handler::geodns::GeoZoneHandler::new(
+                let mut geo_handler = hickory_server::zone_handler::geodns::GeoZoneHandler::new(
                     zone_name.clone(),
                     engine,
-                );
+                )
+                .with_ecs(geo_cfg.ecs);
+                // zone-wide rules must not invent names: learn the real ones
+                if let ZoneTypeConfig::Primary(sc) | ZoneTypeConfig::Secondary(sc) = &self.zone_type_config {
+                    if let Some(f) = sc.stores.iter().find_map(|st| match st {
+                        ServerStoreConfig::File(c) => Some(zone_dir.join(&c.zone_path)),
+                        _ => None,
+                    }) {
+                        geo_handler = geo_handler.with_zone_file(&f);
+                    }
+                }
                 handlers.push(Arc::new(geo_handler));
             }
         }

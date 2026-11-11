@@ -60,6 +60,13 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+
+    // A rejected login (or refresh) is an answer to the user, not an expired
+    // session: surface the error untouched instead of refreshing/clearing state.
+    const url = originalRequest?.url || '';
+    if (url.includes('/api/v1/auth/login') || url.includes('/api/v1/auth/refresh')) {
+      return Promise.reject(error);
+    }
     
     // Handle 401 errors - try to refresh token
     if (error.response?.status === 401 && !originalRequest._retry) {
@@ -205,7 +212,7 @@ export const agentsApi = {
   getConfig: (id) => api.get(`/api/v1/agents/${id}/config`),
   rotateToken: (id) => api.post(`/api/v1/agents/${id}/token/rotate`),
   delete: (id) => api.delete(`/api/v1/agents/${id}`),
-  pushConfig: (agentId, config) => api.post('/api/v1/agents/push-config', { agentId, config }),
+  pushConfig: (agentId, zoneId, config = {}) => api.post('/api/v1/config/push', { agent_id: agentId, zone_id: zoneId, zone_config: config }),
 };
 
 // ==================== GeoRules API ====================

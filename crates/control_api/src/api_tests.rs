@@ -1,0 +1,1168 @@
+//! End-to-end tests of the HTTP API against a real PostgreSQL and real zone
+//! files on disk.
+//!
+//! They need a database: set `TEST_DATABASE_URL` (for example
+//! `postgres://postgres:pw@127.0.0.1:5432/postgres`). Every test works in its
+//! own throw-away schema. Without the variable the tests print `SKIPPED` and
+//! return, they do **not** exercise anything.
+
+use super::*;
+use actix_web::{dev::Service, test, App};
+
+struct Env {
+    state: AppState,
+    full: FullState,
+    dir: tempfile::TempDir,
+    schema: String,
+    admin: String,
+}
+
+async fn setup() -> Option<Env> {
+    let url = match std::env::var("TEST_DATABASE_URL") {
+        Ok(u) => u,
+        Err(_) => {
+            eprintln!("SKIPPED: TEST_DATABASE_URL not set");
+            return None;
+        }
+    };
+    let schema = format!("t_{}", Uuid::new_v4().simple());
+    {
+        let (c, conn) = tokio_postgres::connect(&url, NoTls).await.expect("connect test db");
+        tokio::spawn(async move { let _ = conn.await; });
+        c.batch_execute(&format!("CREATE SCHEMA {}", schema)).await.unwrap();
+    }
+    // every pooled connection uses the isolated schema
+    let client = Pool::connect(&url, 4, Some(&schema)).await.expect("pool");
+    migrate_db(&*client).await.expect("migrate");
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState {
+        db: client.clone(),
+        jwt_secret: "unit-test-secret-unit-test-secret-1234".to_string(),
+        dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
+        verify_resolver: "127.0.0.1:9".parse().unwrap(),
+        verify_domains: false,
+        dns_metrics_url: None,
+    };
+    let geo = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/dns/GeoLite2-Country.mmdb"))
+        .ok()
+        .and_then(|b| geodns::GeoDB::open_from_bytes(b).ok());
+    let full = FullState {
+        inner: state.clone(),
+        geo: Arc::new(tokio::sync::Mutex::new(GeoState { db: geo })),
+        processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    };
+    let admin = add_user(&state, "root", "root-password-1", "admin").await;
+    Some(Env { state, full, dir, schema, admin })
+}
+
+async fn add_user(state: &AppState, name: &str, pw: &str, role: &str) -> String {
+    let id = Uuid::new_v4().to_string();
+    let hash = Argon2::default().hash_password(pw.as_bytes(), &generate_salt()).unwrap().to_string();
+    state
+        .db
+        .execute(
+            "INSERT INTO users (id, username, password_hash, role) VALUES ($1::text::uuid, $2, $3, $4)",
+            &[&id, &name, &hash, &role],
+        )
+        .await
+        .unwrap();
+    id
+}
+
+impl Env {
+    async fn cleanup(self) {
+        let _ = self.state.db.batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema)).await;
+    }
+    fn zone_file(&self, domain: &str) -> std::path::PathBuf {
+        self.dir.path().join(format!("zone.{}", domain))
+    }
+    fn token(&self, id: &str, role: &str) -> String {
+        issue_access_token(id, role, &self.state.jwt_secret).unwrap()
+    }
+}
+
+macro_rules! app {
+    ($env:expr) => {
+        test::init_service(
+            App::new()
+                .wrap(actix_web::middleware::from_fn(auth_middleware))
+                .app_data(web::Data::new($env.state.clone()))
+                .app_data(web::Data::new($env.full.clone()))
+                .configure(configure_routes),
+        )
+        .await
+    };
+}
+
+/// Perform a request and return (status, parsed JSON or Null, raw body).
+macro_rules! call {
+    ($app:expr, $method:ident, $uri:expr, $tok:expr, $body:expr) => {{
+        let mut r = test::TestRequest::$method().uri($uri);
+        if let Some(t) = $tok {
+            r = r.insert_header(("Authorization", format!("Bearer {}", t)));
+        }
+        let body: Option<serde_json::Value> = $body;
+        if let Some(b) = body {
+            r = r.set_json(b);
+        }
+        let resp = test::call_service(&$app, r.to_request()).await;
+        let status = resp.status().as_u16();
+        let bytes = test::read_body(resp).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json, String::from_utf8_lossy(&bytes).to_string())
+    }};
+}
+
+fn j(v: serde_json::Value) -> Option<serde_json::Value> {
+    Some(v)
+}
+
+async fn make_zone(env: &Env, app: &impl Service<actix_http::Request, Response = ServiceResponse<actix_web::body::BoxBody>, Error = actix_web::Error>, tok: &str, domain: &str) -> String {
+    let (st, body, raw) = call!(app, post, "/api/v1/zones", Some(tok), j(serde_json::json!({"domain": domain})));
+    assert_eq!(st, 201, "create zone {domain}: {raw}");
+    assert!(env.zone_file(domain).is_file(), "zone file must exist after creation");
+    body["id"].as_str().unwrap().to_string()
+}
+
+fn soa_serial(path: &std::path::Path) -> u32 {
+    let text = std::fs::read_to_string(path).unwrap();
+    super::zone_file_generator::__soa_serial_for_tests(&text).expect("zone has SOA")
+}
+
+// ---------------------------------------------------------------------------
+
+#[actix_web::test]
+async fn session_lifecycle_and_no_default_credentials() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+
+    // there is no built-in admin/admin123 account
+    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"admin","password":"admin123"})));
+    assert_eq!(st, 401);
+
+    let (st, body, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"root","password":"root-password-1"})));
+    assert_eq!(st, 200);
+    let access = body["token"].as_str().unwrap().to_string();
+    let refresh = body["refresh_token"].as_str().unwrap().to_string();
+
+    // refresh yields a working access token
+    let (st, body, _) = call!(app, post, "/api/v1/auth/refresh", None::<&str>, j(serde_json::json!({"refresh_token": refresh})));
+    assert_eq!(st, 200, "refresh must work: {body}");
+    let access2 = body["token"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&access2), None);
+    assert_eq!(st, 200);
+
+    // bogus refresh token
+    let (st, _, _) = call!(app, post, "/api/v1/auth/refresh", None::<&str>, j(serde_json::json!({"refresh_token": "nope"})));
+    assert_eq!(st, 401);
+
+    // logout revokes the access token and the refresh token
+    let (st, _, _) = call!(app, post, "/api/v1/auth/logout", Some(&access), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&access), None);
+    assert_eq!(st, 401, "revoked access token must be rejected");
+    let (st, _, _) = call!(app, post, "/api/v1/auth/refresh", None::<&str>, j(serde_json::json!({"refresh_token": refresh})));
+    assert_eq!(st, 401, "refresh token must die with the session");
+
+    // wrong password / unknown user are indistinguishable
+    let (s1, b1, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"root","password":"bad"})));
+    let (s2, b2, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"ghost","password":"bad"})));
+    assert_eq!((s1, &b1), (s2, &b2));
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn deleted_user_and_demoted_admin_lose_access_immediately() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let mallory = add_user(&env.state, "mallory", "mallory-pass-1", "admin").await;
+    let tok = env.token(&mallory, "admin");
+    let (st, _, _) = call!(app, get, "/api/v1/users", Some(&tok), None);
+    assert_eq!(st, 200);
+
+    // demote in the database: the (still valid) JWT claims "admin" but must not be honoured
+    env.state.db.execute("UPDATE users SET role='user' WHERE username='mallory'", &[]).await.unwrap();
+    let (st, _, _) = call!(app, get, "/api/v1/users", Some(&tok), None);
+    assert_eq!(st, 403, "role must come from the database, not the token");
+
+    env.state.db.execute("DELETE FROM users WHERE username='mallory'", &[]).await.unwrap();
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&tok), None);
+    assert_eq!(st, 401, "tokens of deleted users must stop working");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn login_is_rate_limited_per_username() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let name = format!("victim-{}", Uuid::new_v4().simple());
+    let mut last = 0;
+    for _ in 0..(LOGIN_ATTEMPTS_PER_MINUTE + 5) {
+        let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username": name, "password":"x"})));
+        last = st;
+    }
+    assert_eq!(last, 429);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn tenants_cannot_touch_each_others_zones() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
+    let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
+    let (ta, tb, tadmin) = (env.token(&alice, "user"), env.token(&bob, "user"), env.token(&env.admin, "admin"));
+
+    let zid = make_zone(&env, &app, &ta, "alice.example").await;
+    let (st, rec, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&ta),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.10","ttl":300})));
+    assert_eq!(st, 201);
+    let rid = rec["id"].as_str().unwrap().to_string();
+    let (st, gr, _) = call!(app, post, "/api/v1/georules", Some(&ta),
+        j(serde_json::json!({"zone_id": zid, "match_type":"country","match_value":"US","target":"192.0.2.77"})));
+    assert_eq!(st, 201);
+    let gid = gr["id"].as_str().unwrap().to_string();
+
+    // bob: every read and write is refused
+    for (m, uri, body) in [
+        ("get", format!("/api/v1/zones/{zid}"), None),
+        ("get", format!("/api/v1/zones/{zid}/records"), None),
+        ("get", format!("/api/v1/zones/{zid}/export"), None),
+        ("post", format!("/api/v1/zones/{zid}/records"), j(serde_json::json!({"name":"evil","record_type":"A","value":"6.6.6.6","ttl":60}))),
+        ("post", format!("/api/v1/zones/{zid}/import"), j(serde_json::json!({"records":[{"name":"evil","record_type":"A","value":"6.6.6.6"}]}))),
+        ("put", format!("/api/v1/zones/{zid}/records/{rid}"), j(serde_json::json!({"value":"6.6.6.6"}))),
+        ("delete", format!("/api/v1/zones/{zid}/records/{rid}"), None),
+        ("put", format!("/api/v1/zones/{zid}"), j(serde_json::json!({"geodns_enabled": false}))),
+        ("delete", format!("/api/v1/zones/{zid}"), None),
+        ("put", format!("/api/v1/georules/{gid}"), j(serde_json::json!({"target":"6.6.6.6"}))),
+        ("delete", format!("/api/v1/georules/{gid}"), None),
+        ("post", "/api/v1/georules".to_string(), j(serde_json::json!({"zone_id": zid,"match_type":"default","match_value":"","target":"6.6.6.6"}))),
+        ("post", "/api/v1/georules/resolve".to_string(), j(serde_json::json!({"zone_id": zid,"client_ip":"8.8.8.8"}))),
+    ] {
+        let (st, _, raw) = match m {
+            "get" => call!(app, get, &uri, Some(&tb), body),
+            "post" => call!(app, post, &uri, Some(&tb), body),
+            "put" => call!(app, put, &uri, Some(&tb), body),
+            _ => call!(app, delete, &uri, Some(&tb), body),
+        };
+        assert_eq!(st, 403, "bob {m} {uri} must be forbidden, got {st}: {raw}");
+    }
+    let (_, list, _) = call!(app, get, "/api/v1/georules", Some(&tb), None);
+    assert_eq!(list.as_array().unwrap().len(), 0, "bob must not see alice's geo rules");
+    let (_, zl, _) = call!(app, get, "/api/v1/zones", Some(&tb), None);
+    assert_eq!(zl["data"].as_array().unwrap().len(), 0);
+    // bob may not read alice's profile either
+    let (st, _, _) = call!(app, get, &format!("/api/v1/users/{alice}"), Some(&tb), None);
+    assert_eq!(st, 403);
+    // ...nor create a zone inside her namespace
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tb), j(serde_json::json!({"domain":"shop.alice.example"})));
+    assert_eq!(st, 409);
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tb), j(serde_json::json!({"domain":"example"})));
+    assert_eq!(st, 400);
+
+    // nothing of bob's attempts reached the zone
+    let text = std::fs::read_to_string(env.zone_file("alice.example")).unwrap();
+    assert!(!text.contains("6.6.6.6"), "{text}");
+
+    // alice (owner) and the admin can do everything
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&ta), j(serde_json::json!({"ttl": 600})));
+    assert_eq!(st, 200, "owner must be able to update own record");
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&ta), j(serde_json::json!({"geodns_enabled": false})));
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/export"), Some(&tadmin), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&ta), None);
+    assert_eq!(st, 200, "owner must be able to delete own record");
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}"), Some(&ta), None);
+    assert_eq!(st, 200);
+    assert!(!env.zone_file("alice.example").exists(), "deleted zone must stop being served");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn zone_domain_validation() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let tadmin = env.token(&env.admin, "admin");
+    for bad in [".", "", "com", "a/b.com", "q\"x.com", "a b.com", "-a.com", "a..com", "ü.com", "../../etc/x.com"] {
+        let (st, _, raw) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain": bad})));
+        assert_eq!(st, 400, "{bad:?} must be rejected: {raw}");
+    }
+    let (st, body, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain": "Mixed.Example."})));
+    assert_eq!(st, 201);
+    assert_eq!(body["domain"], "mixed.example", "domains are stored lower-case without trailing dot");
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain": "MIXED.example"})));
+    assert_eq!(st, 409, "case variants are the same zone");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn record_validation_rrsets_and_atomic_update() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "rr.example").await;
+    let rec = |name: &str, ty: &str, val: &str, ttl: u64| j(serde_json::json!({"name":name,"record_type":ty,"value":val,"ttl":ttl}));
+    let url = format!("/api/v1/zones/{zid}/records");
+
+    // out of range TTLs used to be stored as negative numbers and broke every zone
+    for ttl in [0u64, 2_147_483_648, 4_294_967_295] {
+        let (st, _, _) = call!(app, post, &url, Some(&t), rec("x", "A", "192.0.2.1", ttl));
+        assert_eq!(st, 400, "ttl {ttl}");
+    }
+    // names outside the zone
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("www.victim.org.", "A", "192.0.2.1", 300));
+    assert_eq!(st, 400);
+    // a round-robin RRset is legal
+    for ip in ["192.0.2.1", "192.0.2.2", "192.0.2.3"] {
+        let (st, _, raw) = call!(app, post, &url, Some(&t), rec("www", "A", ip, 300));
+        assert_eq!(st, 201, "{raw}");
+    }
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("www", "A", "192.0.2.1", 300));
+    assert_eq!(st, 409, "exact duplicate");
+    for (pri, mx) in [(10, "mx1.rr.example."), (20, "mx2.rr.example.")] {
+        let (st, _, raw) = call!(app, post, &url, Some(&t), j(serde_json::json!({"name":"@","record_type":"MX","value":mx,"ttl":300,"priority":pri})));
+        assert_eq!(st, 201, "{raw}");
+    }
+    let zone = std::fs::read_to_string(env.zone_file("rr.example")).unwrap();
+    assert_eq!(zone.matches("192.0.2.").count(), 3, "{zone}");
+    assert_eq!(zone.matches(" MX ").count(), 2, "{zone}");
+
+    // CNAME may not share a name with other data, nor sit at the apex
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("www", "CNAME", "other.rr.example.", 300));
+    assert_eq!(st, 400, "CNAME + A");
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("@", "CNAME", "other.rr.example.", 300));
+    assert_eq!(st, 400, "apex CNAME");
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("alias", "CNAME", "www.rr.example.", 300));
+    assert_eq!(st, 201);
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("alias", "A", "192.0.2.9", 300));
+    assert_eq!(st, 400, "A next to CNAME");
+    // failed requests left the stored zone untouched and valid
+    assert!(!std::fs::read_to_string(env.zone_file("rr.example")).unwrap().contains("192.0.2.9"));
+
+    // a second SOA is refused
+    let (st, _, _) = call!(app, post, &url, Some(&t), rec("@", "SOA", "ns1.rr.example. h.rr.example. 1 3600 3600 604800 3600", 300));
+    assert_eq!(st, 409);
+
+    // updates are validated as a whole and applied atomically
+    let (_, list, _) = call!(app, get, &url, Some(&t), None);
+    let a_id = list.as_array().unwrap().iter().find(|r| r["value"] == "192.0.2.3").unwrap()["id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, put, &format!("{url}/{a_id}"), Some(&t), j(serde_json::json!({"value":"192.0.2.33","ttl":120})));
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, put, &format!("{url}/{a_id}"), Some(&t), j(serde_json::json!({"value":"not-an-ip","ttl":999})));
+    assert_eq!(st, 400);
+    let (_, list, _) = call!(app, get, &url, Some(&t), None);
+    let r = list.as_array().unwrap().iter().find(|r| r["id"] == a_id.as_str()).unwrap().clone();
+    assert_eq!((r["value"].as_str().unwrap(), r["ttl"].as_u64().unwrap()), ("192.0.2.33", 120), "rejected update must change nothing");
+    let (st, _, _) = call!(app, put, &format!("{url}/{}", Uuid::new_v4()), Some(&t), j(serde_json::json!({"ttl": 10})));
+    assert_eq!(st, 404);
+    // changing the type to something the value does not fit is refused
+    let (st, _, _) = call!(app, put, &format!("{url}/{a_id}"), Some(&t), j(serde_json::json!({"record_type":"AAAA"})));
+    assert_eq!(st, 400);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn import_is_all_or_nothing_and_never_partial() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "imp.example").await;
+    let url = format!("/api/v1/zones/{zid}/import");
+    let before = std::fs::read_to_string(env.zone_file("imp.example")).unwrap();
+
+    let (st, _, _) = call!(app, post, &url, Some(&t), j(serde_json::json!({"records":[
+        {"name":"a","record_type":"A","value":"192.0.2.1"},
+        {"name":"b","record_type":"A","value":"999.0.2.1"}]})));
+    assert_eq!(st, 400);
+    let (_, list, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&t), None);
+    assert!(list.as_array().unwrap().iter().all(|r| r["name"] != "a"), "first record of a failed import must not remain");
+    assert_eq!(std::fs::read_to_string(env.zone_file("imp.example")).unwrap(), before);
+
+    let (st, body, raw) = call!(app, post, &url, Some(&t), j(serde_json::json!({"records":[
+        {"name":"a","record_type":"A","value":"192.0.2.1"},
+        {"name":"a","record_type":"A","value":"192.0.2.1"},
+        {"name":"b","record_type":"TXT","value":"v=spf1 -all","ttl":300}]})));
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["imported"], 2);
+    assert_eq!(body["skipped"], 1);
+    let zone = std::fs::read_to_string(env.zone_file("imp.example")).unwrap();
+    assert!(zone.contains("192.0.2.1") && zone.contains("spf1"), "{zone}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn georule_update_and_input_validation() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "geo.example").await;
+    let (st, gr, raw) = call!(app, post, "/api/v1/georules", Some(&t),
+        j(serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"192.0.2.77","priority":5})));
+    assert_eq!(st, 201, "{raw}");
+    let gid = gr["id"].as_str().unwrap().to_string();
+
+    // used to answer 500: priority/enabled were bound as text
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/georules/{gid}"), Some(&t), j(serde_json::json!({"priority": 9, "enabled": false})));
+    assert_eq!(st, 200, "{raw}");
+    let (_, list, _) = call!(app, get, "/api/v1/georules", Some(&t), None);
+    let r = &list.as_array().unwrap()[0];
+    assert_eq!((r["priority"].as_i64(), r["enabled"].as_bool()), (Some(9), Some(false)));
+
+    // injection attempts and nonsense are refused, nothing reaches named.toml
+    for body in [
+        serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US\"\n[[zones]]\nzone=\"pwn\"\n#","target":"192.0.2.1"}),
+        serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"x\"\n[[zones]]"}),
+        serde_json::json!({"zone_id": zid,"match_type":"galaxy","match_value":"US","target":"192.0.2.1"}),
+        serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"USA1","target":"192.0.2.1"}),
+        serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"www.example.com"}),
+        serde_json::json!({"zone_id": "not-a-uuid","match_type":"country","match_value":"US","target":"192.0.2.1"}),
+    ] {
+        let (st, _, raw) = call!(app, post, "/api/v1/georules", Some(&t), j(body.clone()));
+        assert_eq!(st, 400, "{body} -> {raw}");
+    }
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(!named.contains("pwn"), "{named}");
+    assert_eq!(named.matches("[[zones]]").count(), 1, "{named}");
+
+    // resolve uses the real GeoIP data
+    call!(app, put, &format!("/api/v1/georules/{gid}"), Some(&t), j(serde_json::json!({"enabled": true})));
+    let (_, us, _) = call!(app, post, "/api/v1/georules/resolve", Some(&t), j(serde_json::json!({"zone_id": zid,"client_ip":"8.8.8.8"})));
+    assert_eq!(us["target"], "192.0.2.77");
+    let (_, de, _) = call!(app, post, "/api/v1/georules/resolve", Some(&t), j(serde_json::json!({"zone_id": zid,"client_ip":"5.9.0.1"})));
+    assert!(de["target"].is_null());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn nameserver_input_is_validated_and_applied() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    for body in [
+        serde_json::json!({"hostname":"","ip_address":"192.0.2.1"}),
+        serde_json::json!({"hostname":"ns1.example.com","ip_address":"not-an-ip"}),
+        serde_json::json!({"hostname":"ns 1.example.com","ip_address":"192.0.2.1"}),
+        serde_json::json!({"hostname":"ns1.example.com","ip_address":"192.0.2.1","glue_ip":"zzz"}),
+    ] {
+        let (st, _, raw) = call!(app, post, "/api/v1/nameservers", Some(&t), j(body.clone()));
+        assert_eq!(st, 400, "{body}: {raw}");
+    }
+    let (st, ns, raw) = call!(app, post, "/api/v1/nameservers", Some(&t), j(serde_json::json!({"hostname":"ns1.glue.example","ip_address":"192.0.2.53"})));
+    assert_eq!(st, 201, "{raw}");
+    let (st, _, _) = call!(app, post, "/api/v1/nameservers", Some(&t), j(serde_json::json!({"hostname":"NS1.glue.example.","ip_address":"192.0.2.54"})));
+    assert_eq!(st, 409);
+    make_zone(&env, &app, &t, "glue.example").await;
+    let zone = std::fs::read_to_string(env.zone_file("glue.example")).unwrap();
+    assert!(zone.contains("IN NS ns1.glue.example."), "{zone}");
+    assert!(zone.contains("ns1.glue.example. 3600 IN A 192.0.2.53"), "glue A: {zone}");
+    let (st, _, _) = call!(app, put, &format!("/api/v1/nameservers/{}", Uuid::new_v4()), Some(&t), j(serde_json::json!({"hostname":"ns9.glue.example","ip_address":"192.0.2.9"})));
+    assert_eq!(st, 404);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/nameservers/{}", ns["id"].as_str().unwrap()), Some(&t), None);
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn soa_serial_increases_only_when_content_changes() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "serial.example").await;
+    let path = env.zone_file("serial.example");
+    let s0 = soa_serial(&path);
+
+    // regenerating identical data neither changes the serial nor rewrites the file
+    let mtime0 = std::fs::metadata(&path).unwrap().modified().unwrap();
+    env.state.dns_manager.regenerate_zones(env.state.db.clone()).await.unwrap();
+    assert_eq!(soa_serial(&path), s0);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime0, "unchanged zone must not be rewritten");
+
+    let mut prev = s0;
+    for i in 0..5 {
+        let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t),
+            j(serde_json::json!({"name": format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})));
+        assert_eq!(st, 201);
+        let s = soa_serial(&path);
+        assert!(s > prev, "serial must grow on every change ({prev} -> {s})");
+        prev = s;
+    }
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn concurrent_writes_all_end_up_published() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "race.example").await;
+    let url = format!("/api/v1/zones/{zid}/records");
+    let reqs = (0..16).map(|i| {
+        let r = test::TestRequest::post()
+            .uri(&url)
+            .insert_header(("Authorization", format!("Bearer {t}")))
+            .set_json(serde_json::json!({"name": format!("n{i}"),"record_type":"A","value":format!("192.0.2.{}", i + 1),"ttl":300}))
+            .to_request();
+        test::call_service(&app, r)
+    });
+    for resp in futures_util::future::join_all(reqs).await {
+        assert_eq!(resp.status().as_u16(), 201);
+    }
+    let zone = std::fs::read_to_string(env.zone_file("race.example")).unwrap();
+    for i in 0..16 {
+        assert!(zone.contains(&format!("192.0.2.{} ", i + 1)) || zone.contains(&format!("192.0.2.{}\n", i + 1)), "record {i} missing (stale zone): {zone}");
+    }
+    assert!(!env.dir.path().join("zone.race.example.tmp").exists());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn one_broken_zone_never_blocks_or_replaces_others() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let good = make_zone(&env, &app, &t, "good.example").await;
+    let bad = make_zone(&env, &app, &t, "bad.example").await;
+    let bad_before = std::fs::read_to_string(env.zone_file("bad.example")).unwrap();
+
+    // corrupt data written behind the API's back (e.g. an old bug or manual SQL)
+    env.state.db.execute(
+        "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, 'x', 'A', '192.0.2.1', -1)",
+        &[&Uuid::new_v4().to_string(), &bad]).await.unwrap();
+
+    // the healthy zone is still published and the broken zone keeps its last known-good file
+    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{good}/records"), Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.55","ttl":300})));
+    assert_eq!(st, 201, "healthy zone must not be blocked by another zone's bad data: {raw}");
+    assert!(std::fs::read_to_string(env.zone_file("good.example")).unwrap().contains("192.0.2.55"));
+    assert_eq!(std::fs::read_to_string(env.zone_file("bad.example")).unwrap(), bad_before);
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(named.contains("bad.example"), "last known-good zone must stay configured");
+
+    // and a change to the broken zone is reported honestly, not as success
+    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{bad}/records"), Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.66","ttl":300})));
+    assert_eq!(st, 400, "{raw}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn database_failure_never_wipes_published_zones() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    make_zone(&env, &app, &t, "keep.example").await;
+    let before = std::fs::read_to_string(env.zone_file("keep.example")).unwrap();
+    let named_before = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+
+    // make one of the generator's queries fail
+    env.state.db.batch_execute("ALTER TABLE georules RENAME TO georules_gone").await.unwrap();
+    let res = env.state.dns_manager.regenerate_zones(env.state.db.clone()).await;
+    assert!(res.is_err(), "a failing database read must abort publication");
+    assert_eq!(std::fs::read_to_string(env.zone_file("keep.example")).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap(), named_before);
+    env.state.db.batch_execute("ALTER TABLE georules_gone RENAME TO georules").await.unwrap();
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn agent_lifecycle_register_heartbeat_bundle_ack_push_disable() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    make_zone(&env, &app, &t, "agent.example").await;
+    let (st, reg, _) = call!(app, post, "/api/v1/agents/register", Some(&t), j(serde_json::json!({"name":"a1","addr":"10.0.0.5:5353"})));
+    assert_eq!(st, 201);
+    let (id, tokn, key) = (reg["id"].as_str().unwrap().to_string(), reg["token"].as_str().unwrap().to_string(), reg["signing_key"].as_str().unwrap().to_string());
+
+    // heartbeat needs the agent's own token and returns the desired version
+    let hb = || serde_json::json!({"name":"a1","addr":"10.0.0.5:5353"});
+    let (st, body, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
+    assert_eq!(st, 200);
+    assert!(body["desired_version"].as_i64().unwrap() >= 1);
+    let (st, _, _) = call!(app, post, "/api/v1/agents/heartbeat", Some("wrong"), j(hb()));
+    assert_eq!(st, 401);
+
+    // signed, versioned bundle; wrong token refused
+    let (st, _, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some("wrong"), None);
+    assert_eq!(st, 401);
+    let (st, b1, raw) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    assert_eq!(st, 200, "{raw}");
+    let files: Vec<(String, String)> = b1["files"].as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().into(), f["content"].as_str().unwrap().into())).collect();
+    let v1 = b1["version"].as_i64().unwrap();
+    assert!(files.iter().any(|(n, c)| n == "named.toml" && c.contains("@ZONE_DIR@/zone.agent.example")), "paths are templated");
+    assert!(files.iter().any(|(n, _)| n == "zone.agent.example"));
+    assert_eq!(b1["hash"], ext::bundle_hash(&files));
+    assert_eq!(b1["signature"], ext::sign_bundle(&key, v1, b1["hash"].as_str().unwrap(), &files), "agent can verify with its key");
+
+    // a change publishes a new version; unchanged content keeps the version
+    let (_, b1b, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    assert_eq!(b1b["version"], b1["version"]);
+    let zid = env.state.db.query_one("SELECT CAST(id AS varchar) FROM zones WHERE domain='agent.example'", &[]).await.unwrap().get::<_, String>(0);
+    call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t), j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60})));
+    let (_, b2, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    assert!(b2["version"].as_i64().unwrap() > v1);
+
+    // status before ack: behind; after ack: in sync; failed ack is visible
+    let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
+    assert_eq!(list[0]["in_sync"], false);
+    let (st, _, _) = call!(app, post, &format!("/api/v1/agents/{id}/ack"), Some(&tokn), j(serde_json::json!({"version": b2["version"], "ok": true})));
+    assert_eq!(st, 200);
+    let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
+    assert_eq!((list[0]["in_sync"].clone(), list[0]["applied_version"].clone()), (serde_json::json!(true), b2["version"].clone()));
+    call!(app, post, &format!("/api/v1/agents/{id}/ack"), Some(&tokn), j(serde_json::json!({"version": 99, "ok": false, "error": "disk full"})));
+    let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
+    assert_eq!(list[0]["last_error"], "disk full");
+    assert_eq!(list[0]["applied_version"], b2["version"], "a failed apply never advances the applied version");
+
+    // push = sync request delivered through the next heartbeat, cleared by the ack
+    let (st, body, _) = call!(app, post, "/api/v1/config/push", Some(&t), j(serde_json::json!({"agent_id": id, "zone_id": "", "zone_config": {}})));
+    assert_eq!((st, body["success"].clone()), (202, serde_json::json!(true)));
+    let (_, hbb, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
+    assert_eq!(hbb["sync_requested"], true);
+    call!(app, post, &format!("/api/v1/agents/{id}/ack"), Some(&tokn), j(serde_json::json!({"version": b2["version"]})));
+    let (_, hbb, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
+    assert_eq!(hbb["sync_requested"], false);
+    let (st, _, _) = call!(app, post, "/api/v1/config/push", Some(&t), j(serde_json::json!({"agent_id": Uuid::new_v4().to_string(), "zone_id": "", "zone_config": {}})));
+    assert_eq!(st, 404);
+
+    // disabling revokes access to heartbeat, bundle and ack; re-enabling restores it
+    let (st, _, _) = call!(app, put, &format!("/api/v1/agents/{id}"), Some(&t), j(serde_json::json!({"enabled": false})));
+    assert_eq!(st, 200);
+    for uri in [format!("/api/v1/agents/{id}/bundle")] {
+        let (st, _, _) = call!(app, get, &uri, Some(&tokn), None);
+        assert_eq!(st, 401, "disabled agent must be refused");
+    }
+    let (st, _, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
+    assert_eq!(st, 404);
+    let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
+    assert_eq!((list[0]["enabled"].clone(), list[0]["online"].clone()), (serde_json::json!(false), serde_json::json!(false)));
+    call!(app, put, &format!("/api/v1/agents/{id}"), Some(&t), j(serde_json::json!({"enabled": true})));
+    let (st, _, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    assert_eq!(st, 200);
+    // a non-admin cannot toggle agents
+    let u = add_user(&env.state, "plain", "plain-pass-12", "user").await;
+    let (st, _, _) = call!(app, put, &format!("/api/v1/agents/{id}"), Some(&env.token(&u, "user")), j(serde_json::json!({"enabled": false})));
+    assert_eq!(st, 403);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn audit_trail_records_mutations() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    make_zone(&env, &app, &t, "audit.example").await;
+    let (st, body, _) = call!(app, get, "/api/v1/audit/logs", Some(&t), None);
+    assert_eq!(st, 200);
+    let actions: Vec<String> = body["data"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap().to_string()).collect();
+    assert!(actions.contains(&"create_zone".to_string()), "{actions:?}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn roles_viewer_is_read_only_and_create_user_honours_role() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let tadmin = env.token(&env.admin, "admin");
+
+    // roles offered by the dashboard are accepted on create; junk is not
+    let (st, body, raw) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"vera","password":"viewer-pass-1","role":"viewer"})));
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(body["role"], "viewer");
+    let (st, _, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"zed","password":"zed-pass-1234","role":"superuser"})));
+    assert_eq!(st, 400);
+    let (st, _, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"ed","password":"editor-pass-1","role":"editor"})));
+    assert_eq!(st, 400, "username too short");
+    let (st, _, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"edie","password":"editor-pass-1","role":"editor"})));
+    assert_eq!(st, 201);
+    // default role stays "user"
+    let (_, body, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"plain","password":"plain-pass-12"})));
+    assert_eq!(body["role"], "user");
+
+    // an admin may edit username and role in one request, but not demote themselves
+    let (_, list, _) = call!(app, get, "/api/v1/users", Some(&tadmin), None);
+    let vera = list.as_array().unwrap().iter().find(|u| u["username"] == "vera").unwrap()["id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, put, &format!("/api/v1/users/{vera}"), Some(&tadmin), j(serde_json::json!({"username":"vera2","role":"viewer"})));
+    assert_eq!(st, 200);
+    let (_, me, _) = call!(app, get, &format!("/api/v1/users/{vera}"), Some(&tadmin), None);
+    assert_eq!(me["username"], "vera2");
+    let (st, _, _) = call!(app, put, &format!("/api/v1/users/{}", env.admin), Some(&tadmin), j(serde_json::json!({"role":"viewer"})));
+    assert_eq!(st, 400);
+
+    // viewer: reads fine, every write refused (even on a zone it owns)
+    let tv = env.token(&vera, "viewer");
+    let owned = Uuid::new_v4().to_string();
+    env.state.db.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'viewer.example', $2::text::uuid)", &[&owned, &vera]).await.unwrap();
+    let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&tv), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{owned}/records"), Some(&tv), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tv), j(serde_json::json!({"domain":"mine.example"})));
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{owned}/records"), Some(&tv), j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60})));
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{owned}"), Some(&tv), None);
+    assert_eq!(st, 403);
+    // ...but it can still manage its own session
+    let (st, _, _) = call!(app, post, "/api/v1/auth/logout", Some(&tv), None);
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn agents_can_be_deleted_and_import_accepts_priority() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let (_, reg, _) = call!(app, post, "/api/v1/agents/register", Some(&t), j(serde_json::json!({"name":"a","addr":"10.0.0.9:1"})));
+    let id = reg["id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/agents/{id}"), Some(&t), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/agents/{id}"), Some(&t), None);
+    assert_eq!(st, 404);
+    let token = reg["token"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&token), j(serde_json::json!({"name":"a","addr":"10.0.0.9:1"})));
+    assert_eq!(st, 404, "a deleted agent can no longer check in");
+
+    let zid = make_zone(&env, &app, &t, "prio.example").await;
+    let (st, body, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/import"), Some(&t),
+        j(serde_json::json!({"records":[{"name":"@","record_type":"MX","value":"mail.prio.example.","ttl":300,"priority":10}]})));
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["imported"], 1);
+    assert!(std::fs::read_to_string(env.zone_file("prio.example")).unwrap().contains(" MX 10 mail.prio.example."));
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn zone_sharing_levels() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
+    let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
+    let carol = add_user(&env.state, "carol", "carol-pass-1", "user").await;
+    let (ta, tb, tc) = (env.token(&alice, "user"), env.token(&bob, "user"), env.token(&carol, "user"));
+    let zid = make_zone(&env, &app, &ta, "shared.example").await;
+    let rec = j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60}));
+
+    // nobody but the owner has access yet
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}"), Some(&tb), None);
+    assert_eq!(st, 403);
+    // owner shares: bob = editor, carol = viewer
+    for (u, r) in [("bob", "editor"), ("carol", "viewer")] {
+        let (st, _, raw) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": u, "role": r})));
+        assert_eq!(st, 200, "{raw}");
+    }
+    // sharing with the owner / bogus role / unknown user
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": "alice", "role": "editor"})));
+    assert_eq!(st, 400);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": "bob", "role": "owner"})));
+    assert_eq!(st, 400);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": "ghost", "role": "viewer"})));
+    assert_eq!(st, 404);
+
+    // listing shows the shared zone with the caller's role
+    let (_, zl, _) = call!(app, get, "/api/v1/zones", Some(&tb), None);
+    assert_eq!((zl["data"][0]["domain"].clone(), zl["data"][0]["access"].clone()), (serde_json::json!("shared.example"), serde_json::json!("editor")));
+    let (_, zl, _) = call!(app, get, "/api/v1/zones", Some(&tc), None);
+    assert_eq!(zl["data"][0]["access"], "viewer");
+
+    // editor: read + write records and geo rules, but not rename/delete/share
+    let (st, r, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&tb), rec.clone());
+    assert_eq!(st, 201);
+    let rid = r["id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&tb), j(serde_json::json!({"ttl": 120})));
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&tb), j(serde_json::json!({"domain": "renamed.example"})));
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}"), Some(&tb), None);
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&tb), j(serde_json::json!({"username": "carol", "role": "editor"})));
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, post, "/api/v1/georules", Some(&tb), j(serde_json::json!({"zone_id": zid,"match_type":"default","match_value":"","target":"192.0.2.9"})));
+    assert_eq!(st, 201);
+    let (_, gl, _) = call!(app, get, "/api/v1/georules", Some(&tb), None);
+    assert_eq!(gl.as_array().unwrap().len(), 1, "shared zone's rules are listed for members");
+
+    // viewer: read only
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&tc), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/export"), Some(&tc), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&tc), rec.clone());
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&tc), None);
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/import"), Some(&tc), j(serde_json::json!({"records":[{"name":"x","record_type":"A","value":"192.0.2.3"}]})));
+    assert_eq!(st, 403);
+
+    // members list is visible to members; unshare takes effect immediately
+    let (_, ml, _) = call!(app, get, &format!("/api/v1/zones/{zid}/members"), Some(&tc), None);
+    assert_eq!(ml.as_array().unwrap().len(), 2);
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}/members/{bob}"), Some(&ta), None);
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&tb), None);
+    assert_eq!(st, 403);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn zone_history_and_rollback() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "hist.example").await;
+    let url = format!("/api/v1/zones/{zid}/records");
+    let (_, r1, _) = call!(app, post, &url, Some(&t), j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.1","ttl":60})));
+    let (_, revs, _) = call!(app, get, &format!("/api/v1/zones/{zid}/revisions"), Some(&t), None);
+    let good = revs[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(revs[0]["record_count"], 4, "2 NS + SOA + the new A");
+    // a bad edit, then rollback
+    call!(app, delete, &format!("{url}/{}", r1["id"].as_str().unwrap()), Some(&t), None);
+    call!(app, post, &url, Some(&t), j(serde_json::json!({"name":"oops","record_type":"A","value":"192.0.2.66","ttl":60})));
+    assert!(std::fs::read_to_string(env.zone_file("hist.example")).unwrap().contains("192.0.2.66"));
+    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/revisions/{good}/restore"), Some(&t), None);
+    assert_eq!(st, 200, "{raw}");
+    let zone = std::fs::read_to_string(env.zone_file("hist.example")).unwrap();
+    assert!(zone.contains("192.0.2.1") && !zone.contains("192.0.2.66"), "{zone}");
+    let (_, revs2, _) = call!(app, get, &format!("/api/v1/zones/{zid}/revisions"), Some(&t), None);
+    assert!(revs2.as_array().unwrap().len() > revs.as_array().unwrap().len(), "restore is itself recorded (and undoable)");
+    // unknown revision, other tenant
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/revisions/{}/restore", Uuid::new_v4()), Some(&t), None);
+    assert_eq!(st, 404);
+    let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/revisions/{good}/restore"), Some(&env.token(&bob, "user")), None);
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/revisions"), Some(&env.token(&bob, "user")), None);
+    assert_eq!(st, 403);
+    env.cleanup().await;
+}
+
+/// Minimal UDP resolver that answers TXT queries with a fixed value.
+async fn fake_txt_resolver(txt: &'static str) -> std::net::SocketAddr {
+    use hickory_proto::op::Message;
+    use hickory_proto::rr::{rdata::TXT, RData, Record};
+    let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = sock.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 1500];
+        loop {
+            let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
+            let Ok(q) = Message::from_vec(&buf[..n]) else { continue };
+            let mut r = Message::response(q.id(), q.op_code());
+            for qq in q.queries() { r.add_query(qq.clone());
+                r.add_answer(Record::from_rdata(qq.name().clone(), 60, RData::TXT(TXT::new(vec![txt.to_string()])))); }
+            let _ = sock.send_to(&r.to_vec().unwrap(), from).await;
+        }
+    });
+    addr
+}
+
+#[actix_web::test]
+async fn domain_verification_gates_publication() {
+    let Some(mut env) = setup().await else { return };
+    env.state.verify_domains = true;
+    env.full.inner = env.state.clone();
+    let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
+    let ta = env.token(&alice, "user");
+    let tadmin = env.token(&env.admin, "admin");
+
+    // non-admin zones are pending: created, not served
+    let app = app!(env);
+    let (st, z, raw) = call!(app, post, "/api/v1/zones", Some(&ta), j(serde_json::json!({"domain":"pending.example"})));
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(z["status"], "pending");
+    let token = z["verification"]["value"].as_str().unwrap().to_string();
+    assert_eq!(z["verification"]["name"], "_outis-challenge.pending.example");
+    assert!(!env.zone_file("pending.example").exists(), "unverified zone must not be served");
+    let zid = z["id"].as_str().unwrap().to_string();
+    // admins are trusted
+    let (_, az, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain":"admin.example"})));
+    assert_eq!(az["status"], "active");
+    assert!(env.zone_file("admin.example").is_file());
+
+    // wrong token published -> refused, still not served
+    let resolver_bad = fake_txt_resolver("outis-verify=nope").await;
+    env.state.verify_resolver = resolver_bad; env.full.inner = env.state.clone();
+    let app = app!(env);
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/verify"), Some(&ta), None);
+    assert_eq!(st, 422);
+    assert!(!env.zone_file("pending.example").exists());
+    // correct token -> activated and published; someone else cannot trigger it
+    let leaked: &'static str = Box::leak(token.into_boxed_str());
+    env.state.verify_resolver = fake_txt_resolver(leaked).await; env.full.inner = env.state.clone();
+    let app = app!(env);
+    let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/verify"), Some(&env.token(&bob, "user")), None);
+    assert_eq!(st, 403);
+    let (st, body, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/verify"), Some(&ta), None);
+    assert_eq!((st, body["status"].clone()), (200, serde_json::json!("active")), "{raw}");
+    assert!(env.zone_file("pending.example").is_file());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn mfa_enrol_login_and_disable() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let name = format!("mfa-{}", Uuid::new_v4().simple());
+    let uid = add_user(&env.state, &name, "mfa-password-1", "user").await;
+    let tok = env.token(&uid, "user");
+    let login = |otp: Option<&str>| {
+        let mut b = serde_json::json!({"username": name, "password": "mfa-password-1"});
+        if let Some(o) = otp { b["otp"] = serde_json::json!(o); }
+        j(b)
+    };
+    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
+    assert_eq!(st, 200, "no MFA yet");
+
+    let (st, setup, _) = call!(app, post, "/api/v1/auth/mfa/setup", Some(&tok), None);
+    assert_eq!(st, 200);
+    let secret = data_encoding::BASE32_NOPAD.decode(setup["secret"].as_str().unwrap().as_bytes()).unwrap();
+    assert!(setup["otpauth_url"].as_str().unwrap().starts_with("otpauth://totp/"));
+    // not active until a valid code proves the app works
+    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/enable", Some(&tok), j(serde_json::json!({"code": "000000"})));
+    assert_eq!(st, 400);
+    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/enable", Some(&tok), j(serde_json::json!({"code": ext::totp_now(&secret)})));
+    assert_eq!(st, 200);
+
+    // now a password alone is not enough
+    let (st, b, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
+    assert_eq!((st, b["error"].clone()), (401, serde_json::json!("mfa_required")));
+    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(Some("123456")));
+    assert_eq!(st, 401);
+    let (st, b, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(Some(&ext::totp_now(&secret))));
+    assert_eq!(st, 200);
+    assert!(b["token"].is_string());
+
+    // turning it off needs password AND code
+    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/disable", Some(&tok), j(serde_json::json!({"code": ext::totp_now(&secret), "password": "wrong"})));
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/disable", Some(&tok), j(serde_json::json!({"code": ext::totp_now(&secret), "password": "mfa-password-1"})));
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn audit_pagination_filters_and_retention() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    for i in 0..7 {
+        env.state.db.execute("INSERT INTO audit_logs (id, action, resource_type, created_at) VALUES ($1::text::uuid, $2, 'test', now() - ($3::int * interval '1 day'))",
+            &[&Uuid::new_v4().to_string(), &if i % 2 == 0 { "even" } else { "odd" }, &(i * 100)]).await.unwrap();
+    }
+    let page = |q: &str| { let uri = format!("/api/v1/audit/logs?{q}"); uri };
+    let (st, b, _) = call!(app, get, &page("limit=3&offset=0&resource_type=test"), Some(&t), None);
+    assert_eq!(st, 200);
+    assert_eq!(b["data"].as_array().unwrap().len(), 3);
+    let (_, b2, _) = call!(app, get, &page("limit=3&offset=3&resource_type=test"), Some(&t), None);
+    assert_ne!(b["data"][0]["id"], b2["data"][0]["id"], "pages differ");
+    let (_, even, _) = call!(app, get, &page("action=even&resource_type=test"), Some(&t), None);
+    assert_eq!(even["data"].as_array().unwrap().len(), 4);
+    // total count header
+    let r = test::TestRequest::get().uri(&page("limit=1&resource_type=test")).insert_header(("Authorization", format!("Bearer {t}"))).to_request();
+    let resp = test::call_service(&app, r).await;
+    assert_eq!(resp.headers().get("X-Total-Count").unwrap(), "7");
+    // limit is clamped, non-admins refused
+    let (_, big, _) = call!(app, get, &page("limit=100000&resource_type=test"), Some(&t), None);
+    assert_eq!(big["data"].as_array().unwrap().len(), 7);
+    let u = add_user(&env.state, "plain", "plain-pass-12", "user").await;
+    let (st, _, _) = call!(app, get, "/api/v1/audit/logs", Some(&env.token(&u, "user")), None);
+    assert_eq!(st, 403);
+    // retention removes only what is older than the window
+    let removed = ext::purge_audit(&env.state.db, 250).await.unwrap();
+    assert_eq!(removed, 4, "entries at 300, 400, 500, 600 days");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn zone_rename_rewrites_soa_and_ecs_flag() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "old.example").await;
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"domain": "new.example", "ecs_enabled": true})));
+    assert_eq!(st, 200, "{raw}");
+    let soa: String = env.state.db.query_one("SELECT value FROM records WHERE record_type='SOA'", &[]).await.unwrap().get(0);
+    assert!(!soa.contains("old.example") && soa.contains("hostmaster.new.example"), "{soa}");
+    let zone = std::fs::read_to_string(env.zone_file("new.example")).unwrap();
+    assert!(zone.contains("hostmaster.new.example.") && !zone.contains("old.example"), "{zone}");
+    assert!(!env.zone_file("old.example").exists());
+    let (_, g, _) = call!(app, get, &format!("/api/v1/zones/{zid}"), Some(&t), None);
+    assert_eq!(g["data"]["ecs_enabled"], true);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn status_endpoints_and_server_health() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    make_zone(&env, &app, &t, "status.example").await;
+    let (st, s, _) = call!(app, get, "/api/v1/dns/status", Some(&t), None);
+    assert_eq!(st, 200);
+    assert_eq!(s["last_publish"]["ok"], true);
+    assert!(s["last_publish"]["published"].as_i64().unwrap() >= 1);
+    assert!(s["bundle_version"].as_i64().unwrap() >= 1);
+    assert!(s["db_connections"]["healthy"].as_i64().unwrap() >= 1);
+    // server health is a real TCP probe: one listener, one dead port
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let live = l.local_addr().unwrap().port();
+    let dead = { let d = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); d.local_addr().unwrap().port() };
+    for (n, port) in [("up", live), ("down", dead)] {
+        let (st, _, raw) = call!(app, post, "/api/v1/servers", Some(&t), j(serde_json::json!({"name": n, "address": "127.0.0.1", "port": port})));
+        assert_eq!(st, 201, "{raw}");
+    }
+    let (_, list, _) = call!(app, get, "/api/v1/servers", Some(&t), None);
+    let status_of = |n: &str| list.as_array().unwrap().iter().find(|s| s["name"] == n).unwrap()["status"].clone();
+    assert_eq!(status_of("up"), "running");
+    assert_eq!(status_of("down"), "unreachable");
+    // non-admin cannot read publication status, nor the list of servers
+    let u = add_user(&env.state, "plain", "plain-pass-12", "user").await;
+    let (st, _, _) = call!(app, get, "/api/v1/servers", Some(&env.token(&u, "user")), None);
+    assert_eq!(st, 403, "server addresses are admin-only");
+    let (st, _, _) = call!(app, get, "/api/v1/dns/status", Some(&env.token(&u, "user")), None);
+    assert_eq!(st, 403);
+    // query metrics need DNS_METRICS_URL
+    let (st, _, _) = call!(app, get, "/api/v1/metrics/queries", Some(&t), None);
+    assert_eq!(st, 503);
+    drop(l);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn query_metrics_are_read_from_the_dns_server_exporter() {
+    let Some(mut env) = setup().await else { return };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut s, _)) = listener.accept().await else { return };
+            let mut b = [0u8; 512]; let _ = s.read(&mut b).await;
+            let body = "# TYPE hickory_request_total counter\nhickory_request_total{protocol=\"udp\"} 40\nhickory_request_total{protocol=\"tcp\"} 2\nunrelated 9\n";
+            let _ = s.write_all(format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).as_bytes()).await;
+        }
+    });
+    env.state.dns_metrics_url = Some(format!("http://127.0.0.1:{port}/metrics"));
+    env.full.inner = env.state.clone();
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let (st, b, raw) = call!(app, get, "/api/v1/metrics/queries", Some(&t), None);
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["requests_total"], 42.0);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn pool_replaces_dropped_connections() {
+    let Some(env) = setup().await else { return };
+    // a dedicated pool whose sessions can be told apart from other tests' sessions
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let marked = if url.contains('?') { format!("{url}&application_name=pooltest") } else { format!("{url}?application_name=pooltest") };
+    let pool = Pool::connect(&marked, 3, None).await.expect("pool");
+    assert_eq!(pool.healthy(), 3);
+    let (c, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move { let _ = conn.await; });
+    let n = c.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'pooltest'", &[]).await.unwrap();
+    assert_eq!(n, 4, "3 pooled + 1 reserved transaction connection");
+    // within a few seconds the supervisors have reconnected and queries work again
+    let mut ok = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if pool.healthy() == 3 && pool.query_one("SELECT 1", &[]).await.is_ok() { ok = true; break; }
+    }
+    assert!(ok, "pool must recover after its connections were killed");
+    env.cleanup().await;
+}
+
+#[::core::prelude::v1::test]
+fn startup_checks_reject_placeholders() {
+    let good = "k8Vx0pZq3mT7wRn2Yb9LcHs5Df6GjA1e";
+    assert!(startup_problems(good, "postgres://u:s3cr3tX9@db/x", Some("a-long-unique-pw-1"), false).is_empty());
+    assert!(!startup_problems("CHANGE_ME_to_a_random_value_please_0000", "postgres://u:x@db/x", None, false).is_empty());
+    assert!(!startup_problems("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "postgres://u:x@db/x", None, false).is_empty());
+    assert!(!startup_problems(good, "postgres://postgres:CHANGE_ME_STRONG_PASSWORD@db/x", None, false).is_empty());
+    assert!(!startup_problems(good, "postgres://postgres:password@db/x", None, false).is_empty());
+    assert!(!startup_problems(good, "postgres://u:s3cr3t@db/x", Some("admin123"), false).is_empty());
+    assert!(!startup_problems(good, "postgres://u:s3cr3t@db/x", Some("short"), false).is_empty());
+    assert!(!startup_problems(good, "postgres://u:s3cr3t@db/x", Some("a-long-unique-pw-1"), true).is_empty(), "FORCE_BOOTSTRAP is flagged");
+}
+
+#[::core::prelude::v1::test]
+fn forwarded_for_is_only_trusted_from_trusted_proxies() {
+    let trusted = ext::parse_trusted_proxies("10.0.0.0/8, 192.0.2.1, junk");
+    assert_eq!(trusted.len(), 2);
+    let mk = |peer: &str, xff: &str| test::TestRequest::get().peer_addr(peer.parse().unwrap()).insert_header(("X-Forwarded-For", xff)).to_http_request();
+    // untrusted peer: header ignored (cannot be spoofed)
+    assert_eq!(ext::client_ip(&mk("203.0.113.9:1", "1.2.3.4"), &trusted), Some("203.0.113.9".parse().unwrap()));
+    // trusted proxy: the right-most non-proxy address wins, left-most entries are attacker controlled
+    assert_eq!(ext::client_ip(&mk("10.1.1.1:1", "6.6.6.6, 198.51.100.7, 10.2.2.2"), &trusted), Some("198.51.100.7".parse().unwrap()));
+    // no proxies configured: never trust the header
+    assert_eq!(ext::client_ip(&mk("10.1.1.1:1", "1.2.3.4"), &[]), Some("10.1.1.1".parse().unwrap()));
+    // header absent or garbage from a trusted proxy: fall back to the peer
+    assert_eq!(ext::client_ip(&mk("10.1.1.1:1", "not-an-ip"), &trusted), Some("10.1.1.1".parse().unwrap()));
+}
+
+#[::core::prelude::v1::test]
+fn listen_addresses_come_from_the_environment() {
+    std::env::set_var("LISTEN_ADDRS_IPV6", "::, nonsense");
+    std::env::set_var("LISTEN_ADDRS_IPV4", "192.0.2.5");
+    let out = dns_builder::TomlConfigBuilder::from_env().build().unwrap();
+    std::env::remove_var("LISTEN_ADDRS_IPV6"); std::env::remove_var("LISTEN_ADDRS_IPV4");
+    assert!(out.contains("listen_addrs_ipv4 = [\"192.0.2.5\"]"), "{out}");
+    assert!(out.contains("listen_addrs_ipv6 = [\"::\"]"), "{out}");
+    assert!(!out.contains("nonsense"));
+    // default stays IPv4-only
+    let d = dns_builder::TomlConfigBuilder::from_env().build().unwrap();
+    assert!(d.contains("listen_addrs_ipv4 = [\"0.0.0.0\"]") && !d.contains("ipv6"), "{d}");
+}
+
+#[actix_web::test]
+async fn metrics_endpoint_can_require_a_token() {
+    let app = test::init_service(
+        App::new()
+            .wrap(actix_web::middleware::from_fn(metrics_guard))
+            .route("/metrics", web::get().to(|| async { HttpResponse::Ok().body("m 1") }))
+            .route("/health", web::get().to(|| async { HttpResponse::Ok().finish() })),
+    ).await;
+    std::env::remove_var("METRICS_TOKEN");
+    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+    assert_eq!(r.status().as_u16(), 200, "open when no token is configured (previous behaviour)");
+    std::env::set_var("METRICS_TOKEN", "scrape-secret-123");
+    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+    assert_eq!(r.status().as_u16(), 401);
+    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").insert_header(("Authorization", "Bearer wrong")).to_request()).await;
+    assert_eq!(r.status().as_u16(), 401);
+    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").insert_header(("Authorization", "Bearer scrape-secret-123")).to_request()).await;
+    assert_eq!(r.status().as_u16(), 200);
+    let r = test::call_service(&app, test::TestRequest::get().uri("/health").to_request()).await;
+    assert_eq!(r.status().as_u16(), 200, "only /metrics is guarded");
+    std::env::remove_var("METRICS_TOKEN");
+}
+
+#[actix_web::test]
+async fn publication_gauges_are_exported_on_metrics() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    metrics::init();
+    let t = env.token(&env.admin, "admin");
+    make_zone(&env, &app, &t, "gauge.example").await;
+    // the gauges live in the registry shared with the HTTP metrics middleware
+    let app = test::init_service(
+        App::new()
+            .wrap(actix_web_prom::PrometheusMetricsBuilder::new("t").registry(prometheus013::default_registry().clone()).endpoint("/metrics").build().unwrap())
+            .route("/x", web::get().to(|| async { HttpResponse::Ok().finish() })),
+    ).await;
+    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+    let body = String::from_utf8(test::read_body(r).await.to_vec()).unwrap();
+    for g in ["outis_zones_published", "outis_zones_failed", "outis_last_publish_ok 1", "outis_last_publish_timestamp_seconds", "outis_bundle_version"] {
+        assert!(body.contains(g), "missing {g} in /metrics");
+    }
+    env.cleanup().await;
+}

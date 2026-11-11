@@ -5,6 +5,7 @@ import { validators } from '../hooks/useFormValidation'
 import BulkImport from '../components/BulkImport'
 import Notifications from '../components/Notifications'
 import { useParams } from 'react-router-dom'
+import { useAuthStore } from '../store'
 import { FileText, Plus, Trash2, Download, RefreshCw, Edit3, X } from 'lucide-react'
 
 export default function Records(){
@@ -20,6 +21,11 @@ export default function Records(){
   const [error, setError] = React.useState('')
   const [loading, setLoading] = React.useState(false)
   const notify = React.useContext(Notifications)
+  const { user } = useAuthStore()
+  const [access, setAccess] = React.useState('')
+  // read-only for viewer accounts and for zones shared as viewer
+  const readOnly = user?.role === 'viewer' || access === 'viewer'
+  React.useEffect(() => { api.get(`/api/v1/zones/${zoneId}`).then(r => setAccess(r.data?.access || '')).catch(() => {}) }, [zoneId])
 
   const load = async () => { 
     setLoading(true)
@@ -146,6 +152,7 @@ export default function Records(){
       </motion.div>
 
       {/* Form card */}
+      {!readOnly && (
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -201,7 +208,7 @@ export default function Records(){
           </AnimatePresence>
 
           <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-            <BulkImport endpoint={`/api/v1/zones/${zoneId}/records/bulk`} onComplete={onBulkComplete} />
+            <BulkImport endpoint={`/api/v1/zones/${zoneId}/import`} onComplete={onBulkComplete} />
             <button onClick={downloadTemplate} className="btn-sm btn-ghost">
               <Download className="w-4 h-4" />
               Template
@@ -209,6 +216,7 @@ export default function Records(){
           </div>
         </div>
       </motion.div>
+      )}
 
       {/* Table */}
       <motion.div
@@ -259,7 +267,7 @@ export default function Records(){
                     <td className="text-gray-500 dark:text-gray-400">{r.ttl}</td>
                     <td className="text-gray-500 dark:text-gray-400">{r.priority || ''}</td>
                     <td className="text-right">
-                      <div className="flex items-center justify-end gap-1">
+                      {!readOnly && <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => {
                             setEditing(r);
@@ -276,7 +284,7 @@ export default function Records(){
                         <button onClick={() => remove(r.id)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                      </div>
+                      </div>}
                     </td>
                   </motion.tr>
                 ))}

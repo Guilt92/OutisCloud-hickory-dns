@@ -1,0 +1,31 @@
+# Example alerting rules for the OutisCloud control plane (not loaded by default;
+# reference this file from prometheus.yml `rule_files:` when you enable Prometheus).
+groups:
+  - name: outis-publication
+    rules:
+      - alert: ZonePublicationFailing
+        expr: outis_zones_failed > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value }} zone(s) failed to publish; their previous data is still served"
+      - alert: ControlPlaneNotPublishing
+        expr: time() - outis_last_publish_timestamp_seconds > 86400 and outis_last_publish_timestamp_seconds > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "No publication run for over 24h"
+      - alert: LastPublicationFailed
+        expr: outis_last_publish_ok == 0
+        for: 5m
+        labels: { severity: critical }
+      - alert: AgentsOutOfSync
+        expr: outis_agents_out_of_sync > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} agent(s) have not applied the current configuration bundle"
+      - alert: DatabaseConnectionsDegraded
+        expr: outis_db_connections_healthy < 1
+        for: 2m
+        labels: { severity: critical }

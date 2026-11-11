@@ -17,6 +17,24 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
     })
   }
 
+  // Normalise CSV/JSON rows into what POST /zones/{id}/import expects:
+  // { records: [{ name, record_type, value, ttl?, priority? }] }
+  const toRecords = (payload) => {
+    const rows = Array.isArray(payload) ? payload : (payload && payload.records) || []
+    return rows.map(r => {
+      const rec = {
+        name: String(r.name ?? '').trim(),
+        record_type: String(r.record_type ?? r.type ?? '').trim(),
+        value: String(r.value ?? '').trim(),
+      }
+      const ttl = parseInt(r.ttl, 10)
+      if (!Number.isNaN(ttl)) rec.ttl = ttl
+      const pr = parseInt(r.priority, 10)
+      if (!Number.isNaN(pr)) rec.priority = pr
+      return rec
+    })
+  }
+
   const submit = async ()=>{
     if (!file) return alert('Select a file')
     setLoading(true)
@@ -25,10 +43,18 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
       let payload = null
       if (file.type === 'application/json' || file.name.endsWith('.json')) payload = JSON.parse(text)
       else payload = parseCSV(text)
-      await api.post(endpoint, payload)
+      const records = toRecords(payload)
+      if (records.length === 0) throw new Error('no records found in file')
+      const res = await api.post(endpoint, { records })
+      const d = res.data || {}
+      if (typeof d.imported === 'number') alert(`Imported ${d.imported} record(s)` + (d.skipped ? `, skipped ${d.skipped} duplicate(s)` : ''))
       onComplete && onComplete()
       setFile(null)
-    } catch (e) { console.error(e); alert('Import failed: ' + (e.message || '')) }
+    } catch (e) {
+      console.error(e)
+      const d = e.response?.data
+      alert('Import failed: ' + (d?.details || d?.error || e.message || ''))
+    }
     setLoading(false)
   }
 

@@ -30,7 +30,7 @@ const StatusBadge = ({ status, label }) => {
   );
 };
 
-const AgentCard = ({ agent, onDelete, onToggle, onRotate, delay = 0 }) => {
+const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, delay = 0 }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -51,7 +51,7 @@ const AgentCard = ({ agent, onDelete, onToggle, onRotate, delay = 0 }) => {
               <p className="text-sm text-gray-500 dark:text-gray-400 font-mono">{agent.addr}</p>
             </div>
           </div>
-          <StatusBadge status={agent.online ? 'online' : 'offline'} />
+          <StatusBadge status={!agent.enabled ? 'disabled' : agent.online ? 'online' : 'offline'} />
         </div>
         
         <div className="grid grid-cols-2 gap-4 mb-4">
@@ -75,7 +75,27 @@ const AgentCard = ({ agent, onDelete, onToggle, onRotate, delay = 0 }) => {
           </div>
         </div>
         
+        <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-3 mb-4 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-500 dark:text-gray-400">Configuration</span>
+            <span className={`font-semibold ${agent.in_sync ? 'text-success-600' : 'text-warning-600'}`}>
+              {agent.in_sync ? 'In sync' : 'Behind'} (v{agent.applied_version} / v{agent.desired_version})
+            </span>
+          </div>
+          {agent.last_ack_at && <p className="text-xs text-gray-500 mt-1">Last acknowledgement {new Date(agent.last_ack_at).toLocaleString()}</p>}
+          {agent.last_error && <p className="text-xs text-danger-600 mt-1">Last error: {agent.last_error}</p>}
+          {agent.sync_requested && <p className="text-xs text-primary-600 mt-1">Sync requested - applied on the next heartbeat</p>}
+        </div>
+
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => onSync(agent.id)}
+            disabled={!agent.enabled}
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Sync now
+          </button>
           <button
             onClick={() => onRotate(agent.id)}
             className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
@@ -232,9 +252,12 @@ export default function Agents() {
     loadAgents();
   }, []);
   
+  const [credentials, setCredentials] = useState(null);
+
   const handleCreate = async (data) => {
     try {
-      await api.post('/api/v1/agents/register', data);
+      const res = await api.post('/api/v1/agents/register', data);
+      setCredentials({ title: 'Agent registered', ...res.data });
       await loadAgents();
     } catch (e) {
       console.error('Failed to register agent:', e);
@@ -253,13 +276,27 @@ export default function Agents() {
   };
   
   const handleToggle = async (agent) => {
-    // TODO: Implement agent enable/disable toggle
-    console.debug('Toggle agent:', agent.id);
+    try {
+      await api.put(`/api/v1/agents/${agent.id}`, { enabled: !agent.enabled });
+      await loadAgents();
+    } catch (e) {
+      alert('Failed to change agent state: ' + (e.response?.data?.error || e.message));
+    }
+  };
+
+  const handleSync = async (id) => {
+    try {
+      await api.post('/api/v1/config/push', { agent_id: id, zone_id: '', zone_config: {} });
+      await loadAgents();
+    } catch (e) {
+      alert('Sync request failed: ' + (e.response?.data?.message || e.response?.data?.error || e.message));
+    }
   };
   
   const handleRotateToken = async (id) => {
     try {
-      await api.post(`/api/v1/agents/${id}/token/rotate`);
+      const res = await api.post(`/api/v1/agents/${id}/token/rotate`);
+      setCredentials({ title: 'Token rotated', id, ...res.data });
       await loadAgents();
     } catch (e) {
       console.error('Failed to rotate token:', e);
@@ -412,6 +449,7 @@ export default function Agents() {
               agent={agent}
               onDelete={handleDelete}
               onToggle={handleToggle}
+              onSync={handleSync}
               onRotate={handleRotateToken}
               delay={0.1 + index * 0.05}
             />
@@ -420,6 +458,18 @@ export default function Agents() {
       )}
       
       {/* Create Modal */}
+      {credentials && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-xl p-6 space-y-3">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white">{credentials.title}</h3>
+            <p className="text-sm text-amber-600">These values are shown once. Store them in the agent's environment now.</p>
+            <pre className="bg-gray-50 dark:bg-gray-900 p-3 rounded-lg text-xs overflow-x-auto select-all">{`AGENT_ID=${credentials.id}
+AGENT_TOKEN=${credentials.token}
+AGENT_SIGNING_KEY=${credentials.signing_key}`}</pre>
+            <button className="btn-primary" onClick={() => setCredentials(null)}>I have saved them</button>
+          </div>
+        </div>
+      )}
       <CreateAgentModal 
         isOpen={modalOpen} 
         onClose={() => setModalOpen(false)} 

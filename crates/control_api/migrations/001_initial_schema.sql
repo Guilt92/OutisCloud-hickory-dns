@@ -113,12 +113,6 @@ CREATE TABLE IF NOT EXISTS agent_configs (
 CREATE INDEX IF NOT EXISTS idx_agent_configs_agent_id ON agent_configs(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_configs_active ON agent_configs(agent_id, is_active);
 
--- Insert default admin user (password: admin123)
--- This should be changed on first login
-INSERT INTO users (id, username, password_hash, role) 
-VALUES (
-    '00000000-0000-0000-0000-000000000001',
-    'admin',
-    '$argon2id$v=19$m=65536,t=3,p=1$N2FlZDkyOGI5MmEzMmNlZWMwYzUyYjY3ZjhiNTQxMGU$Bie8oWt96SKARq6DQqPBEJify2F8YJ6hMwwY15bUsAI',
-    'admin'
-) ON CONFLICT (username) DO NOTHING;
+-- NOTE: no default administrator is seeded. A built-in username/password pair
+-- is a known credential on every installation. The control API creates the
+-- first administrator from ADMIN_USERNAME / ADMIN_PASSWORD at startup.

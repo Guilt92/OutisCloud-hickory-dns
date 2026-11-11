@@ -66,7 +66,9 @@ export default function App() {
   }
 
   // Show loading screen while checking auth state
-  if (isLoading) {
+  // keep the login form mounted while a sign-in is in flight (otherwise its state, including
+  // the typed password and the MFA step, is lost on every failed attempt)
+  if (isLoading && window.location.pathname !== '/login') {
     return <LoadingScreen />;
   }
 
@@ -109,6 +111,7 @@ export default function App() {
             }
           >
             <Route index element={<UserDashboard />} />
+            <Route path="zones/:id/records" element={<Records />} />
             <Route path="dns-lookup" element={<AdminDnsLookup />} />
             <Route path="settings" element={<AdminSettings />} />
           </Route>

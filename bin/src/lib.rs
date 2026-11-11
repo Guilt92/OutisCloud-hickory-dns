@@ -28,7 +28,13 @@ use hickory_server::proto::ProtoError;
 use hickory_server::proto::rr::rdata::opt::NSIDPayload;
 #[cfg(feature = "__tls")]
 use hickory_server::server::default_tls_server_config;
-use hickory_server::{server::Server, zone_handler::Catalog};
+use hickory_server::{
+    server::Server,
+    zone_handler::{
+        swap::{RateLimitConfig, SwapHandler},
+        Catalog,
+    },
+};
 
 mod config;
 use config::Config;
@@ -198,8 +204,12 @@ impl DnsServer {
 
         let config_path = Path::new(&config);
         info!("loading configuration from: {config_path:?}");
-        let config = Config::read_config(config_path)
+        let mut config = Config::read_config(config_path)
             .map_err(|err| format!("failed to read config file from {config_path:?}: {err}"))?;
+        // Everything except the zone list needs a process restart to change
+        // (sockets, TLS, privileges); zones are reloaded in place.
+        let startup_fingerprint = listener_fingerprint(&mut config);
+        let zonedir_for_reload = zonedir.clone();
 
         #[cfg(feature = "prometheus-metrics")]
         let disable_prometheus = disable_prometheus | config.disable_prometheus;
@@ -302,15 +312,15 @@ impl DnsServer {
         let exit_flag = SyncArc::new(AtomicBool::new(false));
 
         let mut catalog = Catalog::new();
-        catalog.set_nsid(nsid);
-
+        let mut nsid_final = nsid;
         if nsid_hostname {
             let hostname =
                 hostname::get().map_err(|e| format!("failed to get system hostname: {e}"))?;
             let payload = NSIDPayload::new(hostname.into_encoded_bytes())
                 .map_err(|e| format!("invalid NSID payload: {e}"))?;
-            catalog.set_nsid(Some(payload));
+            nsid_final = Some(payload);
         }
+        catalog.set_nsid(nsid_final.clone());
 
         // configure our server based on the config_path
         let zone_dir = zonedir.unwrap_or(directory);
@@ -335,7 +345,24 @@ impl DnsServer {
 
         // now, run the server, based on the config
         #[cfg_attr(not(feature = "__tls"), allow(unused_mut))]
-        let mut server = Server::with_access(catalog, deny_networks, allow_networks);
+        // Optional per-source query budget: DNS_RATE_LIMIT_QPS (0/unset = off),
+        // DNS_RATE_LIMIT_BURST (default 2x QPS).
+        let rate_limit = std::env::var("DNS_RATE_LIMIT_QPS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|q| *q > 0)
+            .map(|qps| RateLimitConfig {
+                queries_per_second: qps,
+                burst: std::env::var("DNS_RATE_LIMIT_BURST")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u32>().ok())
+                    .unwrap_or(qps.saturating_mul(2)),
+            });
+        if let Some(r) = &rate_limit {
+            info!("rate limiting: {} queries/s per source (burst {})", r.queries_per_second, r.burst);
+        }
+        let handler = SwapHandler::new(catalog, rate_limit);
+        let mut server = Server::with_access(handler.clone(), deny_networks, allow_networks);
 
         let mut listen_addrs = listen_addrs_ipv4
             .into_iter()
@@ -432,11 +459,12 @@ impl DnsServer {
             });
         }
 
-        // Watch for config / zone file changes and cancel the server to trigger a reload
-        // Use a thread-based watcher so we can call CancellationToken::cancel() from it
-        let token_for_watcher = server.shutdown_token().clone();
+        // Watch config / zone files / GeoIP database and hot-reload the zones
+        // in place. A changed listener configuration still restarts the process.
+        let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let cfg_watch_path = config_path.to_path_buf();
         let zone_watch_dir = zone_dir.clone();
+        let geoip_path = std::env::var_os("GEOIP_DB_PATH").map(PathBuf::from);
         std::thread::spawn(move || {
             let (tx, rx) = std::sync::mpsc::channel();
             let mut watcher: RecommendedWatcher = match RecommendedWatcher::new(tx, NotifyConfig::default()) {
@@ -446,28 +474,42 @@ impl DnsServer {
                     return;
                 }
             };
-
-            // watch config file and zone directory
             let _ = watcher.watch(&cfg_watch_path, RecursiveMode::NonRecursive);
             let _ = watcher.watch(&zone_watch_dir, RecursiveMode::Recursive);
-
-            // debounce: collect events for a short window before triggering
-            loop {
-                match rx.recv() {
-                    Ok(_evt) => {
-                        // simple debounce sleep
-                        std::thread::sleep(StdDuration::from_millis(250));
-                        // drain remaining events
-                        while rx.try_recv().is_ok() {}
-                        tracing::info!("file change detected, triggering reload");
-                        token_for_watcher.cancel();
-                        // watcher thread ends; run loop in main will restart server
-                        break;
-                    }
-                    Err(_) => break,
+            if let Some(g) = geoip_path.as_ref().and_then(|g| g.parent()) {
+                if !g.starts_with(&zone_watch_dir) {
+                    let _ = watcher.watch(g, RecursiveMode::NonRecursive);
+                }
+            }
+            for evt in rx {
+                let Ok(evt) = evt else { continue };
+                // only real content changes; ignore access events and temp files
+                let interesting = matches!(
+                    evt.kind,
+                    notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_)
+                ) && evt.paths.iter().any(|p| {
+                    let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    !(n.ends_with(".tmp") || n.starts_with('.'))
+                        && !p.components().any(|c| c.as_os_str() == ".orphaned")
+                });
+                if interesting && reload_tx.send(()).is_err() {
+                    break;
                 }
             }
         });
+        {
+            let handler = handler.clone();
+            let token = server.shutdown_token().clone();
+            let config_path = config_path.to_path_buf();
+            tokio::spawn(async move {
+                while reload_rx.recv().await.is_some() {
+                    // debounce: a publication touches several files
+                    tokio::time::sleep(StdDuration::from_millis(300)).await;
+                    while reload_rx.try_recv().is_ok() {}
+                    reload_zones(&config_path, &zonedir_for_reload, &startup_fingerprint, &nsid_final, &handler, &|| token.cancel()).await;
+                }
+            });
+        }
 
         // config complete, starting!
         banner();
@@ -506,9 +548,64 @@ impl DnsServer {
     }
 }
 
+/// Debug rendering of everything in the config except the zones.
+fn listener_fingerprint(config: &mut Config) -> String {
+    let zones = std::mem::take(&mut config.zones);
+    let fp = format!("{config:?}");
+    config.zones = zones;
+    fp
+}
+
+/// Re-read the configuration and swap in a freshly built catalog. Any problem
+/// keeps the catalog that is currently serving: a bad publication must never
+/// take the server down.
+async fn reload_zones(
+    config_path: &Path,
+    zonedir: &Option<PathBuf>,
+    startup_fingerprint: &str,
+    nsid: &Option<NSIDPayload>,
+    handler: &SwapHandler,
+    restart: &(dyn Fn() + Send + Sync),
+) {
+    let mut config = match Config::read_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("reload skipped, cannot read {config_path:?}: {e}");
+            return;
+        }
+    };
+    if listener_fingerprint(&mut config) != startup_fingerprint {
+        tracing::warn!("listener/privilege configuration changed: restarting to apply it");
+        restart();
+        return;
+    }
+    let zone_dir = zonedir.clone().unwrap_or_else(|| config.directory.clone());
+    let mut catalog = Catalog::new();
+    catalog.set_nsid(nsid.clone());
+    let count = config.zones.len();
+    for zone in config.zones {
+        let zone_name = match zone.zone() {
+            Ok(n) => n,
+            Err(e) => {
+                error!("reload aborted, bad zone name: {e}");
+                return;
+            }
+        };
+        match zone.load(&zone_dir).await {
+            Ok(handlers) => catalog.upsert(zone_name.into(), handlers),
+            Err(e) => {
+                error!("reload aborted, zone {zone_name} failed to load (still serving the previous data): {e}");
+                return;
+            }
+        }
+    }
+    handler.swap(catalog);
+    info!("reloaded {count} zone(s) without restarting (reload #{})", handler.reloads());
+}
+
 struct ServerSetup<'a> {
     listen_addrs: Vec<IpAddr>,
-    server: &'a mut Server<Catalog>,
+    server: &'a mut Server<SwapHandler>,
     tcp_request_timeout: Duration,
     #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
     cert_resolver: Option<Arc<dyn ResolvesServerCert>>,

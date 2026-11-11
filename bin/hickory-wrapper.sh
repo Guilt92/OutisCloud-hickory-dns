@@ -1,39 +1,57 @@
 #!/bin/bash
-# Wrapper script for Hickory DNS that handles reloads gracefully
-# Instead of stopping the container on config changes, we restart just the DNS process
+# Wrapper script for Hickory DNS that handles reloads gracefully.
+#
+# hickory-dns exits when its config or zone files change (that is how a
+# reload is performed) and expects to be started again. A clean exit (status
+# 0) is therefore restarted immediately to keep the interruption of port 53 as
+# short as possible; a failing exit is retried after a short back-off so a
+# broken configuration does not spin. SIGTERM/SIGINT (docker stop) are forwarded
+# to the server and end the wrapper instead of being restarted.
+
+HICKORY_BIN="${HICKORY_BIN:-/usr/local/bin/hickory-dns}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
+stopping=0
+child=0
+
+on_signal() {
+    stopping=1
+    if [ "$child" -ne 0 ]; then
+        kill -TERM "$child" 2>/dev/null
+    fi
+}
+trap on_signal TERM INT
+
 log "Starting Hickory DNS wrapper..."
 
-# Function to run hickory-dns and handle restarts
-run_hickory() {
-    while true; do
-        log "Starting hickory-dns server..."
-        
-        # Run hickory-dns in foreground
-        /usr/local/bin/hickory-dns "$@" 2>&1
-        
-        EXIT_CODE=$?
-        log "Hickory DNS exited with code: $EXIT_CODE"
-        
-        # Check if it's a normal exit (reload) or an error
-        # Exit code 0 or -15 (SIGTERM from file watcher) means reload - we should restart
-        
-        # Check if there's a reload trigger file
-        if [ -f /tmp/hickory-reload ]; then
-            log "Reload requested, restarting..."
-            rm -f /tmp/hickory-reload
-            sleep 1
-            continue
-        fi
-        
-        log "Restarting hickory-dns in 2 seconds..."
-        sleep 2
-    done
-}
+while [ "$stopping" -eq 0 ]; do
+    log "Starting hickory-dns server..."
+    "$HICKORY_BIN" "$@" 2>&1 &
+    child=$!
 
-# Run the DNS server
-run_hickory "$@"
+    # `wait` returns early when a trapped signal arrives; keep waiting until
+    # the child is really gone.
+    while kill -0 "$child" 2>/dev/null; do
+        wait "$child"
+        code=$?
+    done
+    wait "$child" 2>/dev/null
+    code=$?
+    child=0
+    log "Hickory DNS exited with code: $code"
+
+    [ "$stopping" -ne 0 ] && break
+
+    if [ "$code" -eq 0 ]; then
+        log "Reload requested, restarting..."
+    else
+        log "Unexpected exit, restarting in 2 seconds..."
+        sleep 2
+    fi
+done
+
+log "Wrapper stopped"
+exit 0

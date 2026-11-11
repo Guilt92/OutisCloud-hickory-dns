@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Moon, Sun, Monitor, Palette, User, Bell, Shield, Globe } from 'lucide-react';
 import { useUIStore, useAuthStore } from '../../store';
 import PasswordChangeForm from '../../components/PasswordChangeForm';
+import MfaCard from '../../components/MfaCard';
 
 const themes = [
   { value: 'light', label: 'Light', icon: Sun },
@@ -118,6 +119,7 @@ export default function Settings() {
         transition={{ delay: 0.25 }}
       >
         <PasswordChangeForm isAdmin={false} />
+        <MfaCard />
       </motion.div>
 
       {/* Admin Reset Password - Only for admins */}

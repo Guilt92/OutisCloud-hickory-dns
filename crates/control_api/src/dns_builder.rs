@@ -56,9 +56,50 @@ impl DnsRecord {
     /// `ns1.uid0.ir.uid0.ir.`. This method rewrites relative RDATA names so the
     /// generated zone file contains fully-qualified names instead.
     pub fn to_zone_string_with_origin(&self, origin: &Name) -> Result<String> {
+        self.to_zone_string_with_origin_and_serial(origin, None)
+    }
+
+    /// Serial number carried by this record if it is an SOA.
+    pub fn soa_serial(&self) -> Option<u32> {
+        match self.to_hickory_record().ok()?.data() {
+            RData::SOA(soa) => Some(soa.serial()),
+            _ => None,
+        }
+    }
+
+    /// Like [`to_zone_string_with_origin`](Self::to_zone_string_with_origin) but
+    /// overrides the serial when this record is an SOA.
+    pub fn to_zone_string_with_origin_and_serial(&self, origin: &Name, serial: Option<u32>) -> Result<String> {
         let mut record = self.to_hickory_record()?;
-        record.set_data(absolutize_rdata(record.data().clone(), origin));
-        Ok(record.to_string())
+        let mut data = absolutize_rdata(record.data().clone(), origin);
+        if let (Some(serial), RData::SOA(soa)) = (serial, &data) {
+            data = RData::SOA(hickory_proto::rr::rdata::SOA::new(
+                soa.mname().clone(),
+                soa.rname().clone(),
+                serial,
+                soa.refresh(),
+                soa.retry(),
+                soa.expire(),
+                soa.minimum(),
+            ));
+        }
+        record.set_data(data);
+        let text = match record.data() {
+            // Hickory's Display prints TXT strings unquoted, which a zone file
+            // parser splits at whitespace and re-joins without the spaces
+            // ("v=spf1 mx -all" would be served as "v=spf1" "mx" "-all").
+            // Write each character-string quoted and escaped instead.
+            RData::TXT(txt) => {
+                let strings: Vec<String> = txt.txt_data().iter().map(|s| quote_txt_string(s)).collect();
+                format!("{} {} IN TXT {}", record.name(), record.ttl(), strings.join(" "))
+            }
+            _ => record.to_string(),
+        };
+        // Safety gate: what we are about to publish must parse back to exactly
+        // the data the user entered. Anything that does not round-trip is
+        // refused rather than served corrupted.
+        verify_roundtrip(&text, origin, record.data())?;
+        Ok(text)
     }
 
     /// Validates that this record can be converted to a Hickory Record.
@@ -156,6 +197,39 @@ fn absolutize_rdata(rdata: RData, origin: &Name) -> RData {
     }
 }
 
+/// Quote one TXT character-string for a zone file (RFC 1035 §5.1 escapes).
+pub fn quote_txt_string(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    out.push('"');
+    for &b in bytes {
+        match b {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\{:03}", b)),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Parse `text` back with Hickory's zone parser and require identical RDATA.
+fn verify_roundtrip(text: &str, origin: &Name, expected: &RData) -> Result<()> {
+    use hickory_proto::serialize::txt::Parser;
+    let (_, parsed) = Parser::new(text.to_string(), None, Some(origin.clone()))
+        .parse()
+        .map_err(|e| anyhow!("serialized record does not parse back ({}): {}", e, text))?;
+    let ok = parsed
+        .values()
+        .flat_map(|rs| rs.records_without_rrsigs())
+        .any(|r| r.data() == expected);
+    if ok {
+        Ok(())
+    } else {
+        Err(anyhow!("serialized record would not round-trip unchanged through the zone file: {}", text))
+    }
+}
+
 /// Builder for creating DNS records from database-style data.
 pub struct DnsRecordBuilder;
 
@@ -235,16 +309,25 @@ impl SafeZoneFileWriter {
         content: &str,
         origin: Option<&hickory_proto::rr::domain::Name>,
     ) -> Result<()> {
-        let tmp_path = zone_path.with_extension("zone.tmp");
+        // Keep the full file name and append ".tmp": `with_extension` would
+        // replace the last label of "zone.example.com" and make different
+        // zones share one temporary file.
+        let mut tmp_name = zone_path
+            .file_name()
+            .ok_or_else(|| anyhow!("zone path {:?} has no file name", zone_path))?
+            .to_os_string();
+        tmp_name.push(".tmp");
+        let tmp_path = zone_path.with_file_name(tmp_name);
 
         debug!("Writing zone file to temporary location: {:?}", tmp_path);
         // A stale temporary file (e.g. left behind by a previous run owned by a
         // different uid) would make fs::write fail. Remove it before writing.
         let _ = fs::remove_file(&tmp_path);
-        fs::write(&tmp_path, content)
+        write_synced(&tmp_path, content.as_bytes())
             .with_context(|| format!("Failed to write zone file temp at {:?}", tmp_path))?;
 
-        // Validate zone file using Hickory's parser - delegates to Hickory
+        // Validate zone file using Hickory's parser - delegates to Hickory.
+        // The existing (last known-good) zone file is untouched until this passes.
         if let Err(e) = validate_zone_file(&tmp_path, content, origin) {
             warn!("Zone file validation failed, removing temporary file: {:?}", tmp_path);
             let _ = fs::remove_file(&tmp_path);
@@ -252,17 +335,56 @@ impl SafeZoneFileWriter {
         }
 
         debug!("Zone file validation passed, moving to final location: {:?}", zone_path);
-        fs::rename(&tmp_path, zone_path)
-            .with_context(|| format!("Failed to rename temp zone file to {:?}", zone_path))?;
+        if let Err(e) = fs::rename(&tmp_path, zone_path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e).with_context(|| format!("Failed to rename temp zone file to {:?}", zone_path));
+        }
+        sync_parent_dir(zone_path);
 
         Ok(())
     }
+}
+
+/// Write `data` to `path` and fsync it so a crash right after the rename that
+/// follows cannot leave an empty or truncated file under the final name.
+pub fn write_synced(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = fs::File::create(path)?;
+    f.write_all(data)?;
+    f.sync_all()
+}
+
+/// Best-effort fsync of the directory containing `path` (makes the rename durable).
+pub fn sync_parent_dir(path: &Path) {
+    if let Some(dir) = path.parent() {
+        if let Ok(d) = fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+}
+
+/// Escape a string for use inside a TOML basic string (`"..."`).
+pub fn toml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// TOML configuration builder for Hickory DNS named config.
 pub struct TomlConfigBuilder {
     zones: Vec<TomlZone>,
     listen_ipv4: Vec<String>,
+    listen_ipv6: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -271,6 +393,7 @@ struct TomlZone {
     zone_type: String,
     zone_path: String,
     geodns_enabled: bool,
+    ecs: bool,
     geo_rules: Vec<TomlGeoRule>,
 }
 
@@ -291,7 +414,26 @@ impl TomlConfigBuilder {
         Self {
             zones: Vec::new(),
             listen_ipv4: vec!["0.0.0.0".to_string()],
+            listen_ipv6: Vec::new(),
         }
+    }
+
+    /// Listen addresses from `LISTEN_ADDRS_IPV4` (default `0.0.0.0`) and
+    /// `LISTEN_ADDRS_IPV6` (default none: IPv4 only, as before), both comma
+    /// separated. Invalid entries are ignored with a warning.
+    pub fn from_env() -> Self {
+        fn list<T: std::str::FromStr>(var: &str) -> Option<Vec<String>> {
+            let v = std::env::var(var).ok()?;
+            let mut out = Vec::new();
+            for item in v.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+                if item.parse::<T>().is_ok() { out.push(item.to_string()); } else { warn!("ignoring invalid address {:?} in {}", item, var); }
+            }
+            Some(out)
+        }
+        let mut b = Self::new();
+        if let Some(v4) = list::<std::net::Ipv4Addr>("LISTEN_ADDRS_IPV4") { if !v4.is_empty() { b.listen_ipv4 = v4; } }
+        if let Some(v6) = list::<std::net::Ipv6Addr>("LISTEN_ADDRS_IPV6") { b.listen_ipv6 = v6; }
+        b
     }
 
     /// Adds a zone to the configuration.
@@ -322,10 +464,18 @@ impl TomlConfigBuilder {
             zone_type: "Primary".to_string(),
             zone_path,
             geodns_enabled,
+            ecs: false,
             geo_rules: rules,
         });
 
         Ok(())
+    }
+
+    /// Mark the most recently added zone as ECS-aware.
+    pub fn set_last_zone_ecs(&mut self, ecs: bool) {
+        if let Some(z) = self.zones.last_mut() {
+            z.ecs = ecs;
+        }
     }
 
 
@@ -338,30 +488,39 @@ impl TomlConfigBuilder {
                 result.push_str(", ");
             }
             result.push('"');
-            result.push_str(addr); 
+            result.push_str(&toml_escape(addr)); 
             result.push('"');
         }
-        result.push_str("]\n\n");
+        result.push_str("]\n");
+        if !self.listen_ipv6.is_empty() {
+            result.push_str("listen_addrs_ipv6 = [");
+            for (i, addr) in self.listen_ipv6.iter().enumerate() {
+                if i > 0 { result.push_str(", "); }
+                result.push('"'); result.push_str(&toml_escape(addr)); result.push('"');
+            }
+            result.push_str("]\n");
+        }
+        result.push('\n');
 
         for zone in &self.zones {
             result.push_str("[[zones]]\n");
-            result.push_str(&format!("zone = \"{}\"\n", zone.zone));
-            result.push_str(&format!("zone_type = \"{}\"\n", zone.zone_type));
+            result.push_str(&format!("zone = \"{}\"\n", toml_escape(&zone.zone)));
+            result.push_str(&format!("zone_type = \"{}\"\n", toml_escape(&zone.zone_type)));
 
             if zone.geodns_enabled {
-                result.push_str("geodns = { enabled = true, rules = [\n");
+                result.push_str(if zone.ecs { "geodns = { enabled = true, ecs = true, rules = [\n" } else { "geodns = { enabled = true, rules = [\n" });
                 for rule in &zone.geo_rules {
                     result.push_str("  { ");
-                    result.push_str(&format!("match_type = \"{}\", ", rule.match_type));
-                    result.push_str(&format!("match_value = \"{}\", ", rule.match_value));
-                    result.push_str(&format!("target = \"{}\", ", rule.target));
+                    result.push_str(&format!("match_type = \"{}\", ", toml_escape(&rule.match_type)));
+                    result.push_str(&format!("match_value = \"{}\", ", toml_escape(&rule.match_value)));
+                    result.push_str(&format!("target = \"{}\", ", toml_escape(&rule.target)));
                     result.push_str(&format!("priority = {}, ", rule.priority));
                     result.push_str(&format!("enabled = {}, ", rule.enabled));
                     if let Some(rn) = &rule.record_name {
-                        result.push_str(&format!("record_name = \"{}\", ", rn));
+                        result.push_str(&format!("record_name = \"{}\", ", toml_escape(rn)));
                     }
                     if let Some(rt) = &rule.record_type {
-                        result.push_str(&format!("record_type = \"{}\", ", rt));
+                        result.push_str(&format!("record_type = \"{}\", ", toml_escape(rt)));
                     }
                     result.push_str("},\n");
                 }
@@ -370,7 +529,7 @@ impl TomlConfigBuilder {
 
             result.push_str("[[zones.stores]]\n");
             result.push_str("type = \"file\"\n");
-            result.push_str(&format!("zone_path = \"{}\"\n\n", zone.zone_path));
+            result.push_str(&format!("zone_path = \"{}\"\n\n", toml_escape(&zone.zone_path)));
         }
 
         Ok(result)
@@ -700,5 +859,82 @@ mod tests {
             3600,
         );
         assert!(record.validate().is_err(), "Hickory should reject invalid SOA format");
+    }
+}
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+    use hickory_proto::serialize::txt::Parser;
+
+    fn render(name: &str, t: &str, v: &str, prio: i32) -> anyhow::Result<String> {
+        let origin = Name::from_utf8("example.com.").unwrap();
+        DnsRecordBuilder::from_db_fields(name.to_string(), t.to_string(), v.to_string(), 300, prio)?
+            .to_zone_string_with_origin(&origin)
+    }
+
+    fn txt_strings(text: &str) -> Vec<Vec<u8>> {
+        let origin = Name::from_utf8("example.com.").unwrap();
+        let (_, recs) = Parser::new(text.to_string(), None, Some(origin)).parse().unwrap();
+        for rs in recs.values() {
+            for r in rs.records_without_rrsigs() {
+                if let RData::TXT(t) = r.data() {
+                    return t.txt_data().iter().map(|b| b.to_vec()).collect();
+                }
+            }
+        }
+        panic!("no TXT in {text}");
+    }
+
+    #[test]
+    fn txt_with_spaces_is_one_string_not_split() {
+        // used to be served as three strings "v=spf1" "mx" "-all"
+        let text = render("t.example.com.", "TXT", "v=spf1 mx -all", 0).unwrap();
+        assert_eq!(txt_strings(&text), vec![b"v=spf1 mx -all".to_vec()], "{text}");
+        let text = render("t.example.com.", "TXT", "\"v=spf1 mx -all\"", 0).unwrap();
+        assert_eq!(txt_strings(&text), vec![b"v=spf1 mx -all".to_vec()], "{text}");
+    }
+
+    #[test]
+    fn txt_quotes_backslashes_semicolons_and_segments_survive() {
+        let text = render("t.example.com.", "TXT", "\"say \\\"hi\\\" \\\\ ; ok\"", 0).unwrap();
+        assert_eq!(txt_strings(&text), vec![b"say \"hi\" \\ ; ok".to_vec()], "{text}");
+        let text = render("t.example.com.", "TXT", "\"seg one\" \"seg two\"", 0).unwrap();
+        assert_eq!(txt_strings(&text), vec![b"seg one".to_vec(), b"seg two".to_vec()], "{text}");
+        let dkim = "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC";
+        let text = render("sel._domainkey.example.com.", "TXT", dkim, 0).unwrap();
+        assert_eq!(txt_strings(&text), vec![dkim.as_bytes().to_vec()], "{text}");
+    }
+
+    #[test]
+    fn common_record_types_round_trip() {
+        for (n, t, v, p) in [
+            ("a.example.com.", "A", "192.0.2.1", 0),
+            ("a.example.com.", "AAAA", "2001:db8::1", 0),
+            ("example.com.", "MX", "mail.example.com.", 10),
+            ("w.example.com.", "CNAME", "x.example.com.", 0),
+            ("_sip._tcp.example.com.", "SRV", "2 5060 sip.example.com.", 1),
+            ("c.example.com.", "CAA", "0 issue \"letsencrypt.org\"", 0),
+            ("tl.example.com.", "TLSA", "3 1 1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 0),
+        ] {
+            render(n, t, v, p).unwrap_or_else(|e| panic!("{t} {v}: {e:#}"));
+        }
+    }
+
+    #[test]
+    fn toml_escape_neutralises_metacharacters() {
+        assert_eq!(toml_escape("a\"b"), "a\\\"b");
+        assert_eq!(toml_escape("a\\b"), "a\\\\b");
+        assert_eq!(toml_escape("a\nb"), "a\\nb");
+        let mut b = TomlConfigBuilder::new();
+        b.add_zone(
+            "evil.com".into(),
+            "/z/zone.evil.com".into(),
+            true,
+            vec![("country".into(), "US\"\n[[zones]]\nzone=\"pwn\"".into(), "1.1.1.1".into(), 0, true, None, None)],
+        ).unwrap();
+        let out = b.build().unwrap();
+        assert_eq!(out.matches("[[zones]]\n").count(), 1, "{out}");
+        assert!(!out.contains("\nzone=\"pwn\""), "{out}");
     }
 }

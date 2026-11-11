@@ -5,16 +5,17 @@ import { Upload, Server, ArrowRight } from 'lucide-react'
 
 export default function ConfigPush(){
   const [agentId, setAgentId] = React.useState('')
-  const [zoneId, setZoneId] = React.useState('')
+  const [agents, setAgents] = React.useState([])
   const [result, setResult] = React.useState(null)
 
   React.useEffect(() => {
     const token = localStorage.getItem('token')
     if (token) api.setToken(token)
+    api.get('/api/v1/agents').then(r => setAgents(r.data || [])).catch(() => {})
   }, [])
 
   const push = async () => {
-    try { const r = await api.post('/api/v1/config/push', { agent_id: agentId, zone_id: zoneId, zone_config: {} }); setResult(r.data) } catch (e) { alert('Error pushing config') }
+    try { const r = await api.post('/api/v1/config/push', { agent_id: agentId, zone_id: '', zone_config: {} }); setResult(r.data) } catch (e) { setResult(e.response?.data || { success: false, message: e.message }) }
   }
 
   return (
@@ -47,14 +48,15 @@ export default function ConfigPush(){
           </div>
           <div className="space-y-3">
             <div>
-              <label className="form-label">Agent ID</label>
-              <input className="input" placeholder="Enter agent ID" value={agentId} onChange={e=>setAgentId(e.target.value)} />
+              <label className="form-label">Agent</label>
+              <select className="select" value={agentId} onChange={e=>setAgentId(e.target.value)}>
+                <option value="">Select an agent</option>
+                <option value="all">All enabled agents</option>
+                {agents.map(a => <option key={a.id} value={a.id} disabled={!a.enabled}>{a.name} ({a.addr}){a.enabled ? '' : ' - disabled'}</option>)}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">Agents pull the signed configuration bundle; this asks them to do it on their next heartbeat.</p>
             </div>
-            <div>
-              <label className="form-label">Zone ID</label>
-              <input className="input" placeholder="Enter zone ID" value={zoneId} onChange={e=>setZoneId(e.target.value)} />
-            </div>
-            <button className="btn-primary w-full mt-1" onClick={push}>
+            <button className="btn-primary w-full mt-1" onClick={push} disabled={!agentId}>
               <ArrowRight className="w-4 h-4" />
               Push Config
             </button>

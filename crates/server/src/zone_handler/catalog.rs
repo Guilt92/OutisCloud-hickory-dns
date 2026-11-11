@@ -30,7 +30,7 @@ use crate::{
         op::{Edns, Header, LowerQuery, Message, MessageType, OpCode, ResponseCode},
         rr::{
             LowerName, RecordSet, RecordType,
-            rdata::opt::{EdnsCode, EdnsOption, NSIDPayload},
+            rdata::opt::{ClientSubnet, EdnsCode, EdnsOption, NSIDPayload},
         },
     },
     server::{Request, RequestHandler, RequestInfo, ResponseHandler, ResponseInfo},
@@ -432,6 +432,29 @@ impl Catalog {
                 response_handle,
             )
             .await;
+        };
+
+        // RFC 7871: a server whose answer depends on the client subnet must echo
+        // the ECS option with the scope it used, otherwise the resolver would
+        // cache the answer for every client behind it.
+        let ecs_edns;
+        let response_edns = match (
+            response_edns,
+            request.edns().and_then(|e| e.option(EdnsCode::Subnet)),
+        ) {
+            (Some(base), Some(EdnsOption::Subnet(cs)))
+                if cs.source_prefix() > 0 && handlers.iter().any(|h| h.uses_client_subnet()) =>
+            {
+                let mut e = base.clone();
+                e.options_mut().insert(EdnsOption::Subnet(ClientSubnet::new(
+                    cs.addr(),
+                    cs.source_prefix(),
+                    cs.source_prefix(),
+                )));
+                ecs_edns = e;
+                Some(&ecs_edns)
+            }
+            _ => response_edns,
         };
 
         if request_info.query.query_type() == RecordType::AXFR {

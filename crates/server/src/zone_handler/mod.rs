@@ -34,6 +34,7 @@ use crate::server::{Request, RequestInfo};
 mod auth_lookup;
 mod catalog;
 pub mod geodns;
+pub mod swap;
 pub(crate) mod message_request;
 mod message_response;
 
@@ -154,6 +155,12 @@ pub trait ZoneHandler: Send + Sync {
         request: &Request,
         lookup_options: LookupOptions,
     ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>);
+
+    /// Whether this handler's answers depend on the EDNS Client Subnet of the
+    /// query (and so the response must echo the ECS option with a scope).
+    fn uses_client_subnet(&self) -> bool {
+        false
+    }
 
     /// Return the NSEC records based on the given name
     ///

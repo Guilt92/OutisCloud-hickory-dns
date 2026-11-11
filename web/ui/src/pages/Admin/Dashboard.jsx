@@ -98,19 +98,7 @@ const QuickAction = ({ icon: Icon, label, description, to, color = 'primary', de
   );
 };
 
-const ServerCard = ({ server, onStart, onStop, onRestart, delay = 0 }) => {
-  const [actionLoading, setActionLoading] = useState(null);
-  
-  const handleAction = async (action, fn) => {
-    setActionLoading(action);
-    try {
-      await fn(server.id);
-    } catch (e) {
-      console.error(e);
-    }
-    setActionLoading(null);
-  };
-  
+const ServerCard = ({ server, delay = 0 }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -131,49 +119,21 @@ const ServerCard = ({ server, onStart, onStop, onRestart, delay = 0 }) => {
             ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400' 
             : 'bg-gray-100 text-gray-600 dark:bg-gray-600 dark:text-gray-300'
         }`}>
-          {server.status === 'running' ? 'Active' : 'Inactive'}
+          {server.status === 'running' ? 'Active' : 'Registered'}
         </span>
-      </div>
-      <div className="flex gap-2">
-        {server.status === 'running' ? (
-          <button 
-            onClick={() => handleAction('stop', onStop)}
-            disabled={actionLoading === 'stop'}
-            className="flex-1 flex items-center justify-center gap-1 px-3 py-2 text-xs font-medium text-danger-600 bg-danger-50 dark:bg-danger-900/20 rounded-lg hover:bg-danger-100 dark:hover:bg-danger-900/40 transition-colors disabled:opacity-50"
-          >
-            {actionLoading === 'stop' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Square className="w-3 h-3" />}
-            Stop
-          </button>
-        ) : (
-          <button 
-            onClick={() => handleAction('start', onStart)}
-            disabled={actionLoading === 'start'}
-            className="flex-1 flex items-center justify-center gap-1 px-3 py-2 text-xs font-medium text-success-600 bg-success-50 dark:bg-success-900/20 rounded-lg hover:bg-success-100 dark:hover:bg-success-900/40 transition-colors disabled:opacity-50"
-          >
-            {actionLoading === 'start' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-            Start
-          </button>
-        )}
       </div>
     </motion.div>
   );
 };
 
-const mockChartData = [
-  { time: '00:00', queries: 120 },
-  { time: '04:00', queries: 80 },
-  { time: '08:00', queries: 250 },
-  { time: '12:00', queries: 420 },
-  { time: '16:00', queries: 380 },
-  { time: '20:00', queries: 290 },
-  { time: '24:00', queries: 180 },
-];
 
 export default function Dashboard() {
   const [stats, setStats] = useState({ zones: 0, records: 0, servers: 0, agents: 0 });
   const [servers, setServers] = useState([]);
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [pub, setPub] = useState(null);
+  const [queries, setQueries] = useState({ state: 'loading' });
   // DNS server lifecycle is managed externally; dashboard does not track it
 
   const loadData = async () => {
@@ -185,16 +145,16 @@ export default function Dashboard() {
         api.get('/api/v1/agents').catch(() => ({ data: [] })),
       ]);
       
-      let recordCount = 0;
       const zones = zonesRes.data || [];
-      for (const zone of zones.slice(0, 3)) {
-        try {
-          const recordsRes = await api.get(`/api/v1/zones/${zone.id}/records`);
-          recordCount += (recordsRes.data?.length || 0);
-        } catch (e) {
-          console.warn('Failed to load records for zone:', zone.id, e);
-        }
-      }
+      // count the records of every zone (in parallel), not just the first three
+      const counts = await Promise.all(
+        zones.map((zone) =>
+          api.get(`/api/v1/zones/${zone.id}/records`)
+            .then((r) => (r.data?.length || 0))
+            .catch((e) => { console.warn('Failed to load records for zone:', zone.id, e); return 0; })
+        )
+      );
+      const recordCount = counts.reduce((a, b) => a + b, 0);
       
       setStats({
         zones: zones.length,
@@ -204,6 +164,9 @@ export default function Dashboard() {
       });
       
       setServers(serversRes.data || []);
+      try { setPub((await api.get('/api/v1/dns/status')).data); } catch (e) { setPub(null); }
+      try { setQueries({ state: 'ok', ...(await api.get('/api/v1/metrics/queries')).data }); }
+      catch (e) { setQueries({ state: e.response?.status === 503 ? 'unconfigured' : 'error', message: e.response?.data?.details || e.response?.data?.error || e.message }); }
       setAgents(agentsRes.data || []);
     } catch (e) {
       console.warn('Failed to load dashboard data:', e);
@@ -248,6 +211,25 @@ export default function Dashboard() {
         </div>
       </motion.div>
 
+      {/* Publication status */}
+      {pub && (
+        <div className={`rounded-2xl border p-4 text-sm ${pub.last_publish && !pub.last_publish.ok ? 'border-red-300 bg-red-50 text-red-700' : 'border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300'}`}>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+            <span className="font-semibold">Publication</span>
+            {pub.last_publish ? (
+              <>
+                <span>{pub.last_publish.ok ? 'OK' : 'FAILED'} - {pub.last_publish.published} zone(s) at {new Date(pub.last_publish.at).toLocaleTimeString()}</span>
+                {pub.last_publish.error && <span>{pub.last_publish.error}</span>}
+              </>
+            ) : <span>no publication since the API started</span>}
+            <span>Bundle v{pub.bundle_version}</span>
+            <span>DB connections {pub.db_connections.healthy}/{pub.db_connections.size}</span>
+            {agents.filter(a => a.enabled && !a.in_sync).length > 0 && <span className="text-warning-600">{agents.filter(a => a.enabled && !a.in_sync).length} agent(s) behind</span>}
+          </div>
+          {pub.last_publish?.failed?.map(f => <p key={f.zone} className="mt-1">Zone {f.zone}: {f.error}</p>)}
+        </div>
+      )}
+
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Globe} label="Total Zones" value={stats.zones} color="primary" delay={0.1} />
@@ -268,43 +250,27 @@ export default function Dashboard() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white">DNS Queries</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400">Last 24 hours</p>
-            </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-success-50 dark:bg-success-900/20 rounded-full">
-              <TrendingUp className="w-4 h-4 text-success-600 dark:text-success-400" />
-              <span className="text-sm font-medium text-success-600 dark:text-success-400">+12.5%</span>
+              <p className="text-sm text-gray-500 dark:text-gray-400">Query statistics</p>
             </div>
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={mockChartData}>
-                <defs>
-                  <linearGradient id="colorQueries" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="time" stroke="#9ca3af" fontSize={12} />
-                <YAxis stroke="#9ca3af" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: '#1f2937', 
-                    border: 'none', 
-                    borderRadius: '8px',
-                    color: '#fff'
-                  }}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="queries" 
-                  stroke="#0ea5e9" 
-                  strokeWidth={2}
-                  fillOpacity={1} 
-                  fill="url(#colorQueries)" 
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+          <div className="h-64 flex items-center justify-center text-center">
+            {queries.state === 'ok' ? (
+              <div>
+                <p className="text-5xl font-bold text-gray-900 dark:text-white">{Math.round(queries.requests_total).toLocaleString()}</p>
+                <p className="text-gray-500 dark:text-gray-400 mt-2">DNS requests served since the DNS server last started</p>
+                <p className="text-xs text-gray-400 mt-1">from {queries.source}</p>
+              </div>
+            ) : (
+              <div>
+                <TrendingUp className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+                <p className="text-gray-600 dark:text-gray-300 font-medium">
+                  {queries.state === 'unconfigured' ? 'Query statistics are not configured' : queries.state === 'loading' ? 'Loading...' : 'Query statistics unavailable'}
+                </p>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
+                  {queries.state === 'unconfigured' ? 'Set DNS_METRICS_URL on the control API to the DNS server\'s Prometheus endpoint.' : queries.message}
+                </p>
+              </div>
+            )}
           </div>
         </motion.div>
 
@@ -355,9 +321,6 @@ export default function Dashboard() {
                   <ServerCard 
                     key={server.id} 
                     server={server}
-                    onStart={async (id) => await api.post('/api/v1/dns/start', { id, bind: '0.0.0.0:53' })}
-                    onStop={async (id) => await api.post('/api/v1/dns/stop', { id })}
-                    onRestart={async (id) => { await api.post('/api/v1/dns/stop', { id }); await api.post('/api/v1/dns/start', { id, bind: '0.0.0.0:53' }); }}
                     delay={0.8}
                   />
                 ))}

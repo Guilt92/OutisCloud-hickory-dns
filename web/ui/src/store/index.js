@@ -15,10 +15,10 @@ export const useAuthStore = create(
       sessionExpired: false,
       sessionExpiredMessage: '',
       
-      login: async (username, password) => {
+      login: async (username, password, otp) => {
         set({ isLoading: true, error: null });
         try {
-          const response = await authApi.login({ username, password });
+          const response = await authApi.login(otp ? { username, password, otp } : { username, password });
           const { token, refresh_token } = response.data;
           
           setAuthToken(token);

@@ -2,13 +2,18 @@ import React from 'react'
 import { motion } from 'framer-motion'
 import api from '../../api/client'
 import { Link } from 'react-router-dom'
+import { useAuthStore } from '../../store'
 import { Globe, Plus, Download, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
 import BulkImport from '../../components/BulkImport'
+import ZoneTools from '../../components/ZoneTools'
 import Notifications from '../../components/Notifications'
 import { useFormValidation, validators, FormField, downloadTemplate } from '../../hooks/useFormValidation'
 import { usePagination, useTableSort, useAdvancedSearch, PaginationControls, SortableHeader, FadeIn, SkeletonTable } from '../../hooks/useAdvancedUI'
 
 export default function Zones(){
+  const { user } = useAuthStore()
+  const canWrite = user?.role !== 'viewer'          // viewers are read-only
+  const [toolsZone, setToolsZone] = React.useState(null)
   const [zones, setZones] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const notify = React.useContext(Notifications)
@@ -38,8 +43,10 @@ export default function Zones(){
       for (const zone of zonesData) {
         try {
           const zoneRes = await api.get(`/api/v1/zones/${zone.id}`)
-          if (zoneRes.data?.data?.nameservers) {
-            nameserversMap[zone.id] = zoneRes.data.data.nameservers
+          // the api client already unwraps { success, data } envelopes
+          const ns = zoneRes.data?.nameservers ?? zoneRes.data?.data?.nameservers
+          if (ns) {
+            nameserversMap[zone.id] = ns
           }
         } catch (e) {
           console.error('Error loading nameservers for zone', zone.id, e)
@@ -156,7 +163,7 @@ export default function Zones(){
       </div>
 
       {/* Create / Edit Card */}
-      <motion.div
+      {canWrite && <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         className="card"
@@ -235,7 +242,7 @@ export default function Zones(){
             </div>
           )}
         </div>
-      </motion.div>
+      </motion.div>}
 
       {/* Search */}
       <div className="relative">
@@ -275,7 +282,11 @@ export default function Zones(){
                 pagination.currentItems.map(z => (
                   <FadeIn key={z.id}>
                     <tr>
-                      <td className="font-medium text-gray-900 dark:text-white">{z.domain}</td>
+                      <td className="font-medium text-gray-900 dark:text-white">
+                        {z.domain}
+                        {z.status === 'pending' && <span className="badge badge-warning ml-2">pending verification</span>}
+                        {z.access && z.access !== 'admin' && z.access !== 'owner' && <span className="badge badge-info ml-2">shared: {z.access}</span>}
+                      </td>
                       <td>
                         <div className="flex flex-col gap-0.5">
                           {zoneNameservers[z.id] ? (
@@ -301,6 +312,7 @@ export default function Zones(){
                       </td>
                       <td>
                         <button
+                          disabled={!canWrite || z.access === 'viewer'}
                           onClick={() => toggleZoneGeo(z)}
                           className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
                             z.geodns_enabled
@@ -315,17 +327,22 @@ export default function Zones(){
                       <td className="text-right">
                         <div className="flex items-center justify-end gap-1">
                           <Link
-                            to={`/admin/zones/${z.id}/records`}
+                            to={`${user?.role === 'admin' ? '/admin' : '/user'}/zones/${z.id}/records`}
                             className="btn-sm btn-ghost"
                           >
                             Records
                           </Link>
-                          <button onClick={() => startEdit(z)} className="btn-sm btn-ghost">
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button onClick={() => deleteZone(z)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <button onClick={() => setToolsZone(z)} className="btn-sm btn-ghost">Manage</button>
+                          {(z.access === 'admin' || z.access === 'owner') && canWrite && (
+                            <>
+                              <button onClick={() => startEdit(z)} className="btn-sm btn-ghost">
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => deleteZone(z)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -347,6 +364,7 @@ export default function Zones(){
           <PaginationControls pagination={pagination} />
         </div>
       </div>
+      {toolsZone && <ZoneTools zone={toolsZone} onClose={() => setToolsZone(null)} onChanged={load} />}
     </div>
   )
 }

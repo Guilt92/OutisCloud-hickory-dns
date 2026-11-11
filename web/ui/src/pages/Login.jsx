@@ -11,6 +11,8 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [otp, setOtp] = useState('');
+  const [needOtp, setNeedOtp] = useState(false);
   
   const { login, isAuthenticated, user, sessionExpired, sessionExpiredMessage, clearSessionExpired } = useAuthStore();
   const navigate = useNavigate();
@@ -71,10 +73,11 @@ export default function Login() {
     setIsLoading(true);
     
     try {
-      const user = await login(username, password);
+      const user = await login(username, password, otp);
       navigate(user?.role === 'admin' ? '/admin' : '/user');
     } catch (err) {
-      setError(err.message || 'Invalid username or password');
+      if (err.message === 'mfa_required') { setNeedOtp(true); setError('Enter the 6-digit code from your authenticator app'); }
+      else setError(err.message || 'Invalid username or password');
     } finally {
       setIsLoading(false);
     }
@@ -254,6 +257,15 @@ export default function Login() {
                 </div>
               </div>
               
+              {needOtp && (
+                <div>
+                  <label htmlFor="otp" className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Authentication code</label>
+                  <input id="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp}
+                    onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                    className="w-full px-4 py-3 border-2 border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    placeholder="123456" />
+                </div>
+              )}
               <button
                 type="submit"
                 disabled={isLoading}
@@ -273,16 +285,6 @@ export default function Login() {
               </button>
             </form>
             
-            <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700">
-              <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
-                  <span className="font-medium">Demo credentials:</span>{' '}
-                  <code className="bg-gray-200 dark:bg-gray-600 px-2 py-0.5 rounded text-xs font-mono">admin</code>
-                  <span className="mx-1">/</span>
-                  <code className="bg-gray-200 dark:bg-gray-600 px-2 py-0.5 rounded text-xs font-mono">admin123</code>
-                </p>
-              </div>
-            </div>
           </motion.div>
           
           <p className="mt-8 text-center text-sm text-gray-400 dark:text-gray-500">

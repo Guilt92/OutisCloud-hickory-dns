@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Palette, User, Globe } from 'lucide-react';
 import { useUIStore, useAuthStore } from '../store';
 import PasswordChangeForm from '../components/PasswordChangeForm';
+import MfaCard from '../components/MfaCard';
 
 export default function UserSettings() {
   const { theme, setTheme } = useUIStore();
@@ -97,6 +98,7 @@ export default function UserSettings() {
       </motion.div>
 
       <PasswordChangeForm isAdmin={false} />
+      <MfaCard />
 
       <motion.div 
         initial={{ opacity: 0, y: 20 }}

@@ -81,7 +81,7 @@ services:
     container_name: outiscloud-dns-server
     environment:
       RUST_LOG: info
-      GEOIP_DB_PATH: /etc/outiscloud/GeoLite2-Country.mmdb
+      GEOIP_DB_PATH: /etc/hickory/GeoLite2-Country.mmdb
     ports:
       # Bind to all interfaces by default. Set DNS_BIND_IP to a specific host
       # interface when port 53 is already reserved on the server (e.g. by the
