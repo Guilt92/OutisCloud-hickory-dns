@@ -501,11 +501,18 @@ impl DnsServer {
                     return;
                 }
             };
-            let _ = watcher.watch(&cfg_watch_path, RecursiveMode::NonRecursive);
-            let _ = watcher.watch(&zone_watch_dir, RecursiveMode::Recursive);
+            // A watch that cannot be installed means changes are never picked up (typically the
+            // unprivileged user cannot traverse the directory): say so instead of staying silent.
+            for (path, mode) in [(&cfg_watch_path, RecursiveMode::NonRecursive), (&zone_watch_dir, RecursiveMode::Recursive)] {
+                if let Err(e) = watcher.watch(path, mode) {
+                    tracing::error!("hot reload disabled for {}: cannot watch it ({}). Check that the server user can read the path and all its parent directories", path.display(), e);
+                }
+            }
             if let Some(g) = geoip_path.as_ref().and_then(|g| g.parent()) {
                 if !g.starts_with(&zone_watch_dir) {
-                    let _ = watcher.watch(g, RecursiveMode::NonRecursive);
+                    if let Err(e) = watcher.watch(g, RecursiveMode::NonRecursive) {
+                        tracing::error!("GeoIP database changes will not be picked up: cannot watch {} ({})", g.display(), e);
+                    }
                 }
             }
             for evt in rx {

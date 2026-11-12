@@ -469,7 +469,16 @@ impl Catalog {
             _ => response_edns,
         };
 
-        if request_info.query.query_type() == RecordType::AXFR {
+        // Per-zone query attribution (opt-in, DNS_ZONE_QUERY_METRICS=true): the control plane maps
+        // zones to tenants, so this is the only place where per-tenant query counts can come from.
+        #[cfg(feature = "metrics")]
+        let zone_label = if zone_query_metrics_enabled() {
+            handlers.first().map(|h| h.origin().to_string())
+        } else {
+            None
+        };
+
+        let info = if request_info.query.query_type() == RecordType::AXFR {
             zone_transfer(
                 request_info,
                 handlers,
@@ -490,7 +499,19 @@ impl Catalog {
                 &self.metrics,
             )
             .await
+        };
+
+        #[cfg(feature = "metrics")]
+        if let Some(zone) = zone_label {
+            let result = match info.response_code() {
+                ResponseCode::NoError => "ok",
+                ResponseCode::NXDomain => "nxdomain",
+                _ => "error",
+            };
+            metrics::counter!("hickory_zone_queries_total", "zone" => zone, "result" => result)
+                .increment(1);
         }
+        info
     }
 
     /// Recursively searches the catalog for a matching zone handler
@@ -1380,4 +1401,16 @@ mod tests {
             additionals_count
         );
     }
+}
+
+/// `DNS_ZONE_QUERY_METRICS=true|1` turns on the per-zone query counter (one time series per zone and result).
+#[cfg(feature = "metrics")]
+fn zone_query_metrics_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("DNS_ZONE_QUERY_METRICS").map(|v| v.to_ascii_lowercase()).as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
 }
