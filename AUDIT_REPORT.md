@@ -16,6 +16,126 @@ internet. **Nothing in this report is externally verified.**
 
 ---
 
+## Phase 7 — Zone transfer, multi-resolver lookup, multi-replica coordination, breakdowns, release benchmarks, upstream merge, external checks (2026-11-12)
+
+Nothing was committed or pushed. Everything below was run locally; what could only be observed from the outside is listed separately in 7.6.
+Baseline before this phase: branch `main`, HEAD `486cd0c3b`; the phase's changes are uncommitted in the working tree. Operational details: `docs/OPERATIONS.md`. This section supersedes the Phase 6 limitations about the missing transfer screen, per-replica rate limits/collector, the single resolver, and the missing record-type/country breakdowns.
+
+### 7.1 Outcome per requested item
+
+| # | Item | Status | Evidence |
+|---|---|---|---|
+| 1 | Admin zone transfer between tenants | **COMPLETED AND VERIFIED** (local) | `PUT /zones/{id}/tenant` rewritten as one transaction with `FOR UPDATE` on the zone and destination tenant (race-free quotas), owner/share policy, audit entry `zone.transfer` (actor, zone, source and destination tenant id+name, records, shares removed, owner change); UI: Zones → *Transfer* (admin only) with current/destination tenant, confirmation dialog naming both, success/error notifications; the tenant column is shown to admins. Backend test `zone_transfer_is_atomic_authorised_quota_checked_and_audited` (permissions 401/403, unknown/invalid destination, same tenant, zone quota and record quota failures leave everything untouched, identical record ids afterwards, GeoDNS rules preserved, shares removed/kept, audit content, **two concurrent transfers into a tenant with room for one → exactly one 200 and one 403**, detach). Browser: 10 transfer checks inside `platform_qa.cjs` (dialog, disabled submit, confirmation text, cancel changes nothing, success toast, list shows tenant, quota failure toast + zone unchanged, customers see no action and get 403, audit entry). A UX bug found by the test was fixed: Escape on the confirmation also closed the dialog underneath. |
+| 2 | DNS Lookup: multiple resolvers | **COMPLETED AND VERIFIED** (local) | `lookup.rs`: ordered failover list `DNS_LOOKUP_RESOLVERS` (labels, IPv4/IPv6, ports; max 8; invalid entries stop startup), per-resolver timeout + overall deadline, one attempt per resolver, TCP only on truncation, recently failed resolvers demoted for 15 s, **no built-in public resolver** (503 `not_configured`), admin-only resolver selection, customers never receive resolver addresses/labels/attempts. Architecture decision (failover for all, selection for admins only) documented in `docs/OPERATIONS.md`. Tests: parser unit tests (v4/v6/ports/labels, 9 invalid forms, too many), integration tests for primary success (secondary never asked), primary timeout → fallback within one timeout, demoted primary not retried, SERVFAIL and REFUSED → fallback, all-SERVFAIL returned honestly, all unavailable → 502 without leaking addresses (admins see attempts), selection allowed/forbidden/unknown, IPv6-only and IPv4-down→IPv6 fallback, not configured. |
+| 3 | Multi-replica rate limit + analytics collector | **COMPLETED AND VERIFIED** with two real API processes (`scripts/multi_replica_lab.sh`, 16 checks) | `shared.rs`: PostgreSQL fixed-window limiter (atomic upsert on the DB clock) for login per user, login per address and DNS Lookup; collector lease (`collector_lease`) + persisted counters (`collector_state`) + advisory transaction lock; samples and counters written in one transaction. Lab: replicas started simultaneously (concurrent migrations), 30 lookups alternating A/B → exactly 20 allowed / 10 refused, budget still exhausted after `kill -9` + restart of A, login budget shared (10 × 401 then 4 × 429 across both replicas), exactly one lease, **killing the writer (SIGKILL)** → survivor takes over within the lease, restarted replica joins as follower, **9 s database outage** → both replicas survive and recover, and finally **stored global and per-zone sums equal the exporter's own counter delta exactly (no duplicate, no loss)**. In-process tests: 40 concurrent callers on one bucket → exactly the budget; lease takeover; duplicate/concurrent/gap/failed-write/counter-reset ingest. One of the first lab runs failed its lookup-limit step before the final fixes (a customer login race right after simultaneous start-up); it was not reproducible in the later run, but treat start-up races as the residual risk. |
+| 4 | Record-type and country breakdowns | **COMPLETED AND VERIFIED** (local; country needs a GeoIP database) | DNS server: `DNS_ZONE_BREAKDOWN=true` → `hickory_zone_qtype_total`, `hickory_zone_country_total`; bounded cardinality (14 fixed qtype labels, ≤ 32 countries per zone, 4 sentinels); only the aggregated country code is kept (never an address); sentinels distinguish *private/reserved*, *unknown in a loaded database*, ***no database loaded*** and *overflow*; ECS subnet used when present. Control API: `zone_qtype_samples`, `zone_country_samples`, intervals `1m…1d`, hourly **rollup** of samples older than 48 h (sums preserved, rows −78 %), retention covers the new tables, GeoIP age reported. Dashboards: record-type bar chart + country list + GeoIP age/“unavailable” notice, interval selector, for customers (own tenant) and admins (global/any tenant). Verified: API test (isolation, malicious label ignored, sentinels, status `geoip_unavailable`, intervals, retention), **`scripts/breakdown_lab.sh` 9/9** (real server + real GeoLite2-Country, `dig -b` from US/DE/BR addresses in a namespace: exactly A=10 MX=3 TXT=2 and US=6 DE=4 BR=3 private=2; carol sees only DE=5; no address in the exporter or the database; a missing database yields `no_geoip`, history survives the server restart), browser checks for both dashboards. |
+| 5 | Release builds and benchmarks | **COMPLETED** (see 7.3) | Found and fixed two real problems: non-sargable tenant predicates (`CAST(tenant_id AS varchar)`) made analytics scan 3–4 M rows (30-day tenant view 7.8 s → 0.12 s) and unbounded sample growth (rollup). Start-up with 5,006 zones takes 106 s (not fixed, documented). |
+| 6 | Upstream Hickory merge | **MERGE COMPLETED AND VALIDATED IN AN ISOLATED WORKTREE; NOT APPLIED TO `main`** (needs your approval to commit) | See 7.4. |
+| 7 | GeoIP / public DNS / registrar | **PARTIALLY VERIFIED — see 7.6** | no GeoLite2-City database exists anywhere in the repository or its GitHub copy; City/Region logic is verified on MaxMind's official test City database only; `uid0.ir` delegation exists but its name server is unreachable from here (FAILED / external). |
+| 8 | Safe disk cleanup | **COMPLETED** | see 7.7 |
+| 9 | Final validation | see 7.5 | |
+
+### 7.2 Files
+New: `crates/control_api/src/shared.rs` and phase-6 `lookup.rs`/`tenants.rs` extended; `web/ui/src/components/TransferZone.jsx`; `scripts/{multi_replica_lab,breakdown_lab,dns_conformance_lab,delegation_check,compare_builds,bench_release}.sh`, `scripts/httpload.rs`; `docs/OPERATIONS.md`, `docs/benchmarks/2026-11-12/`. Changed: `main.rs` (resolver set, shared limits, migration retry, zone listing with tenant), `tenants.rs` (transfer, breakdowns, intervals, collector lease, rollup, sargable queries, concurrent queries), `lookup.rs`, `crates/server/.../catalog.rs` (breakdown counters), `crates/geodns` (classification, build epoch), UI pages/components, test suites, `.env.example`.
+
+### 7.3 Performance — release builds (isolated synthetic dataset; PostgreSQL 16.15; AMD EPYC 4 vCPU, 7.9 GB RAM; Linux 6.8; rustc 1.99.1; `opt-level=3`, LTO, 1 codegen unit; API pool 8; load generator on the same host)
+Dataset: 5,006 zones / 40,019 records / 101 tenants; 14 days of 5-minute samples for 200 zones (zone 807 k, record-type 3.2 M, country 4.0 M rows → 175 k / 698 k / 873 k after rollup). Raw data: `docs/benchmarks/2026-11-12/`.
+Process: start-up with an empty database (migrations) **541–697 ms**; start-up with the 5,006-zone database **106 s** (all zones are published before the API listens); RSS idle **71 MB**, peak under load **100 MB**; `/health` 3,227 req/s at 94 % of one core.
+
+| Endpoint (connections) | req/s | p50 / p95 / p99 ms | API CPU | before the index fix (p50 / p95 / p99) |
+|---|---|---|---|---|
+| `health_c8` | 3227.1 | 2.3 / 4.1 / 5.6 | 94.2% | 2.4 / 4.3 / 6.0 |
+| `overview_admin_5k_zones_c1` | 11.0 | 87.6 / 111.9 / 123.2 | 27.3% | 89.5 / 101.8 / 109.4 |
+| `overview_admin_5k_zones_c8` | 31.1 | 243.9 / 411.9 / 472.8 | 80.8% | 236.7 / 388.2 / 466.5 |
+| `overview_admin_5k_zones_c32` | 33.1 | 833.7 / 1990.9 / 2425.5 | 79.3% | 733.1 / 2489.9 / 3019.2 |
+| `overview_customer_c1` | 182.6 | 5.2 / 7.5 / 8.9 | 20.2% | 5.1 / 7.1 / 8.9 |
+| `overview_customer_c8` | 526.9 | 14.6 / 23.6 / 29.5 | 54.8% | 15.3 / 26.1 / 32.8 |
+| `overview_customer_c32` | 679.1 | 44.5 / 85.6 / 105.7 | 61.9% | 45.6 / 87.9 / 113.7 |
+| `zones_list_admin_page20_c8` | 275.6 | 27.4 / 48.9 / 65.7 | 22.5% | 26.9 / 50.8 / 65.2 |
+| `zones_list_customer_c8` | 767.4 | 9.7 / 17.9 / 24.4 | 46.9% | 9.7 / 16.9 / 21.3 |
+| `analytics_tenant_24h_c1` | 59.8 | 16.4 / 20.4 / 22.3 | 14.7% | 183.7 / 199.6 / 208.7 |
+| `analytics_tenant_24h_c8` | 134.6 | 56.1 / 97.9 / 119.6 | 32.1% | 712.8 / 1079.5 / 1238.1 |
+| `analytics_tenant_14d_c8` | 64.2 | 117.7 / 209.6 / 256.8 | 16.8% | 7838.4 / 9684.2 / 9684.2 |
+| `analytics_global_14d_c8` | 3.4 | 2028.7 / 3642.8 / 4494.8 | 0.9% | 5865.0 / 8971.6 / 8971.6 |
+| `analytics_admin_all_tenants_24h_c8` | 9.0 | 749.1 / 2156.9 / 2310.9 | 2.8% | 846.4 / 1474.3 / 1542.2 |
+| `dns_lookup_c1` | 284.8 | 3.3 / 5.0 / 6.2 | 24.8% | 3.5 / 5.5 / 7.1 |
+| `dns_lookup_c8` | 816.2 | 9.0 / 17.5 / 22.3 | 67.9% | 8.9 / 17.5 / 22.4 |
+
+Reading: the admin overview is database-bound (plan: 55 ms execution, index-only scans for the 5,006 record counts); the customer overview is 5 ms. Previous *debug* measurements on the same data size (single requests, browser harness): admin overview 610–1,061 ms, customer 149–175 ms → release c=1: **88 ms / 5 ms** (≈ 7–12× and ≈ 30×). The remaining slow item is the admin-wide analytics view (all tenants, 24 h / 30 d), which aggregates the whole sample tables (~0.75–2 s under 8-way concurrency); per-tenant views are 16–120 ms. Query plans: `docs/benchmarks/2026-11-12/plans.txt`. Not benchmarked: the debug API at this data size (its start-up publication alone takes many minutes); DNS-server query throughput (`scripts/dnsload.rs`, ~31–40 k qps in phase 3) was not repeated.
+
+### 7.4 Hickory upstream merge (branch `merge/upstream-v0.26.3`, worktree outside the repository directory)
+Baseline `486cd0c3b` (merge base with upstream `db923c347`, 2026-01-26); upstream `v0.26.3` = `bd37cafbd`, fetched into `refs/upstream/v0.26.3`. Review of conflicts and resolution:
+
+| File | Resolution |
+|---|---|
+| `Cargo.toml` | kept `rust-version 1.89` and `rusqlite 0.41` (security upgrades), took `resolv-conf 0.7.6` |
+| `Cargo.lock` | kept ours (cargo re-resolves; `cargo audit` baseline preserved) |
+| `bin/src/lib.rs` | union of imports (upstream `TcpSocketConfig/UdpSocketConfig` + our hot-reload watchers); privilege drop kept our `default_group()` fallback inside upstream's new `drop_privileges` switch |
+| `bin/tests/integration/txt_tests.rs`, `conformance/dns-test/src/record.rs`, `proto/.../zone.rs` | upstream (SOA TTL semantics are identical to our earlier fix) |
+| `proto/src/op/message.rs` | upstream signatures + **our allocation cap kept** for the query count (`Vec::with_capacity(min(count, 8))`; upstream already capped records) |
+| `server/.../catalog.rs` | imports merged; our ECS echo, DS-from-parent and per-zone counters kept |
+Compatibility changes in our code: `request.edns` is a field, `Header`→`Metadata` in `swap.rs`, `ResponseInfo.response_code` field, and **65 mechanical `control_api` edits** (proto accessors became public fields; `Message` flags via `.metadata`) applied with a script + a handful by hand. No OutisCloud feature was removed.
+Validation in the merged tree: `cargo test -p control_api` **124 passed**; `hickory-server --lib` **34 passed**; `hickory-dns --lib/bins` **19**; `geodns` **19**; all labs on the merged binaries identical to the baseline binaries: **139/139 PASS on both** (`scripts/compare_builds.sh`: geodns 32, lookup 22, conformance 31, breakdown 9, tenant analytics 9, DNSSEC (ISC `delv`) 30, metrics 6; the only textual differences are randomly generated DNSSEC keys). `cargo test --workspace` in the merged tree: **973 passed, 0 failed, 27 ignored** (28 test binaries; includes the extra upstream v0.26.3 tests). Worktree `/root/OutisCloud-hickory-dns-upstream-merge`, branch `merge/upstream-v0.26.3` (at baseline `486cd0c3b`), `MERGE_HEAD` = `bd37cafbd`, 331 files staged, **no commit made**.
+**Not integrated into `main`**: integration would need a merge commit, which you have not authorised. The merge is staged (uncommitted, conflicts resolved) in the worktree; to adopt it, review `git -C <worktree> diff --cached` and commit on that branch, then merge it into `main`. Known upstream-side gap that remains: no referrals for delegated sub-zones inside a hosted zone (upstream `main` added glue/referral work after this base; not in `v0.26.3`).
+
+### 7.5 Final validation
+| Check | Result |
+|---|---|
+| `cargo fmt --check` (control_api, geodns, hickory-server, hickory-dns) | **FAILS on legacy code**: 808 hunks in files that were never rustfmt-formatted (`main.rs` 264, `api_tests.rs` 159, `ext.rs` 59, `zone_file_generator.rs` 40, `geodns` 35 …). The new files of phases 6–7 (`lookup.rs`, `tenants.rs`, `shared.rs`) were formatted and are clean; the rest was **not** reformatted to keep the diff reviewable — do it as one separate formatting commit. (rustfmt/clippy components were installed with `rustup component add` for this check.) |
+| `cargo clippy --all-targets` (same crates) | **0 errors, 261 warnings** — idioms repeated across the legacy code (needless borrow `(&*data.db)` 76, explicit deref 73, large `HttpResponse` error variants 11, …), 11 unused legacy functions (`validate_domain`, `generate_with_ecs`, …). None are new defects; not changed. |
+| `cargo test --workspace` (current tree, PostgreSQL 16, City test DB) | **888 passed, 0 failed, 27 ignored** (28 binaries; previous full run 874 — +14 new tests: transfer, 2 multi-resolver, 2 resolver parser, shared limiter, lease, persisted collector, breakdowns, rollup, classify, …). The 27 ignored are upstream tests that need the network or are ignored upstream (one with a documented reason). |
+| `cargo test --workspace` (merged tree) | **973 passed, 0 failed, 27 ignored** |
+| Release build | `cargo build --release -p control_api -p hickory-dns` OK (2 m 26 s, LTO) |
+| Database migration tests | legacy-schema upgrade, tenant backfill (idempotent), concurrent-start retry — inside the 888 |
+| DNS protocol / GeoDNS / DNSSEC / metrics labs (`scripts/compare_builds.sh`, baseline **and** merged build) | geodns 32 · lookup 22 · conformance 31 · breakdown 9 · tenant analytics 9 · DNSSEC 30 (ISC `delv`) · metrics 6 = **139/139 on both**; `geodns_city_lab.sh` (MaxMind test City DB) **8/8** |
+| Multi-replica lab (2 real API processes) | **16/16, twice in a row** after the lab itself was made deterministic (a first and a later run failed on the lookup-limit step because every lookup spent a 2 s timeout on a dead resolver, stretching 30 calls over more than one 60 s window — a defect of the test set-up, not of the limiter) |
+| UI lint (`eslint`) | **0 errors**, 27 warnings (unused variables, hook dependencies; legacy). 5 `react/no-unescaped-entities` errors were fixed (3 mine, 2 older). `npm run build` OK |
+| `platform_qa.cjs` (Nameservers, Servers, GeoRules, bulk import, 12 lookup types, tenants, quotas, isolation, **zone transfer**, **breakdown charts**, analytics, 5,000-zone performance) | **85/85** |
+| Accessibility (axe-core WCAG 2.0/2.1 A+AA, 19 routes + login, dark/light) | **0 violations** |
+| Visual regression | **28/28** (tenants page removed from the set: its content depends on data created by other suites); self-test (a deliberate style change must be detected) **2/2** |
+| `redesign_qa.cjs` / `audit_ui_regression.cjs` | **165/165** / **50/50** |
+| Diff review (`git diff HEAD`, new files) | no deleted files, no debug output (only intentional start-up/CLI messages), no hard-coded secrets (test passwords exist only in lab/test scripts), no fabricated/random data in any chart (every number comes from SQL over stored samples or from the exporter) |
+
+### 7.6 GeoIP, public DNS and registrar (read-only; nothing was changed anywhere)
+**GeoLite2-City.** Searched: repository files and history (`git log --all` for `*.mmdb`/City), GitHub contents API for `Guilt92/OutisCloud-hickory-dns` (`deploy/dns` holds only `GeoLite2-Country.mmdb`, same blob `1d3f6b20…`), CI workflows, scripts and docs. **A City database is not present** (only `scripts/update_geoip.sh` and references). The official download requires a MaxMind account + licence key (not available here; the EULA forbids redistribution, so it must not be committed). Therefore City/Region on **production data is NOT verified**. What *is* verified: `scripts/geodns_city_lab.sh` on MaxMind’s official open **test** City database (city/region/country/fallback precedence, IPv4/IPv6/TCP) and the code paths for unavailable/old databases (`ZZ-nodata`, age warning at `GEOIP_MAX_AGE_DAYS`). The shipped Country database is **261 days old** (stale warning is raised). `GEOIP_DB_PATH` is configurable; `update_geoip.sh` + file-watch reload handle updates.
+**Public DNS / delegation (`scripts/delegation_check.sh`, DNS queries only).**
+| Check | Result |
+|---|---|
+| `.ir` parent servers delegate `uid0.ir` (the project’s domain per the repo) to `ns1.uid0.ir` / `ns2.uid0.ir` | **CONFIRMED** |
+| Glue at the parent for both (A `5.182.46.183`) | **CONFIRMED** |
+| Redundancy | **WARNING**: both name servers are the same address |
+| UDP/TCP 53, SOA/NS answers from `5.182.46.183` (also ICMP) | **FAILED** from this vantage point: timeouts on UDP and TCP, ping 100 % loss; public resolvers return SERVFAIL for `uid0.ir`. Cannot tell here whether the server is down or filtered; needs the infrastructure owner |
+| Authoritative answers, SOA serial consistency, NS-set consistency with the parent | **NOT VERIFIABLE** (server unreachable) |
+| `my-dns.com` (default `PUBLIC_NAMESERVERS` placeholder) | delegated to *another party’s* servers (`ns1/ns2.avarix.de`): not ours, do not rely on that default |
+| Registrar-side settings, DNSSEC DS at the registry | **NOT VERIFIABLE** without domain-owner authorisation |
+Protocol behaviour of the server itself was verified on an isolated test domain (`scripts/dns_conformance_lab.sh`, 31 checks incl. UDP+TCP, AA flag, no recursion, TTLs, SOA/NS/A/AAAA/MX/TXT, NXDOMAIN/NODATA with SOA and negative TTL, REFUSED, case-insensitivity, EDNS + truncation with TCP retry, and positive/negative controls for the delegation checker). **Known limitation found:** a delegated sub-zone *inside a zone this server hosts* is answered authoritatively (NXDOMAIN) instead of with a referral.
+
+### 7.7 Disk cleanup
+| | Used | Free | Use% |
+|---|---|---|---|
+| At the start of the phase | 47 GB | 9.3 GB | 84 % |
+| At the end | 38 GB | 19 GB | 67 % |
+
+Before deleting anything: no process was using `target/` binaries (`ps` + `/proc/*/exe` checked), the labs were stopped, nothing shared with other projects was touched. **Removed (all reproducible, all belonging to this project or to the scratch area of this session):** 15 superseded test executables in `target/debug/deps` older than 1.5–2 h (hickory_dns ×4, control_api ×2, integration ×2, agent, hickory_integration, hickory_net, hickory_resolver, hickory_server, tests; ≈ 1.9 GB) and the regenerated `target/debug/incremental` cache (twice); the throw-away benchmark/lab/test databases inside my own isolated PostgreSQL container (`bench_db` 1.7 GB, lab databases) and finally that container; scratch outside the repository: the 3.4 GB build directory of the merge worktree, the upstream-trial build, benchmark/QA outputs and the temporary UI stack directories. **Kept:** sources, `.git`, lock files, `target/release` (binaries used by the benchmarks), `target/debug` current outputs, the visual-regression baselines, both GeoIP files (`deploy/dns/GeoLite2-Country.mmdb` is the only valid copy in the repository), the benchmark results in `docs/benchmarks/`, the merge worktree, all other projects’ containers, images and volumes (not touched). **Verification after cleanup:** the full workspace test run (888 passed) and the labs were executed *after* the first cleanup; after the last one `cargo build -p control_api -p hickory-dns` and the focused tests passed and the git working tree was unchanged (30 entries, all intended).
+
+### 7.8 Remaining issues / decisions
+1. **Upstream merge is not applied to `main`**: it needs a merge commit (not authorised). Review `git -C /root/OutisCloud-hickory-dns-upstream-merge diff --cached`, commit there, then merge into `main`. Gaps that remain after it: no referrals for delegated sub-zones inside a hosted zone (upstream `main`, not `v0.26.3`, added referral/glue work); `main`-line upstream (811 commits) is not evaluated.
+2. **Start-up with many zones**: the API publishes every zone before it listens — 106 s for 5,006 zones (release). Rolling restarts and readiness probes must allow for it; a background initial publication would fix it but changes start-up semantics (decision needed).
+3. **GeoLite2-City is unavailable** (not in the repository, not on its GitHub copy; needs a MaxMind licence key which I do not have). City/Region on production data is unverified; the shipped Country database is 261 days old.
+4. **`uid0.ir`**: delegated at the `.ir` parent with glue, but both name servers are the single address `5.182.46.183`, which does not answer UDP/TCP 53 or ping from this location. Not verified: authoritative content, SOA/NS consistency, registrar settings, DNSSEC DS — need the domain/infrastructure owner. I changed nothing.
+5. **Formatting/lint debt**: 808 rustfmt hunks and 261 clippy style warnings in legacy code (see 7.5); a single dedicated formatting commit is recommended.
+6. **Analytics at scale**: the admin-wide view over all tenants (global 30-day / all-tenant 24 h) still aggregates whole sample tables (0.75–2 s under 8-way concurrency; per-tenant views 16–120 ms). Next step if needed: a pre-aggregated hourly global table. Sample growth is bounded by the 48 h rollup, not eliminated: use `ANALYTICS_SAMPLE_SECS=300` on large installations.
+7. **Limiter semantics**: 60 s fixed windows (up to 2x the budget across a boundary); quotas for create-zone/create-record/import are still check-then-insert (only *transfers* are race-free); replicas that start in the same instant retry migrations (observed once in the lab before the retry existed).
+8. **Country statistics describe the resolver** (or the ECS subnet), not the end user; with `DNS_ZONE_BREAKDOWN` the exporter has up to ~50 series per zone.
+9. **Not measured**: the debug API at 5k zones (start-up too slow), memory allocation profiles (only RSS), DNS-server query throughput in this phase (phase 3: 31–40 k qps), behaviour on a copy of production data.
+10. Visual baselines are tied to this Chromium build and fonts; the load generator shares the 4 cores with the API and PostgreSQL, so absolute figures are conservative.
+
+**Decisions / authorisations needed from you:** (a) commit and merge `merge/upstream-v0.26.3` (and how to split the commits of phases 6–7); (b) a MaxMind licence key (or a licensed City database) for City/Region; (c) the owner of `uid0.ir` to check the name server and the registrar; (d) whether to turn on `DNS_ZONE_BREAKDOWN` in production and with which sampling interval/retention; (e) the production DNS Lookup resolvers (`DNS_LOOKUP_RESOLVERS`), because there is no public default any more; (f) whether to reformat the legacy Rust code; (g) whether initial publication should move to the background.
+
+**This is not a statement that the platform is production-ready:** the DNS name server of the project’s own domain is unreachable from here, GeoIP City is unverified, nothing was run against production data or real traffic, and several operational items (resolver configuration, GeoIP licence, backup of DNSSEC keys with the database, Prometheus cardinality planning, monitoring/alerting wiring) are still the operator’s to do.
+
+---
+
 ## Phase 6 — Final development phase (2026-11-12): DNS Lookup, tenants/quotas, analytics, overview, security, tests, upstream analysis
 
 Everything below was implemented and **run locally**; nothing was committed or pushed and nothing was checked against the public internet. Status words follow the earlier legend.

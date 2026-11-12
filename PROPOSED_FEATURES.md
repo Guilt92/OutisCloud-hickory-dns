@@ -13,6 +13,19 @@ Each proposal answers: (1) name, (2) description, (3) problem, (4) why needed, (
 
 ---
 
+## Phase 7 additions (2026-11-12) — details and exact results in `AUDIT_REPORT.md` (Phase 7) and `docs/OPERATIONS.md`
+
+| ID | Proposal | Status | Notes |
+|---|---|---|---|
+| CP-13 | **Admin zone transfer between tenants** (transactional, quota-checked, audited, UI) | **COMPLETED** | owner/share policy defined; concurrent transfers resolve to exactly one winner; browser + API tests incl. permission and quota failures |
+| CP-14 | **DNS Lookup with multiple resolvers** (ordered failover, IPv4/IPv6, timeouts, admin-only selection, no public default, no information leakage) | **COMPLETED** | breaking default: nothing configured → 503 `not_configured` (no more implicit 1.1.1.1) |
+| CP-15 | **Multi-replica coordination** (shared rate limits; single-writer analytics collector with persisted state) | **COMPLETED** — verified with two real API processes | fixed windows (≤ 2x burst at a boundary); per-replica fallback if PostgreSQL is down |
+| CP-16 | **Record-type and country breakdowns** (bounded cardinality, no addresses stored, honest sentinels) | **COMPLETED** — needs `DNS_ZONE_BREAKDOWN=true` and a GeoIP database for countries | country = resolver address (or ECS subnet), not the end user; hourly rollup bounds growth |
+| OPS-05 | **Release benchmarks + query-plan review** | **COMPLETED** | two real defects found and fixed (non-sargable tenant predicates; unbounded samples); start-up publication time with many zones documented, not fixed |
+| OPS-04 | **Upstream Hickory v0.26.3 merge** | **MERGED AND VALIDATED IN AN ISOLATED WORKTREE; NOT APPLIED TO `main` (needs your commit approval)** | 8 conflicts resolved, 65+ mechanical API edits, all labs identical on both builds |
+| OPS-06 | **Read-only delegation / registrar checker and DNS conformance lab** | **COMPLETED** | `scripts/delegation_check.sh`, `scripts/dns_conformance_lab.sh`; the project's domain is delegated but its name server is unreachable from here |
+| OPS-07 | **GeoLite2-City in production** | **BLOCKED — EXTERNAL DEPENDENCY** | no City database in the repository or GitHub; needs a MaxMind licence key (`scripts/update_geoip.sh`) |
+
 ## Phase 6 additions and status of the Phase 5 "remaining features" list (2026-11-12)
 
 Statuses: **COMPLETED** = implemented and tested locally (see `AUDIT_REPORT.md` Phase 6 for exact results) · **NOT IMPLEMENTED** · **REQUIRES YOUR DECISION**. Nothing here is externally verified.
@@ -22,7 +35,7 @@ Statuses: **COMPLETED** = implemented and tested locally (see `AUDIT_REPORT.md` 
 | ID | Proposal | Status | Notes |
 |---|---|---|---|
 | CP-09 | **Real DNS Lookup** (A AAAA MX TXT NS CNAME SOA SRV PTR DNSKEY DS CAA; wire queries, TTLs, rcodes, NXDOMAIN/NODATA, TCP retry; rate-limited; usable by read-only accounts) | **COMPLETED** | unit + API tests, `scripts/lookup_lab.sh` 22/22 (real server, `dig` cross-check), browser test for all 12 types. Limits: one configurable resolver, no DNSSEC-validation display, no ANY/AXFR. |
-| CP-10 | **Tenants, membership and quotas** (zones, records; owner/editor/viewer roles; personal-tenant backfill of existing users; admin UI; customer quota card) | **COMPLETED** | Non-destructive, idempotent migration; quotas enforced on create zone, create record, import and revision restore. Limits: check-then-insert (can overshoot by the request concurrency); admin UI for moving zones between tenants missing (API exists). |
+| CP-10 | **Tenants, membership and quotas** (zones, records; owner/editor/viewer roles; personal-tenant backfill of existing users; admin UI; customer quota card) | **COMPLETED** | Non-destructive, idempotent migration; quotas enforced on create zone, create record, import and revision restore. Limits: check-then-insert (can overshoot by the request concurrency); the admin screen for moving zones now exists (CP-13). |
 | CP-11 | **Persistent, tenant-aware analytics** (history in PostgreSQL, ranges 1 h–90 d, tenant/zone filters, retention `ANALYTICS_RETENTION_DAYS`, admin global view kept) | **COMPLETED** — requires `DNS_ZONE_QUERY_METRICS=true` on the DNS server | Needed an architecture change: per-zone query counter `hickory_zone_queries_total{zone,result}` in the DNS server. `scripts/tenant_analytics_lab.sh` 9/9 with exact counts. No per-type/per-country split yet. |
 | CP-12 | **Aggregated overview endpoint** (`GET /api/v1/overview`) replacing one request per zone | **COMPLETED** | 5,007 zones / 40,038 records: 610 ms (admin API), 175 ms (customer with 2 zones). |
 | OPS-04 | **Upstream Hickory merge strategy** | **ANALYSED + TRIAL MERGE TESTED — REQUIRES YOUR DECISION** | Recommended: merge `v0.26.3` (8 conflict files, 44 mechanical `control_api` edits). Trial binary passes the GeoDNS lab 32/32. `main` needs a `Catalog::lookup` re-implementation. |
@@ -37,9 +50,9 @@ Statuses: **COMPLETED** = implemented and tested locally (see `AUDIT_REPORT.md` 
 | Essential | Secondary zones, AXFR/IXFR, NOTIFY, TSIG | NOT IMPLEMENTED (large; REQUIRES YOUR DECISION on priority) |
 | Essential | Extra record types (TLSA, SVCB/HTTPS, ALIAS) | NOT IMPLEMENTED |
 | Essential | API tokens for automation | NOT IMPLEMENTED |
-| Important | Per-zone analytics with persisted history | **COMPLETED** (CP-11); per-type/per-country NOT IMPLEMENTED |
+| Important | Per-zone analytics with persisted history | **COMPLETED** (CP-11); per-type/per-country **COMPLETED** (CP-16) |
 | Important | Alert rules wired into a running Prometheus/Alertmanager | NOT IMPLEMENTED (infrastructure) |
-| Important | Shared rate-limit/session state for several API replicas | NOT IMPLEMENTED |
+| Important | Shared rate-limit state for several API replicas | **COMPLETED** (CP-15); sessions are stateless JWTs + a database token blacklist |
 | Important | Backup/restore tooling for DB + DNSSEC keys | NOT IMPLEMENTED |
 | Important | Account lifecycle (invites, suspend, sessions) | NOT IMPLEMENTED |
 | Important | Quotas / tenants | **COMPLETED** (CP-10) |

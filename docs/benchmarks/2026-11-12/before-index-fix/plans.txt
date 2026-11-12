@@ -1,0 +1,155 @@
+== EXPLAIN (ANALYZE, BUFFERS): overview, admin (all zones, record counts via LATERAL)
+Nested Loop Left Join  (cost=4.95..24013.38 rows=5006 width=93) (actual rows=5006 loops=1)
+  Buffers: shared hit=15661 read=408
+  ->  Index Scan using idx_zones_domain on zones z  (cost=0.28..497.69 rows=5006 width=53) (actual rows=5006 loops=1)
+        Buffers: shared hit=939 read=111
+  ->  Aggregate  (cost=4.67..4.68 rows=1 width=8) (actual rows=1 loops=5006)
+        Buffers: shared hit=14722 read=297
+        ->  HashAggregate  (cost=4.59..4.62 rows=3 width=10) (actual rows=1 loops=5006)
+              Group Key: r.record_type
+              Batches: 1  Memory Usage: 24kB
+              Buffers: shared hit=14722 read=297
+              ->  Index Only Scan using uq_records_rrset_value on records r  (cost=0.41..4.55 rows=8 width=2) (actual rows=8 loops=5006)
+                    Index Cond: (zone_id = z.id)
+                    Heap Fetches: 0
+                    Buffers: shared hit=14722 read=297
+Planning:
+  Buffers: shared hit=316 read=24
+Planning Time: 2.564 ms
+Execution Time: 54.854 ms
+
+== overview, customer (indexed visibility predicate)
+Sort  (cost=12115.92..12122.17 rows=2503 width=54) (actual rows=5 loops=1)
+  Sort Key: z.domain
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=99 read=5
+  ->  Nested Loop Left Join  (cost=93.39..11974.63 rows=2503 width=54) (actual rows=5 loops=1)
+        Buffers: shared hit=96 read=5
+        ->  Seq Scan on zones z  (cost=88.73..229.30 rows=2503 width=30) (actual rows=5 loops=1)
+              Filter: (hashed SubPlan 1)
+              Rows Removed by Filter: 5001
+              Buffers: shared hit=80 read=5
+              SubPlan 1
+                ->  HashAggregate  (cost=88.03..88.59 rows=56 width=16) (actual rows=5 loops=1)
+                      Group Key: zones.id
+                      Batches: 1  Memory Usage: 24kB
+                      Buffers: shared hit=2 read=5
+                      ->  Append  (cost=0.28..87.89 rows=56 width=16) (actual rows=10 loops=1)
+                            Buffers: shared hit=2 read=5
+                            ->  Index Scan using idx_zones_owner on zones  (cost=0.28..8.37 rows=5 width=16) (actual rows=5 loops=1)
+                                  Index Cond: (owner = '0795287b-382f-4131-af57-290c4218b699'::uuid)
+                                  Buffers: shared hit=1 read=2
+                            ->  Seq Scan on zone_members  (cost=0.00..0.00 rows=1 width=16) (actual rows=0 loops=1)
+                                  Filter: (user_id = '0795287b-382f-4131-af57-290c4218b699'::uuid)
+                            ->  Nested Loop  (cost=4.67..79.24 rows=50 width=16) (actual rows=5 loops=1)
+                                  Buffers: shared hit=1 read=3
+                                  ->  Seq Scan on tenant_members  (cost=0.00..1.01 rows=1 width=16) (actual rows=1 loops=1)
+                                        Filter: (user_id = '0795287b-382f-4131-af57-290c4218b699'::uuid)
+                                        Buffers: shared read=1
+                                  ->  Bitmap Heap Scan on zones zones_1  (cost=4.67..77.73 rows=50 width=32) (actual rows=5 loops=1)
+                                        Recheck Cond: (tenant_id = tenant_members.tenant_id)
+                                        Heap Blocks: exact=1
+                                        Buffers: shared hit=1 read=2
+                                        ->  Bitmap Index Scan on idx_zones_tenant  (cost=0.00..4.66 rows=50 width=0) (actual rows=5 loops=1)
+                                              Index Cond: (tenant_id = tenant_members.tenant_id)
+                                              Buffers: shared read=2
+        ->  Aggregate  (cost=4.67..4.68 rows=1 width=8) (actual rows=1 loops=5)
+              Buffers: shared hit=16
+              ->  HashAggregate  (cost=4.59..4.62 rows=3 width=10) (actual rows=2 loops=5)
+                    Group Key: r.record_type
+                    Batches: 1  Memory Usage: 24kB
+                    Buffers: shared hit=16
+                    ->  Index Only Scan using uq_records_rrset_value on records r  (cost=0.41..4.55 rows=8 width=2) (actual rows=3 loops=5)
+                          Index Cond: (zone_id = z.id)
+                          Heap Fetches: 0
+                          Buffers: shared hit=16
+Planning:
+  Buffers: shared hit=306 read=5
+Planning Time: 1.928 ms
+Execution Time: 1.619 ms
+
+== analytics: tenant series, 24h, 15-minute buckets
+GroupAggregate  (cost=2452.94..2464.16 rows=278 width=48) (actual rows=96 loops=1)
+  Group Key: ((floor((EXTRACT(epoch FROM zone_query_samples.ts) / 900.0)) * 900.0))
+  Buffers: shared hit=983
+  InitPlan 1 (returns $0)
+    ->  Index Scan using idx_zones_domain on zones  (cost=0.28..8.31 rows=1 width=32) (actual rows=1 loops=1)
+          Index Cond: (domain = 'bench-alice-1.example'::text)
+          Buffers: shared hit=3
+  ->  Sort  (cost=2444.64..2445.36 rows=288 width=48) (actual rows=1435 loops=1)
+        Sort Key: ((floor((EXTRACT(epoch FROM zone_query_samples.ts) / 900.0)) * 900.0))
+        Sort Method: quicksort  Memory: 127kB
+        Buffers: shared hit=983
+        ->  Index Scan using idx_zqs_ts on zone_query_samples  (cost=0.43..2432.87 rows=288 width=48) (actual rows=1435 loops=1)
+              Index Cond: (ts >= (now() - '24:00:00'::interval))
+              Filter: (((tenant_id)::character varying)::text = ($0)::text)
+              Rows Removed by Filter: 55965
+              Buffers: shared hit=980
+Planning:
+  Buffers: shared hit=277 read=8
+Planning Time: 1.535 ms
+Execution Time: 30.405 ms
+
+== analytics: record-type breakdown, tenant, 30 days
+Sort  (cost=68407.76..68407.77 rows=4 width=11) (actual rows=4 loops=1)
+  Sort Key: ((sum(zone_qtype_samples.queries))::bigint) DESC
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=4141 read=29194
+  InitPlan 1 (returns $0)
+    ->  Index Scan using idx_zones_domain on zones  (cost=0.28..8.31 rows=1 width=32) (actual rows=1 loops=1)
+          Index Cond: (domain = 'bench-alice-1.example'::text)
+          Buffers: shared hit=3
+  ->  Finalize GroupAggregate  (cost=68347.91..68399.41 rows=4 width=11) (actual rows=4 loops=1)
+        Group Key: zone_qtype_samples.qtype
+        Buffers: shared hit=4138 read=29194
+        ->  Gather Merge  (cost=68347.91..68399.29 rows=8 width=35) (actual rows=12 loops=1)
+              Workers Planned: 2
+              Params Evaluated: $0
+              Workers Launched: 2
+              Buffers: shared hit=4138 read=29194
+              ->  Partial GroupAggregate  (cost=67347.88..67398.35 rows=4 width=35) (actual rows=4 loops=3)
+                    Group Key: zone_qtype_samples.qtype
+                    Buffers: shared hit=4135 read=29194
+                    ->  Sort  (cost=67347.88..67364.69 rows=6722 width=11) (actual rows=26887 loops=3)
+                          Sort Key: zone_qtype_samples.qtype
+                          Sort Method: quicksort  Memory: 1808kB
+                          Buffers: shared hit=4135 read=29194
+                          Worker 0:  Sort Method: quicksort  Memory: 1859kB
+                          Worker 1:  Sort Method: quicksort  Memory: 1790kB
+                          ->  Parallel Seq Scan on zone_qtype_samples  (cost=0.00..66920.54 rows=6722 width=11) (actual rows=26887 loops=3)
+                                Filter: ((ts >= (now() - '30 days'::interval)) AND (((tenant_id)::character varying)::text = ($0)::text))
+                                Rows Removed by Filter: 1048580
+                                Buffers: shared hit=4119 read=29194
+Planning:
+  Buffers: shared hit=287 read=4
+Planning Time: 1.886 ms
+Execution Time: 619.646 ms
+
+== analytics: global series 30 days
+GroupAggregate  (cost=374.44..505.51 rows=4033 width=40) (actual rows=57 loops=1)
+  Group Key: ((floor((EXTRACT(epoch FROM ts) / 21600.0)) * 21600.0))
+  Buffers: shared hit=25
+  ->  Sort  (cost=374.44..384.52 rows=4033 width=40) (actual rows=4033 loops=1)
+        Sort Key: ((floor((EXTRACT(epoch FROM ts) / 21600.0)) * 21600.0))
+        Sort Method: quicksort  Memory: 284kB
+        Buffers: shared hit=25
+        ->  Seq Scan on analytics_samples  (cost=0.00..132.91 rows=4033 width=40) (actual rows=4033 loops=1)
+              Filter: (ts >= (now() - '30 days'::interval))
+              Buffers: shared hit=22
+Planning:
+  Buffers: shared hit=97
+Planning Time: 0.697 ms
+Execution Time: 7.278 ms
+
+== shared rate limiter upsert
+Insert on shared_rate_limits  (cost=0.00..0.03 rows=1 width=44) (actual rows=1 loops=1)
+  Conflict Resolution: UPDATE
+  Conflict Arbiter Indexes: shared_rate_limits_pkey
+  Tuples Inserted: 1
+  Conflicting Tuples: 0
+  Buffers: shared hit=23
+  ->  Result  (cost=0.00..0.03 rows=1 width=44) (actual rows=1 loops=1)
+Planning:
+  Buffers: shared hit=49
+Planning Time: 0.268 ms
+Execution Time: 0.498 ms

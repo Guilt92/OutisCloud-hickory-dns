@@ -1,0 +1,35 @@
+{
+"release": {"startup_ms": 108418, "rss_idle_kb": 72216, "tests": [
+{"name":"health_c8","result":{"requests":24734,"errors":0,"status":{"200":24734},"rps":3091.8,"min_ms":0.76,"p50_ms":2.39,"p90_ms":3.69,"p95_ms":4.33,"p99_ms":5.99,"max_ms":12.12,"conns":8},"api_cpu_percent":94.0,"rss_kb":72468}
+,
+{"name":"overview_admin_5k_zones_c1","result":{"requests":89,"errors":0,"status":{"200":89},"rps":11.1,"min_ms":73.04,"p50_ms":89.47,"p90_ms":98.30,"p95_ms":101.83,"p99_ms":109.40,"max_ms":111.68,"conns":1},"api_cpu_percent":27.6,"rss_kb":82744}
+,
+{"name":"overview_admin_5k_zones_c8","result":{"requests":260,"errors":0,"status":{"200":260},"rps":32.5,"min_ms":91.93,"p50_ms":236.74,"p90_ms":358.34,"p95_ms":388.21,"p99_ms":466.50,"max_ms":538.04,"conns":8},"api_cpu_percent":81.0,"rss_kb":96540}
+,
+{"name":"overview_admin_5k_zones_c32","result":{"requests":261,"errors":0,"status":{"200":261},"rps":32.6,"min_ms":133.86,"p50_ms":733.08,"p90_ms":1956.04,"p95_ms":2489.91,"p99_ms":3019.21,"max_ms":3609.67,"conns":32},"api_cpu_percent":81.7,"rss_kb":100656}
+,
+{"name":"overview_customer_c1","result":{"requests":1496,"errors":0,"status":{"200":1496},"rps":187.0,"min_ms":4.32,"p50_ms":5.08,"p90_ms":6.42,"p95_ms":7.06,"p99_ms":8.90,"max_ms":11.67,"conns":1},"api_cpu_percent":20.6,"rss_kb":100656}
+,
+{"name":"overview_customer_c8","result":{"requests":3964,"errors":0,"status":{"200":3964},"rps":495.5,"min_ms":5.30,"p50_ms":15.33,"p90_ms":22.90,"p95_ms":26.15,"p99_ms":32.80,"max_ms":54.16,"conns":8},"api_cpu_percent":52.4,"rss_kb":100656}
+,
+{"name":"overview_customer_c32","result":{"requests":5295,"errors":0,"status":{"200":5295},"rps":661.9,"min_ms":6.45,"p50_ms":45.58,"p90_ms":77.19,"p95_ms":87.94,"p99_ms":113.70,"max_ms":188.42,"conns":32},"api_cpu_percent":63.0,"rss_kb":100660}
+,
+{"name":"zones_list_admin_page20_c8","result":{"requests":2186,"errors":0,"status":{"200":2186},"rps":273.2,"min_ms":10.78,"p50_ms":26.95,"p90_ms":44.89,"p95_ms":50.77,"p99_ms":65.18,"max_ms":83.17,"conns":8},"api_cpu_percent":22.5,"rss_kb":100724}
+,
+{"name":"zones_list_customer_c8","result":{"requests":6245,"errors":0,"status":{"200":6245},"rps":780.6,"min_ms":3.21,"p50_ms":9.73,"p90_ms":15.01,"p95_ms":16.86,"p99_ms":21.34,"max_ms":32.60,"conns":8},"api_cpu_percent":51.5,"rss_kb":100724}
+,
+{"name":"analytics_tenant_24h_c1","result":{"requests":44,"errors":0,"status":{"200":44},"rps":5.5,"min_ms":166.17,"p50_ms":183.67,"p90_ms":197.74,"p95_ms":199.55,"p99_ms":208.74,"max_ms":208.74,"conns":1},"api_cpu_percent":1.9,"rss_kb":100788}
+,
+{"name":"analytics_tenant_24h_c8","result":{"requests":84,"errors":0,"status":{"200":84},"rps":10.5,"min_ms":390.32,"p50_ms":712.80,"p90_ms":1043.16,"p95_ms":1079.46,"p99_ms":1238.09,"max_ms":1289.64,"conns":8},"api_cpu_percent":3.6,"rss_kb":100788}
+,
+{"name":"analytics_tenant_14d_c8","result":{"requests":7,"errors":0,"status":{"200":7},"rps":0.9,"min_ms":3993.85,"p50_ms":7838.36,"p90_ms":9619.14,"p95_ms":9684.24,"p99_ms":9684.24,"max_ms":9684.24,"conns":8},"api_cpu_percent":0.4,"rss_kb":100788}
+,
+{"name":"analytics_global_14d_c8","result":{"requests":7,"errors":0,"status":{"200":7},"rps":0.9,"min_ms":4005.82,"p50_ms":5865.02,"p90_ms":6669.35,"p95_ms":8971.63,"p99_ms":8971.63,"max_ms":8971.63,"conns":8},"api_cpu_percent":0.5,"rss_kb":100792}
+,
+{"name":"analytics_admin_all_tenants_24h_c8","result":{"requests":70,"errors":0,"status":{"200":70},"rps":8.8,"min_ms":496.93,"p50_ms":846.43,"p90_ms":1211.73,"p95_ms":1474.34,"p99_ms":1542.23,"max_ms":1723.72,"conns":8},"api_cpu_percent":3.0,"rss_kb":100792}
+,
+{"name":"dns_lookup_c1","result":{"requests":2133,"errors":0,"status":{"200":2133},"rps":266.6,"min_ms":2.65,"p50_ms":3.51,"p90_ms":4.73,"p95_ms":5.51,"p99_ms":7.11,"max_ms":12.80,"conns":1},"api_cpu_percent":26.2,"rss_kb":100856}
+,
+{"name":"dns_lookup_c8","result":{"requests":6549,"errors":0,"status":{"200":6549},"rps":818.6,"min_ms":3.29,"p50_ms":8.87,"p90_ms":15.23,"p95_ms":17.52,"p99_ms":22.41,"max_ms":32.08,"conns":8},"api_cpu_percent":70.6,"rss_kb":100856}
+], "rss_peak_kb": 100856}
+}
