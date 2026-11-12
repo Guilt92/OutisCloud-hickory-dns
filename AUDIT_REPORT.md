@@ -2,7 +2,7 @@
 
 Scope: Hickory DNS core as used by the project, the custom Control API (`crates/control_api`), the GeoDNS crate and
 server handler, the zone publication pipeline, the agent, the web dashboard (`web/ui`) and deployment files.
-Work was done on branch `main`; **nothing was committed or pushed.** `helm/`, `deploy/` (including
+Work was done on branch `main`; changes are committed locally (see Phase 5 for exact commits); **nothing was pushed.** `helm/`, `deploy/` (including
 `deploy/dns/zone.uid0.ir`, which is not present in this checkout), image/tag locks and any existing `node_modules`
 were not touched.
 
@@ -13,6 +13,318 @@ real headless Chromium. No part of this was verified against public DNS — see 
 
 Legend: *Locally verified* = reproduced/verified on this machine. *Externally verified* = checked against the public
 internet. **Nothing in this report is externally verified.**
+
+---
+
+## Phase 6 — Final development phase (2026-11-12): DNS Lookup, tenants/quotas, analytics, overview, security, tests, upstream analysis
+
+Everything below was implemented and **run locally**; nothing was committed or pushed and nothing was checked against the public internet. Status words follow the earlier legend.
+Where this section disagrees with Phase 5 ("Remaining bugs / features"), this section is authoritative.
+
+### 6.1 Requested item → outcome
+
+| # | Request | Status | Evidence (actual results) |
+|---|---|---|---|
+| 1 | DNS Lookup with real queries for all advertised types | **COMPLETED AND VERIFIED** (local) | `crates/control_api/src/lookup.rs`: wire-protocol client (UDP + EDNS0, TCP retry on truncation, off-path-spoof filter, transaction-id check). All **12** types advertised in the UI are really answered: A AAAA MX TXT NS CNAME SOA SRV PTR DNSKEY DS CAA. Response code, AA flag, TTLs, authority SOA, elapsed time, resolver and transport are returned as received; NXDOMAIN, NODATA, REFUSED and resolver failure (502) are reported as such, never as fake empty successes. PTR accepts an IP address and builds the `in-addr.arpa`/`ip6.arpa` name. Unit tests 4/4; API tests (fake UDP+TCP resolver, every type, TTLs, NXDOMAIN, NODATA, TCP fallback, validation, authz, rate limit, unreachable resolver) pass; **`scripts/lookup_lab.sh` 22/22** against the real `hickory-dns` server, every type cross-checked with `dig`; **browser: all 12 types + NXDOMAIN + NODATA + empty input** (`platform_qa.cjs`). |
+| 2 | Security fixes (lookup authz + rate limit, `GET /nameservers`, RBAC, tenant isolation, other endpoints) | **COMPLETED AND VERIFIED** (local) | See 6.5. All 77 routes were reviewed one by one; 4 defects fixed. |
+| 3 | Dashboard performance (N+1) | **COMPLETED AND VERIFIED** (local) | New `GET /api/v1/overview[?limit=]`: one tenant-scoped query with exact record counts, per-type breakdown and quota usage. Admin and customer overview pages send **zero** per-zone `/records` requests (asserted in the browser). With **5,007 zones / 40,038 records**: admin overview API **610–1,061 ms**, page renders in **776–1,151 ms** (two runs); a customer with 2 zones among those 5,007 gets **149–175 ms** (the same query took 750 ms before the indexed rewrite). API test with 3,003 zones asserts < 3 s / < 0.5 s. |
+| 4 | Tenant-aware persistent analytics | **COMPLETED AND VERIFIED** (local) — needs `DNS_ZONE_QUERY_METRICS=true` on the DNS server | The DNS server did **not** provide per-zone counters (the existing `zone_handler` label is a static store label), so the required architecture change was made instead of inventing numbers: `hickory_zone_queries_total{zone,result}` in `Catalog::lookup` (opt-in; one time series per zone and result). The control API collector (`ANALYTICS_SAMPLE_SECS`, default 60) stores deltas in PostgreSQL (`analytics_samples`, `zone_query_samples`, `tenant_usage_samples`), handles counter resets and API restarts, retention `ANALYTICS_RETENTION_DAYS` (default 90). `GET /analytics/global` (admin) and `GET /analytics/tenant?range&tenant_id&zone` (customers only their tenant); UI: range 1h–90d, tenant and zone filters, queries/failed over time, top zones, zones/records usage over time. **`scripts/tenant_analytics_lab.sh` 9/9**: real server, known traffic via `dig` → exactly 40 queries for alice, 7 for carol, 47 for the admin view, unattributed REFUSED queries only in the global counter, history survives an API restart. |
+| 5 | Tenant entity and quotas | **COMPLETED AND VERIFIED** (local) | `tenants`, `tenant_members` (owner/editor/viewer), `zones.tenant_id`; zone access via owner, sharing **or** tenant role; quotas on zones and records enforced for create zone, create record, import and revision restore (admins are exempt); tenant CRUD, members, zone reassignment API; admin "Tenants & Quotas" page; quota card on the customer overview. **Non-destructive backfill**: every non-admin user gets a personal (unlimited) tenant owning their existing zones; verified idempotent. |
+| 6 | Hickory upstream fork | **ANALYSED + TRIAL MERGE TESTED — REQUIRES MY DECISION** | See 6.7. Real merge base found; merge of `v0.26.3` has 8 conflicting files; conflicts resolved in an isolated scratch tree; merged tree compiles (proto, server, bin), `hickory-dns` lib 19/19 and `geodns` 18/18 pass, and the **geodns lab passes 32/32 against a binary built from the merged tree**. 44 mechanical API-rename errors remain in `control_api` (+2 in server test code). The production tree was not changed. |
+| 7 | Test coverage (Nameservers, Servers, GeoRules, bulk import, lookup, analytics, tenant isolation, quotas, authorization, dashboard performance, accessibility, visual) | **COMPLETED AND VERIFIED** (local) | See 6.3. |
+| 8 | Repository cleanup | **COMPLETED** | See 6.8: 9 tracked files + 1 untracked file inspected, classified and removed (all recoverable from git). |
+| 9 | Git restrictions | **Kept** | No commit, no push, no reset/clean. Working tree contains all changes uncommitted. |
+
+### 6.2 Implemented changes (files)
+
+| Area | Files |
+|---|---|
+| DNS Lookup | `crates/control_api/src/lookup.rs` (new), `main.rs` (`dns_lookup`, viewer allow-list), `web/ui/src/pages/Admin/DnsLookup.jsx` (status badge, TTL, resolver/transport/elapsed, authority section, NODATA/NXDOMAIN/502/429 messages, labelled controls), `scripts/lookup_lab.sh` (new) |
+| Tenants / quotas / overview / analytics | `crates/control_api/src/tenants.rs` (new: schema + backfill, quota checks, tenant/member/zone-move API, `/overview`, collector, `/analytics/*`), `main.rs` (zone access via tenant role, `list_zones`/`list_georules` visibility, `create_zone` tenant+quota, `create_record`/`import_zone` quota, nameserver listing, collector start), `ext.rs` (`server_status` admin-only, restore quota, `http_get` public), `crates/server/src/zone_handler/catalog.rs` (per-zone query counter) |
+| UI | `pages/Admin/Tenants.jsx`, `pages/UserAnalytics.jsx`, `components/AnalyticsHistory.jsx`, `components/Quota.jsx`, `api/errors.js` (new); `Dashboard.jsx`, `User.jsx`, `Analytics.jsx`, `Layout.jsx`, `App.jsx`, `Zones.jsx`, `Records.jsx`, `BulkImport.jsx`, `GeoRules.jsx` (City match type), `Servers.jsx`, `Nameservers.jsx`, `Users.jsx`, `AuditLogs.jsx`, `ConfigPush.jsx`, `Settings.jsx`, `PasswordChangeForm.jsx`, `index.css` (accessibility fixes) |
+| DNS server | `crates/server/src/zone_handler/catalog.rs` (`DNS_ZONE_QUERY_METRICS`), `bin/src/lib.rs` (a watch that cannot be installed is now logged as an error instead of silently disabling hot reload) |
+| Tests / harness | `crates/control_api/src/api_tests.rs` (+8 tests), `scripts/{lookup_lab,tenant_analytics_lab,ui_stack}.sh`, `web/ui/tests/{platform_qa,a11y_visual_qa}.cjs`, `web/ui/tests/visual-baseline/` (32 PNG baselines, 2.4 MB) |
+
+### 6.3 Tests and actual results
+
+| Suite | Result |
+|---|---|
+| `cargo test -p control_api` (PostgreSQL 16, 115 tests incl. 12 new: lookup 4 unit + 2 API, nameserver/server-status authz, legacy→tenant migration, tenant isolation + quotas (zones, records, import, restore), tenant roles/membership, overview accuracy + scale, analytics isolation/retention) | **115 passed, 0 failed** (inside the workspace run; 12 of them new) |
+| `cargo test --workspace` | **874 passed, 0 failed, 27 ignored** in 28 test binaries (previous full run: 862 / 0 / 26; the 27 ignored tests are all upstream tests that need the network or are marked ignored upstream/with a reason) |
+| `scripts/lookup_lab.sh` (real API + real DNS server, `dig` cross-check) | **22/22 PASS** |
+| `scripts/tenant_analytics_lab.sh` (real per-zone counters → tenant history) | **9/9 PASS** |
+| `scripts/geodns_lab.sh` (current binary) | **32/32 PASS** |
+| `scripts/geodns_lab.sh` (binary built from the **trial merge** with upstream v0.26.3) | **32/32 PASS** |
+| `web/ui/tests/platform_qa.cjs` (final run on the production bundle; Nameservers, Servers, GeoRules incl. City, bulk import incl. fail-fast, lookup ×12 + NXDOMAIN/NODATA/empty, tenants CRUD/members/quota edit, quota refusal message, isolation, authorization, analytics admin+customer+filters, zero-N+1, 5,000-zone performance) | **66/66 PASS** |
+| `web/ui/tests/a11y_visual_qa.cjs a11y` (axe-core, WCAG 2.0/2.1 A+AA, 19 routes + login, dark/light, desktop+mobile subset) | **0 violations** (first run found 105 unlabeled buttons, 15 unlabeled form controls, 75 low-contrast nodes, 5 non-focusable scroll regions — all fixed) |
+| `a11y_visual_qa.cjs visual compare` (32 baselines: 8 deterministic pages × dark/light × desktop/mobile, pixelmatch, 0.2 % tolerance) | **32/32 PASS**; `visual selftest` proves a deliberate style change (1.24 %) is detected |
+| `web/ui/tests/redesign_qa.cjs` (all routes × roles × themes × viewports) | **165/165 PASS** (sidebar expectation updated 12 → 13 for the new Tenants entry) |
+| `web/ui/tests/audit_ui_regression.cjs` | **50/50 PASS** (production bundle via `vite preview`, API without `DNS_METRICS_URL`; two fixed 1.5 s waits were replaced by waiting for the alert / OTP field because debug-build Argon2 logins can take longer) |
+| `npm run build` (Vite 8) | builds; the final browser runs (platform 66/66, a11y 0 violations, visual 32/32, audit_ui 50/50) used this production bundle |
+
+### 6.4 Database migrations (all idempotent, additive, run at API start)
+
+`tenants` (id, name unique, max_zones, max_records, created_at) · `tenant_members` (tenant_id, user_id, role owner/editor/viewer) · `zones.tenant_id` (nullable FK, `ON DELETE SET NULL`) + indexes `idx_zones_tenant`, `idx_zones_owner`, `idx_tenant_members_user` ·
+`analytics_samples`, `zone_query_samples` (domain-keyed, **no foreign key**, so history survives zone deletion), `tenant_usage_samples` ·
+**backfill**: personal tenant `personal-<username>` (deterministic UUID, unlimited quotas) for every non-admin user without membership, membership `owner`, and `zones.tenant_id` set for zones those users own. Admin-owned zones stay tenant-less (platform zones). Nothing is dropped or rewritten in `users`/`zones`/`records`; re-running changes nothing (test). Back up the database before the first start as with every release (no automatic down-migration).
+
+### 6.5 Security improvements
+
+| Finding | Fix |
+|---|---|
+| `POST /dns/lookup` used the host OS resolver for any name for any logged-in user, unthrottled | real queries to one configured resolver (`DNS_VERIFY_RESOLVER`), per-account fixed window `DNS_LOOKUP_RATE_PER_MIN` (default 30) → 429 + `Retry-After`; the lookup target is a DNS name only (no connection is made to the name, so it cannot be used to probe internal hosts) |
+| `GET /nameservers` readable by any user, including disabled/internal entries | customers get enabled entries only (they need them to delegate); admins everything; writes remain admin-only (tested) |
+| `GET /servers/{id}/status` let any user make the control plane open TCP connections to registered servers | admin only |
+| Read-only (`viewer`) accounts were blocked from the harmless lookup tool **and from enrolling MFA** (all POSTs refused) | allow-list extended to `dns/lookup` and `auth/mfa/*` (tested) |
+| Tenant isolation | zone visibility and access derive from owner / sharing / tenant role in one code path; verified for zones, records, georules, overview, analytics, tenant members, zone move; customers cannot raise their own quota, create zones in another tenant or move zones |
+| Quota bypass via import / revision restore | both enforced |
+| Silent loss of hot reload when the server user cannot traverse the zone path | now logged as an error at startup |
+| All 77 routes reviewed for authentication and role/ownership checks (table generated from the router) | no other gap found; agent endpoints authenticate with their own token/signature |
+
+### 6.6 Performance improvements
+
+Overview: N+1 → one request (see 6.1; customer overview 750 ms → 175 ms after replacing text-cast visibility predicates with indexed UUID lookups; index `idx_zones_owner` added). Zone listing uses the same indexed predicate. Collector overhead: one HTTP scrape per `ANALYTICS_SAMPLE_SECS` plus ≤ one small upsert per active zone.
+
+### 6.7 Hickory upstream fork — analysis and strategy
+
+* **Real merge base**: upstream `db923c34` (2026-01-26, "replace ResponseSigner w/ TSigResponseContext"). The fork has **57 commits** since then; upstream `main` has **811** (proto 187, server 136, resolver 163, net 220, bin 56); release `v0.26.3` is a separate backport line (+362 commits from the base) that carries the advisory fixes.
+* **OutisCloud-specific DNS modifications** (everything else is new crates): `crates/server/src/zone_handler/{swap.rs, geodns.rs}` (new), `catalog.rs` (ECS echo, DS-from-parent, per-zone counter), `mod.rs`, `store/in_memory/mod.rs` (NXDOMAIN O(log n) fix), `bin/src/lib.rs` (+205 lines: hot reload, rate limit/slip, privilege-drop fallback, watchers), `bin/src/config/*`, `crates/proto` (`message.rs` allocation cap, `zone_lex.rs` token cap, `zone.rs` SOA TTL), `crates/geodns` (new), `crates/control_api`, `crates/agent` (new).
+* **Overlap with upstream changes**: 22 files changed on both sides. **`main`**: 11 conflicting files (Catalog::lookup was refactored: `Request`/`ResponseHandle` removed, `Metadata`, `DecodeError`) — a re-implementation of ECS/DS/metrics hooks against the new API. **`v0.26.3`**: **8** conflicting files, mostly trivial (Cargo.toml/lock, 2 test files, conformance helper) plus 3 real hunks (`bin/src/lib.rs` imports + privilege-drop flag, `catalog.rs` imports, `message.rs` where upstream already contains our allocation cap for records).
+* **Trial (isolated scratch tree, production untouched)**: merged `v0.26.3` + fork, resolved the 8 conflicts, adapted 3 call sites in our handlers (`request.edns` is now a field; `Header` → `Metadata`; `ResponseInfo::from(Header{..})`). Result: `hickory-proto`, `hickory-server`, `hickory-dns` **compile**; `hickory-dns` lib tests 19/19, `geodns` 18/18; **`geodns_lab.sh` 32/32 with the merged binary** (hot reload, ECS, rate limit/slip, GeoIP refresh all intact). Not yet adapted: `control_api` (44 mechanical errors: accessor methods became public fields — `Record::data()/ttl()`, `Message::id()/response_code()`, `SOA::serial()`…, `RDataParser` import) and two test helpers in `hickory-server` tests.
+* **Recommended strategy**: (1) merge **v0.26.3**, not `main`, into a branch; (2) resolve the 8 files as in the trial; (3) mechanically port `control_api` (44 edits) and server tests; (4) run `cargo test --workspace` and all labs (geodns 32, city 8, dnssec 30, metrics 6, lookup 22, tenant analytics 9, agent e2e 6); (5) only then consider `main` as a second, separate step because it needs the `Catalog::lookup` re-implementation. **Not applied** to the production tree: it needs your decision (6.10).
+
+### 6.8 Repository cleanup (inspected first; removed only when confirmed safe)
+
+| File | Classification | Evidence | Action |
+|---|---|---|---|
+| `web/ui/debug_admin.png` | generated | written by `tests/debug_admin.spec.cjs`; referenced nowhere else | removed |
+| `web/ui/tests/debug*.spec.cjs` (6) | obsolete | ad-hoc debugging scripts that hard-code the removed `admin/admin123` login and ports 3000/8080; not referenced by CI or `package.json`; real suites are `e2e.*`, `audit_ui_regression`, `redesign_qa`, `platform_qa` | removed |
+| `web/ui/test-results/.last-run.json` | generated | Playwright state of a failed February run | removed |
+| `web/ui/src/pages/Admin.jsx` (user wrote `web/ui/pages/Admin.jsx`) | obsolete | wrapper from before the router; imported nowhere; Vite bundles only imported modules; build passes without it | removed |
+| `tests/test-data/test_configs/example.com_dnssec_update_2.jrnl` (user wrote `update2`) | generated | SQLite journal written by upstream test `named_metrics_tests.rs:586` on every run; not tracked | removed (the test recreates it) |
+
+All tracked removals are recoverable with `git checkout -- <path>`. `target/debug/deps` also had ~5 GB of superseded test executables older than 3 hours (safe, regenerated on demand) — removed to keep the disk usable.
+
+### 6.9 Remaining limitations (honest list)
+
+1. **Per-tenant query analytics requires `DNS_ZONE_QUERY_METRICS=true`** on the DNS server (one Prometheus time series per zone and result — fine for thousands of zones, review before 100 k+). Queries that match no zone (REFUSED) are only visible in the global counter. Per-record-type/per-country breakdowns are not collected.
+2. Quota checks are check-then-insert: two simultaneous requests can overshoot a quota by the concurrency level (no row lock). The two NS records created automatically with a zone count towards the record quota but are not blocked by it.
+3. Admin UI has no zone→tenant reassignment screen (API `PUT /zones/{id}/tenant` exists); `tenant_id` can be set when an admin creates a zone through the API.
+4. DNS Lookup queries one resolver (`DNS_VERIFY_RESOLVER`, default 1.1.1.1:53 — **set an internal resolver in production**); it does not request DNSSEC validation (no DO/AD display) and no `ANY`/`AXFR`.
+5. Rate limits (login, lookup) and the analytics collector are per API instance; running several API replicas would collect duplicates (use one collector instance, or set `ANALYTICS_SAMPLE_SECS=0` on the others).
+6. Visual baselines were produced on this Chromium build/fonts (system fallback fonts offline); re-baseline (`visual update`) after font or browser changes.
+7. Backend suites in the browser harness run against a **debug** build; absolute timings (610–1,061 ms / 149–175 ms) will be lower in release.
+8. Not externally verified: public DNS, registrar delegation, MaxMind GeoLite2-City, behaviour on a real production database copy.
+9. Upstream merge not applied (6.7). `main`-line upstream changes are not evaluated beyond conflict counting.
+10. Pre-existing: 26 upstream tests remain `#[ignore]`d; `named_metrics_tests::test_updates` is ignored with a reason (fork never emitted that metric).
+
+### 6.10 Decisions still requiring your approval
+
+1. **Merge upstream `v0.26.3`** onto a branch (recommended, ~half a day: 8 conflict files + 44 mechanical edits + full test/lab run), and whether to follow with `main`.
+2. **Default quotas for newly created personal tenants** (`DEFAULT_TENANT_MAX_ZONES` / `DEFAULT_TENANT_MAX_RECORDS`; unset = unlimited, which is what migrated tenants got).
+3. **Enable `DNS_ZONE_QUERY_METRICS=true` in production** (cardinality trade-off above) and point `DNS_METRICS_URL` at the DNS server.
+4. **Resolver for DNS Lookup** (`DNS_VERIFY_RESOLVER`).
+5. Whether to **commit** this work (and in how many commits) and whether/when to **push**; nothing has been committed or pushed.
+6. Whether to keep `web/ui/tests/visual-baseline/` (2.4 MB of PNG) in the repository or generate it in CI.
+
+### 6.11 New configuration
+
+`DNS_LOOKUP_RATE_PER_MIN` (30), `DEFAULT_TENANT_MAX_ZONES`, `DEFAULT_TENANT_MAX_RECORDS`, `ANALYTICS_SAMPLE_SECS` (60, `0` = off), `ANALYTICS_RETENTION_DAYS` (90) — control API; `DNS_ZONE_QUERY_METRICS` (off) — DNS server. Test-only: `CHROMIUM_PATH`, `NO_METRICS` (stack script).
+
+
+### 6.12 Phase 5 findings — resolution
+
+| Phase 5 finding | Now |
+|---|---|
+| DNS Lookup offered types the backend could not answer | **fixed** (all 12 real) |
+| `POST /dns/lookup`, `GET /nameservers` too permissive; no lookup rate limit | **fixed** |
+| Admin/customer overview: one `/records` request per zone | **fixed** (`/overview`) |
+| Analytics without history; no per-tenant data; no tenant entity or quotas | **fixed** (needs `DNS_ZONE_QUERY_METRICS`); tenants + quotas implemented |
+| Settings: unused imports | **fixed** (the page still has no notification settings — none are implemented, none are advertised) |
+| Dead/legacy files (`Admin.jsx`, debug specs, `debug_admin.png`, `.last-run.json`, `.jrnl`) | **removed** after inspection |
+| No browser CRUD tests for Nameservers, Servers, GeoRules, bulk import; no a11y/visual tests; analytics rate maths untested | **added** (analytics is now server-side and tested with exact counts instead of a browser-side rate) |
+| GeoRules page could not create `city` rules although the backend supports them | **fixed** (City match type) |
+| Icon-only buttons, selects and inputs without accessible names; low-contrast text; non-focusable scroll regions | **fixed** (axe: 0 violations) |
+| Viewer accounts could not use the lookup tool or enrol MFA | **fixed** |
+| `GET /servers/{id}/status` open to every user | **fixed** (admin only) |
+| Fonts from Google Fonts CDN; CSP headers | still open |
+| Servers edit-in-place, user suspend, audit export, bulk zone actions, record multi-select, API tokens, account lifecycle | still open (NOT IMPLEMENTED, see PROPOSED_FEATURES.md) |
+| Per-replica rate limits / collector; no persisted alert wiring | still open |
+
+### 6.13 Final status table
+
+| Item | Status |
+|---|---|
+| DNS Lookup (12 types), authorization, rate limit | COMPLETED AND VERIFIED (local) |
+| Overview aggregation endpoint + both overview pages | COMPLETED AND VERIFIED (local) |
+| Tenants, membership, quotas (zones, records), backfill migration | COMPLETED AND VERIFIED (local) |
+| Persistent tenant-aware analytics (with `DNS_ZONE_QUERY_METRICS`) | COMPLETED AND VERIFIED (local) |
+| Browser, accessibility, visual suites | COMPLETED AND VERIFIED (local) |
+| Repository cleanup | COMPLETED |
+| Upstream Hickory v0.26.3 merge | PARTIALLY IMPLEMENTED (trial only) — REQUIRES MY DECISION |
+| Zone→tenant reassignment screen, quota row-locking, per-type analytics | NOT IMPLEMENTED |
+| Production verification (public DNS, registrar, GeoLite2-City, production data copy) | BLOCKED BY EXTERNAL DEPENDENCY |
+| Commit / push | NOT DONE (by instruction) — REQUIRES MY DECISION |
+
+---
+
+## Phase 5 — Complete implementation status report (inspection only, 2026-11-12)
+
+Phase 6 (above) supersedes this section where they disagree. This section is **authoritative** otherwise and supersedes the older header note ("nothing was committed"), section C, the "Deferred tasks — BLOCKED — STORAGE"
+table, section F and parts of Phase 2 wherever they disagree. It was produced by inspection only: no source was changed, nothing was committed, pushed or deleted
+(except that, at the user's request, `target/debug/incremental` and `target/debug/examples` were removed to free ~10 GB; disk is now 46 GB used / 11 GB free).
+"Tested" below means a test that was **actually run and passed locally**; nothing is externally verified (no public DNS, registrar, or licensed GeoLite2-City).
+
+### 5.1 Repository and commit verification
+
+| Check | Result |
+|---|---|
+| Branch | `main`, **ahead of `origin/main` by 5 commits** (`591a819da` "revi" was already local before this work) |
+| Latest commits | `6ca461f86` docs · `7a7fa19c7` feat(ui) redesign · `9caebbe3a` docs · `0b4e6c0f8` feat(ui) pagination/ECS/DNSSEC/Vite 8 · `7b2147aa2` feat backend |
+| Working tree | clean except 1 untracked file: `tests/test-data/test_configs/example.com_dnssec_update_2.jrnl` (SQLite journal written by an upstream workspace test; not mine to delete, not committed). Nothing staged. |
+| Pushed? | **No.** No `git push` was ever run. |
+| `7a7fa19c7` | 37 files, +1525/−1488, only `web/ui/**` (App, Layout, ui.jsx, pages, index.css, tailwind config, index.html, favicon, 2 test files). No backend, `helm/`, `deploy/` or lock-file change. |
+| `6ca461f86` | `AUDIT_REPORT.md` only (+17 lines). |
+| Do the reported UI test results match the current code? | `web/ui/src`, `tailwind.config.js` and `index.html` are **byte-identical** (`diff -rq`) to the scratch copy from which `redesign_qa.cjs` (165/165) and `audit_ui_regression.cjs` (50/50) were built and run. So yes for the UI. The backend test totals (862/0/26, labs) were produced on the backend as committed in `7b2147aa2`; the redesign commits did not touch the backend. They were **not re-run during this inspection** (no stack is running; the throw-away Postgres was removed). |
+| Generated files / artifacts remaining | tracked but stale/junk: `web/ui/debug_admin.png`, `web/ui/test-results/.last-run.json`, six `web/ui/tests/debug*.spec.cjs` (pre-existing, from before this work, left alone). Untracked: the `.jrnl` above. Ignored build output: `target/` (≈ 23 GB → ≈ 14 GB after cleanup; `deps` 12 GB, `release` 1.6 GB). Scratch (outside repo): UI copy, Playwright browsers. Legacy unused `web/ui/src/pages/Admin.jsx` (not imported anywhere). |
+
+### 5.2 Implemented work, by category
+
+Legend — Origin: **Existing** (present before) · **New** · **Extended**. Result = exact figure from the run.
+
+| Category | What | Key files | Origin | Tested / exact result |
+|---|---|---|---|---|
+| Admin dashboard | Overview with real data only (needs-attention list, counts, publication/server health, agent sync chart, query counters or "not configured", recent audit) | `pages/Admin/Dashboard.jsx` | Rewritten | `redesign_qa.cjs` 165/165 (render, no console errors, no overflow, 3 viewports × 2 themes); data correctness covered by `audit_ui_regression.cjs` 50/50 |
+| Admin dashboard | Analytics page: query rate from successive Prometheus samples | `pages/Admin/Analytics.jsx`, `GET /metrics/queries` | New | render in 165/165; counters vs real exporter: `metrics_lab.sh` 6/6. **Rate maths on the page has no dedicated assertion.** |
+| User dashboard | Customer overview, "My Zones", account & security, help | `pages/User.jsx`, `UserSettings.jsx`, `Help.jsx`, routes in `App.jsx` | Rewritten + New (Help) | 165/165 incl. role separation (editor, viewer) |
+| Design system | tokens, buttons, tables, badges, skeleton, focus ring, reduced motion, shared components (PageHeader, StatCard, StatusBadge, Empty/Error/Skeleton, ConfirmProvider, Brand, FlowArt, ThemeToggle) | `index.css`, `tailwind.config.js`, `components/ui.jsx`; 17 pages normalised | New | visual review of screenshots + 165/165; **no automated contrast/a11y audit (axe etc.) was run** |
+| Themes | dark default, light equal, persisted (`outis-theme`), applied before first paint on every route | `index.html`, `store/index.js`, `ui.jsx` | New | theme toggle + persistence in 165/165 |
+| Navigation / responsive | role-grouped sidebar, breadcrumbs, user menu, mobile drawer, skip link, ARIA | `Layout.jsx`, `Modal.jsx`, `Notifications.jsx` | Rewritten | tablet/mobile/desktop overflow checks, drawer + menu behaviour in 165/165 |
+| DNS management | zones CRUD, records CRUD, import/export, bulk import, nameservers, history/rollback, sharing, verification | `Zones.jsx`, `Records.jsx`, `ZoneTools.jsx`, `BulkImport.jsx`, `Nameservers.jsx`; API in `main.rs`, `ext.rs` | Existing + Extended (history, sharing, verification, pagination new) | API tests (`cargo test -p control_api`, part of 862/0/26 workspace total); UI flows 50/50. **Nameservers CRUD page and bulk import have no browser test.** |
+| DNSSEC | per-zone enable (ECDSAP256/384, Ed25519), DNSKEY/DS, rollover/complete, guarded disable, re-sign job, NSEC | `crates/control_api/src/dnssec.rs`, `DnssecTab.jsx` | New | `dnssec_lab.sh` **30/30** (ISC `delv`), API tests, UI flow in 50/50 |
+| ECS | per-zone opt-in, ECS echo with scope | `crates/server` catalog, `Zones.jsx` toggle | New | `geodns_lab.sh` 32/32 (5 ECS checks), UI toggle in 50/50 |
+| GeoDNS | country/continent/city/region rules, specificity order, existing-names-only, hot reload, GeoIP update script | `crates/geodns`, `crates/server/.../geodns.rs`, `GeoRules.jsx`, `scripts/update_geoip.sh` | Existing + Extended | `geodns_lab.sh` 32/32; `geodns_city_lab.sh` 8/8 (MaxMind **open test DB**, not GeoLite2); `geodns` unit tests. **GeoRules page: only render checks in 165/165; CRUD not browser-tested.** |
+| Control API | pagination (`limit/offset/q`, `X-Total-Count`), status/health, metrics, audit filters, dual-stack listeners, publish lock | `main.rs`, `ext.rs`, `db_pool.rs` | Extended | `cargo test --workspace` **862 passed / 0 failed / 26 ignored** |
+| Agents | registration with one-time token + signing key, signed versioned bundles, atomic apply, ack, push, enable/disable, rotate | `crates/agent`, `Agents.jsx`, `ConfigPush.jsx` | Rewritten | `agent_e2e.py` 6/6; agent unit tests; UI in 50/50 |
+| AuthN/Z, RBAC | admin/editor/viewer, zone sharing (viewer/editor), tenant isolation, TOTP MFA, per-IP/username login limits, trusted proxies | `main.rs`, `ext.rs`, `MfaCard.jsx`, `Login.jsx`, `App.jsx` | Extended | API tests per role; 165/165 role separation (editor, viewer); MFA flow in 50/50 |
+| Database | idempotent migrations, advisory publish lock, legacy-schema upgrade, pool with reconnect | `migrations/`, `db_pool.rs` | Extended | `legacy_schema_upgrades_in_place_keeping_data`, pool-recovery test (in 862) |
+| Analytics / monitoring | Prometheus exporter default-on, `outis_*` gauges, `/dns/status`, example alert rules (`deploy/prometheus/outis-alerts.yml`, **not wired in**) | `ext.rs`, `metrics.rs` | New | `metrics_lab.sh` 6/6 |
+| Security | placeholder-secret refusal, `GET /servers` admin-only, METRICS_TOKEN, RRL + slip, privilege-drop fallback, upstream Hickory memory/lexer fixes, 25→0 `cargo audit` vulns, `npm audit` 0 | many | New/Extended | regression tests per fix; `cargo audit` 0 vulns (2 *unmaintained* warnings); lab rate-limit checks |
+| Performance | NXDOMAIN O(n)→O(log n) (611→31,165 qps on a 20k-RRset zone); load test 31–40k qps, p99 ≈ 6.5 ms at 20k qps paced | `crates/server/src/store/in_memory/mod.rs`, `scripts/dnsload.rs` | New | measured on a shared 4-core VM, generator on same host — indicative only |
+| Testing / QA | `redesign_qa.cjs`, `audit_ui_regression.cjs`, 5 labs, regression tests | `web/ui/tests`, `scripts/` | New | see above |
+| Documentation | `AUDIT_REPORT.md`, `PROPOSED_FEATURES.md` | repo root | New | n/a |
+
+### 5.3 Dashboard route-by-route review
+
+All routes: guarded by `ProtectedRoute` (unauthenticated → `/login`); `/admin/*` is `requireAdmin` (editor/viewer → `/user`); the API is the real enforcement point.
+
+**Admin (`/admin/…`)**
+
+| Route | Function / actions | Backend | Missing / problems | Roles |
+|---|---|---|---|---|
+| `/admin` Overview | attention list, counts, health, agent chart, audit feed | `agents, audit/logs, dns/status, metrics/queries, servers, users, zones, records` (N+1 record-count calls per zone) | record counts are fetched per zone, so cost grows with zone count; no auto-refresh interval | admin only (API 403 otherwise) |
+| `/admin/metrics` Analytics | live query rate, totals | `metrics/queries` | history exists only while the page is open (no persisted time series); global counters only, no per-zone/per-type/per-country breakdown | admin only |
+| `/admin/zones` | list, search, server paging, create, edit, delete, GeoDNS/ECS toggles, import/export, manage dialog (sharing, history, verify), DNSSEC tab | `zones*`, `members`, `revisions`, `verify`, `dnssec*` | GeoDNS+DNSSEC mutually exclusive (UI explains); no bulk zone actions; no zone templates | admin full; same component serves customers |
+| `/admin/zones/:id/records` | list/paging/search, add, edit, delete, bulk import | `zones/{id}/records*` | no per-record bulk delete/multi-select; no record-level audit view | admin full |
+| `/admin/dns-lookup` | resolve a name | `POST /dns/lookup` | **Backend implements only A/AAAA via the OS resolver, but the UI offers MX, TXT, NS, CNAME, SOA, SRV, PTR, DNSKEY, DS, CAA — those always return empty with a "not supported" note.** Any authenticated user can make the API host resolve arbitrary names (no rate limit). | any role |
+| `/admin/users` | list, search, paging, create, edit role, delete, reset password | `users*`, `admin-reset-password` | no suspend/disable flag, no last-login column, no invite/email flow | admin only |
+| `/admin/servers` | list with real TCP probe, add, delete | `servers*` | no edit; delete confirmation only; probe is TCP connect, not a DNS query | admin only |
+| `/admin/nameservers` | CRUD of NS/glue entries | `nameservers*` | `GET /nameservers` is readable by any authenticated user (low impact); no browser CRUD test | admin edits |
+| `/admin/agents` | register (credentials shown once), enable/disable, rotate, delete, sync status, push | `agents*`, `config/push` | no per-agent logs/history; no alerting on out-of-sync | admin only |
+| `/admin/georules` | CRUD of rules, resolve tester | `georules*` | no map/visual editor; no import/export of rules; CRUD not browser-tested | admin (owners may manage rules via API for their zones) |
+| `/admin/config` Config Sync | push to one/all agents | `config/push` | thin page; duplicates part of Agents | admin only |
+| `/admin/audit` | filter, paging | `audit/logs` | no export (CSV); no per-resource drill-down | admin only |
+| `/admin/settings` | theme, profile, password, admin password reset, MFA | `auth/*` | **imports unused icons (`Bell`, `Shield`, `Monitor`, `Palette`, …); "notifications" are not a feature**; no system settings (retention, limits) editable in UI | admin |
+
+**Customer (`/user/…`)**
+
+| Route | Function | Problems |
+|---|---|---|
+| `/user` | own zones, record count, verification, service status | zone record counts are N+1 requests; no query analytics (no per-tenant data exists) |
+| `/user/zones` (+ `/:id/records`) | same components as admin, scoped by API (owner / shared) | viewers and viewer-shared zones are read-only (tested); no zone-creation limits/quotas |
+| `/user/dns-lookup` | as admin | see lookup limitation above |
+| `/user/settings` | profile, password, MFA | no session list/revoke, no API tokens |
+| `/user/help` | static help text (25 lines) | minimal; fonts via Google Fonts CDN |
+
+**Routes removed / renamed / relocated in the redesign (`7a7fa19c7`)**: the fake "SSL/Certificates" route was removed (no certificate backend exists); duplicate "Records" and "Metrics" entries were folded into `zones/:id/records` and `/admin/metrics` (now the Analytics page); customer zones moved from a combined overview to `/user/zones`; `/user/settings` now renders `UserSettings` (was the admin settings page); `/user/help` added. Reason: remove dead UI, give customers a separate surface. The old `pages/Admin.jsx` wrapper is dead code.
+
+### 5.4 Remaining bugs, gaps and risks
+
+**Functional / UX**
+1. DNS Lookup record-type selector offers types the backend cannot answer (see above). — *fix: either implement a real resolver query (hickory-resolver is in the workspace) or reduce the list to A/AAAA.*
+2. Admin overview and customer overview issue one `/records` request per zone to count records (N+1).
+3. Analytics has no persisted history; leaving the page resets the graph.
+4. Settings: unused imports and no real notification settings; Help page minimal.
+5. Fonts load from Google Fonts (privacy/offline); system fallback only.
+6. Dead/legacy files: `pages/Admin.jsx`, tracked debug specs and `debug_admin.png`, tracked `test-results/.last-run.json`.
+7. No Servers edit, no user suspend, no audit export, no zone bulk operations, no record multi-select.
+8. No per-user/tenant query analytics (DNS server only exports global counters); no tenant entity beyond ownership/sharing; no quotas.
+
+**Security**
+1. `POST /dns/lookup` and `GET /nameservers` need only a valid login (no role check, no rate limit on lookup).
+2. Rate limiters and login throttling are per API instance (C-14); JWT is held client-side (localStorage-style token header, no cookies; XSS would expose it).
+3. `ALLOWED_ORIGINS=*` still accepted with a warning; `VERIFY_DOMAINS` off by default; TXT-only ownership proof.
+4. GeoDNS and DNSSEC cannot be enabled on the same zone; no NSEC3; DNSSEC rollover is operator-driven; DS must be published at the registrar by the operator; DNSSEC key files must be backed up with the DB.
+5. Dependencies: 2 unmaintained crates (pin-utils, proc-macro-error); fork has diverged from upstream Hickory — merge v0.26.3 before enabling forwarding/recursion/validation.
+6. Production `env/*.env` placeholders make the API refuse to start (intended).
+
+**Performance**: load numbers are from a shared VM; no sustained soak test; no large-zone (>100k records) publication-time test; publication regenerates files per change.
+
+**Database**: no automatic down-migrations; one legacy unique constraint is dropped; migration safety proven on fixtures, **not on a copy of production data**.
+
+**Tests**: no automated browser CRUD tests for Nameservers, GeoRules, Servers, bulk import; no accessibility (axe) or visual-regression baseline; no CI definition runs the labs; lab scripts need root/netns; one upstream test is `#[ignore]`d (`named_metrics_tests::test_updates`); `schema_consistency_tests` assert on string literals (C-13); 26 ignored tests overall (upstream, need network/features) were not individually reviewed here; backend suites were not re-run during this inspection.
+
+### 5.5 Remaining feature development
+
+| Tier | Feature | Practical value |
+|---|---|---|
+| **Essential** (for a complete DNS platform) | Real multi-type DNS lookup (or reduced selector) | tool currently misleads |
+| | Registrar/NS delegation check + status (parent NS vs configured) | catches the #1 cause of "my zone doesn't work" |
+| | Secondary zones / AXFR/IXFR + NOTIFY, TSIG | needed to interoperate with other DNS providers |
+| | Missing record types in UI/API validation review (CAA, SRV, TLSA, SVCB/HTTPS, ALIAS/ANAME at apex) | common customer needs; apex CNAME alternative |
+| | API tokens for automation (scoped, revocable) | customers need scripted/ACME DNS-01 updates |
+| **Important** (production-ready) | Per-zone/per-type query analytics + persisted time series (Prometheus/Grafana or TSDB) | capacity, abuse, customer reporting |
+| | Wire alert rules into a running Prometheus/Alertmanager | alerts exist only as an example file |
+| | Shared rate-limit/session state (Redis or DB) for multiple API replicas | C-14 |
+| | Backup/restore tooling for DB + DNSSEC keys | key loss = zone failure |
+| | Account lifecycle: invites, suspend, session list/revoke, password-reset email | admin operations today are manual |
+| | Quotas / plans per customer; tenant (organisation) entity | multi-customer billing/limits |
+| | CI pipeline running unit, UI and lab suites; accessibility + visual regression tests | prevents regressions |
+| | Self-hosted fonts; CSP headers in `nginx.conf` | privacy, XSS hardening |
+| **Advanced** | NSEC3, automatic key rollover scheduler, CDS/CDNSKEY automation | DNSSEC operations at scale |
+| | GeoDNS + DNSSEC together (per-view signing) | currently mutually exclusive |
+| | Health-checked failover / weighted routing | dynamic traffic steering |
+| | DoT/DoH/DoQ listeners; anycast guidance; zone transfer in/out between OutisCloud nodes | modern transports and HA |
+| | Import from BIND/Cloudflare/Route53 | onboarding |
+| **Optional** | Map-based GeoDNS editor, notification centre, white-label themes, usage billing, webhooks | convenience; no current dependency |
+
+`PROPOSED_FEATURES.md` statuses (DNS-01…07, CP-01…08, OPS-01…03) are as recorded there and in Phase 3: all **COMPLETED** locally; the only external qualifiers are DNS-04 (needs a MaxMind licence for GeoLite2-City) and CP-02 (public-resolver verification), both **BLOCKED — EXTERNAL**.
+
+### 5.6 Final status table
+
+| Item | Status | Next step / can it be done safely now? |
+|---|---|---|
+| DNS core: hot reload, IPv6, existing-names-only, ECS, RRL+slip, NXDOMAIN fix | COMPLETED AND VERIFIED (local) | none |
+| DNSSEC (ECDSA/Ed25519, DS, rollover, re-sign) | COMPLETED AND VERIFIED (local, `delv` 30/30) | operator publishes DS at registrar |
+| GeoDNS country/continent | COMPLETED AND VERIFIED (lab 32/32) | none |
+| GeoDNS city/region | COMPLETED AND VERIFIED on MaxMind **test** DB; production data BLOCKED BY EXTERNAL DEPENDENCY | needs MaxMind licence key; safe afterwards via `update_geoip.sh` |
+| Control API, RBAC, sharing, MFA, history, pagination, pool, publish lock | COMPLETED AND VERIFIED (862/0/26) | none |
+| Agents (bundles, ack, push, enable) | COMPLETED AND VERIFIED (e2e 6/6) | production rollout with real credentials (operator) |
+| Dashboard redesign (shell, themes, nav, design system, Overview, Analytics, customer UI) | COMPLETED AND VERIFIED (165/165 + 50/50, code identical to tested copy) | none |
+| Nameservers / Servers / GeoRules / bulk-import CRUD in browser | IMPLEMENTED — TESTING INCOMPLETE | add Playwright CRUD tests (safe, scratch stack) |
+| Analytics rate calculation | IMPLEMENTED — TESTING INCOMPLETE | add assertion against a stub exporter (safe) |
+| Accessibility / contrast / visual regression | IMPLEMENTED — TESTING INCOMPLETE | run axe in scratch copy (safe) |
+| DNS Lookup | PARTIALLY IMPLEMENTED (A/AAAA only; UI offers more) | **REQUIRES MY DECISION**: real resolver query vs trimmed selector |
+| Per-user/tenant analytics, quotas, tenant entity | NOT IMPLEMENTED | **REQUIRES MY DECISION** (data model + DNS-server per-zone counters) |
+| Persisted analytics history, alert wiring | NOT IMPLEMENTED | needs a Prometheus/TSDB instance (infrastructure decision; no production changes made) |
+| Account lifecycle (suspend, sessions, invites, API tokens) | NOT IMPLEMENTED | safe to build; **REQUIRES MY DECISION** on scope |
+| Secondary zones / AXFR / TSIG, NSEC3, GeoDNS+DNSSEC, failover | NOT IMPLEMENTED | large design items; safe locally with current 11 GB, decision needed on priority |
+| Public delegation, propagation, registrar, real-resolver verification | BLOCKED BY EXTERNAL DEPENDENCY | run from outside after deployment |
+| Upstream Hickory v0.26.3 full merge | PARTIALLY IMPLEMENTED (applicable fixes ported) | **REQUIRES MY DECISION** (fork policy); required before enabling recursion/validation |
+| Multi-replica shared rate-limit/session state | NOT IMPLEMENTED | needs Redis/DB design decision |
+| Repo hygiene (debug specs, `debug_admin.png`, `Admin.jsx`, `.jrnl`) | PARTIALLY IMPLEMENTED (documented, untouched) | **REQUIRES MY DECISION** to delete tracked files |
+| Disk | BLOCKED BY STORAGE — resolved for now (11 GB free); `target/` still ≈ 14 GB | rebuilds will regrow `incremental` (≈ 9 GB) |
+| Push to `origin` | NOT DONE (by instruction) | **REQUIRES MY DECISION** |
 
 ---
 

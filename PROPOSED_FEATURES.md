@@ -13,6 +13,42 @@ Each proposal answers: (1) name, (2) description, (3) problem, (4) why needed, (
 
 ---
 
+## Phase 6 additions and status of the Phase 5 "remaining features" list (2026-11-12)
+
+Statuses: **COMPLETED** = implemented and tested locally (see `AUDIT_REPORT.md` Phase 6 for exact results) · **NOT IMPLEMENTED** · **REQUIRES YOUR DECISION**. Nothing here is externally verified.
+
+### Newly implemented proposals
+
+| ID | Proposal | Status | Notes |
+|---|---|---|---|
+| CP-09 | **Real DNS Lookup** (A AAAA MX TXT NS CNAME SOA SRV PTR DNSKEY DS CAA; wire queries, TTLs, rcodes, NXDOMAIN/NODATA, TCP retry; rate-limited; usable by read-only accounts) | **COMPLETED** | unit + API tests, `scripts/lookup_lab.sh` 22/22 (real server, `dig` cross-check), browser test for all 12 types. Limits: one configurable resolver, no DNSSEC-validation display, no ANY/AXFR. |
+| CP-10 | **Tenants, membership and quotas** (zones, records; owner/editor/viewer roles; personal-tenant backfill of existing users; admin UI; customer quota card) | **COMPLETED** | Non-destructive, idempotent migration; quotas enforced on create zone, create record, import and revision restore. Limits: check-then-insert (can overshoot by the request concurrency); admin UI for moving zones between tenants missing (API exists). |
+| CP-11 | **Persistent, tenant-aware analytics** (history in PostgreSQL, ranges 1 h–90 d, tenant/zone filters, retention `ANALYTICS_RETENTION_DAYS`, admin global view kept) | **COMPLETED** — requires `DNS_ZONE_QUERY_METRICS=true` on the DNS server | Needed an architecture change: per-zone query counter `hickory_zone_queries_total{zone,result}` in the DNS server. `scripts/tenant_analytics_lab.sh` 9/9 with exact counts. No per-type/per-country split yet. |
+| CP-12 | **Aggregated overview endpoint** (`GET /api/v1/overview`) replacing one request per zone | **COMPLETED** | 5,007 zones / 40,038 records: 610 ms (admin API), 175 ms (customer with 2 zones). |
+| OPS-04 | **Upstream Hickory merge strategy** | **ANALYSED + TRIAL MERGE TESTED — REQUIRES YOUR DECISION** | Recommended: merge `v0.26.3` (8 conflict files, 44 mechanical `control_api` edits). Trial binary passes the GeoDNS lab 32/32. `main` needs a `Catalog::lookup` re-implementation. |
+| QA-01 | **Browser, accessibility and visual-regression suites** | **COMPLETED** | `platform_qa.cjs` 66/66, axe-core 0 violations, 32 visual baselines + self-test, `redesign_qa` 165/165, `audit_ui_regression` 50/50. Harness: `scripts/ui_stack.sh`. |
+
+### Phase 5 "remaining feature development" list — current status
+
+| Tier | Feature | Status |
+|---|---|---|
+| Essential | Real multi-type DNS lookup | **COMPLETED** (CP-09) |
+| Essential | Registrar/NS delegation check + status | NOT IMPLEMENTED (needs external DNS; design: compare parent NS with configured NS) |
+| Essential | Secondary zones, AXFR/IXFR, NOTIFY, TSIG | NOT IMPLEMENTED (large; REQUIRES YOUR DECISION on priority) |
+| Essential | Extra record types (TLSA, SVCB/HTTPS, ALIAS) | NOT IMPLEMENTED |
+| Essential | API tokens for automation | NOT IMPLEMENTED |
+| Important | Per-zone analytics with persisted history | **COMPLETED** (CP-11); per-type/per-country NOT IMPLEMENTED |
+| Important | Alert rules wired into a running Prometheus/Alertmanager | NOT IMPLEMENTED (infrastructure) |
+| Important | Shared rate-limit/session state for several API replicas | NOT IMPLEMENTED |
+| Important | Backup/restore tooling for DB + DNSSEC keys | NOT IMPLEMENTED |
+| Important | Account lifecycle (invites, suspend, sessions) | NOT IMPLEMENTED |
+| Important | Quotas / tenants | **COMPLETED** (CP-10) |
+| Important | CI pipeline for unit/UI/lab suites; accessibility + visual regression | suites **COMPLETED** (QA-01); CI definition NOT IMPLEMENTED |
+| Important | Self-hosted fonts, CSP headers | NOT IMPLEMENTED |
+| Advanced | NSEC3, automatic key rollover, CDS/CDNSKEY; GeoDNS+DNSSEC together; failover; DoT/DoH/DoQ | NOT IMPLEMENTED |
+
+---
+
 ## Category DNS — data plane
 
 ### DNS-01 — Hot reload without restarting the DNS process  *(AUDIT C-6)*
