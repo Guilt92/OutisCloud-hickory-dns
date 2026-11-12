@@ -49,12 +49,62 @@ fn is_non_geolocatable(ip: IpAddr) -> bool {
     }
 }
 
+/// Result of [`GeoDB::classify`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeoClass {
+    Reserved,
+    Country(String),
+    Unknown,
+}
+
+/// Non-geolocatable addresses plus ranges that are never real client locations (documentation, CGNAT, reserved).
+pub fn is_reserved(ip: IpAddr) -> bool {
+    let ip = normalize_ip(ip);
+    if is_non_geolocatable(ip) {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            (o[0] == 100 && (o[1] & 0xc0) == 64)                       // 100.64.0.0/10 CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2)              // TEST-NET-1
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100)           // TEST-NET-2
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113)            // TEST-NET-3
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)                 // benchmarking 198.18/15
+                || o[0] >= 240                                          // reserved 240/4
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            (s[0] == 0x2001 && s[1] == 0x0db8) || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0) // documentation, discard
+        }
+    }
+}
+
 impl GeoDB {
     pub fn open_from_bytes(bytes: Vec<u8>) -> Result<Self, maxminddb::MaxMindDbError> {
         let reader = Reader::from_source(bytes)?;
         Ok(Self {
             reader: std::sync::Arc::new(reader),
         })
+    }
+
+    /// Unix time at which MaxMind built this database (staleness checks).
+    pub fn build_epoch(&self) -> u64 {
+        self.reader.metadata.build_epoch
+    }
+
+    /// Classify a client address for analytics WITHOUT inventing a location: `Reserved` for addresses that can never
+    /// be located (private, loopback, link-local, multicast, documentation, CGNAT, reserved), `Country` when the
+    /// database knows the address, `Unknown` when the database has no entry for a routable address.
+    pub fn classify(&self, ip: IpAddr) -> GeoClass {
+        let ip = normalize_ip(ip);
+        if is_reserved(ip) {
+            return GeoClass::Reserved;
+        }
+        match self.country(ip) {
+            Some(c) => GeoClass::Country(c),
+            None => GeoClass::Unknown,
+        }
     }
 
     /// The MaxMind `database_type` string (for example `GeoLite2-Country` or
@@ -633,5 +683,17 @@ mod tests {
         assert_eq!(db.country(ip("2001:218::1")).as_deref(), Some("JP"));
         // IPv4 mapped into IPv6 resolves like the IPv4 address
         assert_eq!(db.city(ip("::ffff:81.2.69.142")).as_deref(), Some("GB:London"));
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+    #[test]
+    fn reserved_ranges_are_never_located() {
+        for ip in ["10.1.2.3", "127.0.0.1", "169.254.1.1", "100.64.0.1", "192.0.2.5", "198.51.100.9", "203.0.113.7", "198.19.0.1", "240.0.0.1", "255.255.255.255", "::1", "fe80::1", "fd00::1", "2001:db8::1", "::ffff:10.0.0.1"] {
+            assert!(is_reserved(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["8.8.8.8", "81.2.69.142", "2001:4860:4860::8888"] { assert!(!is_reserved(ip.parse().unwrap()), "{ip}"); }
     }
 }
