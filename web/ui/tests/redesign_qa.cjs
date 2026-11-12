@@ -27,7 +27,7 @@ function watch(page, errs) {
 const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   const [, lg] = await api('POST', '/api/v1/auth/login', null, { username: ADMIN[0], password: ADMIN[1] });
   const AT = lg.token;
   const [, el] = await api('POST', '/api/v1/auth/login', null, { username: 'ui_editor', password: 'editorpass12' });
@@ -79,7 +79,7 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
     ok('light theme is applied before first paint after reload', !(await page.evaluate(() => document.documentElement.classList.contains('dark'))));
     const active = await page.locator('aside a[aria-current="page"]').first().textContent().catch(() => '');
     ok('sidebar highlights the current page', /Users/.test(active), active);
-    ok('sidebar offers all admin sections', (await page.locator('aside nav a').count()) === 12, String(await page.locator('aside nav a').count()));
+    ok('sidebar offers all admin sections', (await page.locator('aside nav a').count()) === 13, String(await page.locator('aside nav a').count()));
     await page.click('[data-testid="user-menu"]'); ok('user menu opens', await page.locator('[role="menu"]').isVisible());
     await page.keyboard.press('Escape'); await page.waitForTimeout(150); ok('Escape closes the user menu', !(await page.locator('[role="menu"]').isVisible().catch(() => false)));
     await ctx.close();

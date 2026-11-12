@@ -19,11 +19,11 @@ async function login(page,u,p){
   await page.click('button[type="submit"]'); 
 }
 (async()=>{
-  const browser=await chromium.launch(); 
+  const browser=await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}); 
   const dialogs=[]; 
   // ---- 1. wrong password: stays on login with a credentials error, not "session expired"
   let ctx=await browser.newContext(); let page=await ctx.newPage(); page.on('dialog',d=>{dialogs.push(d.message()); d.accept()});
-  await login(page,ADMIN_USER,'wrong-password'); await page.waitForTimeout(1500);
+  await login(page,ADMIN_USER,'wrong-password'); await page.waitForSelector('[role="alert"]',{timeout:15000}).catch(()=>{}); await page.waitForTimeout(300);
   const body=await page.textContent('body');
   ok('wrong password shows an error and stays on /login', page.url().includes('/login') && /invalid|failed|credentials/i.test(body), page.url());
   ok('wrong password is not reported as an expired session', !/session has expired/i.test(body));
@@ -125,7 +125,7 @@ async function login(page,u,p){
   const [, su]=await api('POST','/api/v1/auth/mfa/setup',ml.token,{});
   await api('POST','/api/v1/auth/mfa/enable',ml.token,{code:totp(su.secret)});
   ctx=await browser.newContext(); page=await ctx.newPage();
-  await login(page,'ui_mfa','mfapass12345'); await page.waitForTimeout(1500);
+  await login(page,'ui_mfa','mfapass12345'); await page.waitForSelector('input#otp',{timeout:15000}).catch(()=>{}); await page.waitForTimeout(300);
   ok('login asks for the authentication code after the password', await page.locator('input#otp').count()===1 && page.url().includes('/login'));
   await page.fill('input#otp',totp(su.secret)); await page.click('button[type="submit"]'); await page.waitForURL('**/user**',{timeout:8000}).catch(()=>{});
   ok('login completes with a valid code', page.url().includes('/user'), page.url());
