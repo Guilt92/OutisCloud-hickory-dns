@@ -1,4 +1,5 @@
 import React from 'react'
+import { apiErrorMessage } from '../api/errors'
 import { Upload } from 'lucide-react'
 import api from '../api/client'
 import Notifications from './Notifications'
@@ -55,7 +56,7 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
     } catch (e) {
       console.error(e)
       const d = e.response?.data
-      notify?.error('Import failed: ' + (d?.details || d?.error || e.message || ''))
+      notify?.error('Import failed: ' + (d?.error === 'quota_exceeded' ? apiErrorMessage(e) : (d?.details || d?.error || e.message || '')))
     }
     setLoading(false)
   }

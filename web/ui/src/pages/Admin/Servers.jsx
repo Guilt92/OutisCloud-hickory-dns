@@ -169,11 +169,11 @@ export default function Servers(){
 
                 <div className="flex items-center gap-2 pt-4 border-t border-line">
                   <span className="text-xs text-gray-400 dark:text-gray-500 flex-1">Process runs externally; manage config only</span>
-                  <button onClick={() => openEdit(server)} className="btn-secondary btn-sm">
+                  <button onClick={() => openEdit(server)} aria-label={`Configure ${server.name}`} className="btn-secondary btn-sm">
                     <Settings className="w-3.5 h-3.5" />
                     Config
                   </button>
-                  <button onClick={() => remove(server.id)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg">
+                  <button onClick={() => remove(server.id)} aria-label={`Delete ${server.name}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -203,7 +203,7 @@ export default function Servers(){
                 <h3 className="text-lg font-bold text-ink">
                   {editingServer ? 'Edit Server' : 'Add DNS Server'}
                 </h3>
-                <button onClick={() => setShowModal(false)} className="btn-sm btn-ghost"><X className="w-4 h-4" /></button>
+                <button onClick={() => setShowModal(false)} aria-label="Close dialog" className="btn-sm btn-ghost"><X className="w-4 h-4" /></button>
               </div>
 
               <div className="p-6 space-y-5">

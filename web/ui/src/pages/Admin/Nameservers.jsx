@@ -167,7 +167,7 @@ export default function Nameservers(){
             </button>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead>
                 <tr>
@@ -207,10 +207,10 @@ export default function Nameservers(){
                     </td>
                     <td className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => openEdit(ns)} className="btn-sm btn-ghost">
+                        <button onClick={() => openEdit(ns)} aria-label={`Edit ${ns.hostname}`} className="btn-sm btn-ghost">
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => remove(ns)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                        <button onClick={() => remove(ns)} aria-label={`Delete ${ns.hostname}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -243,7 +243,7 @@ export default function Nameservers(){
                 <h3 className="text-xl font-bold text-ink">
                   {editingNs ? 'Edit Nameserver' : 'Add Nameserver'}
                 </h3>
-                <button onClick={() => setShowModal(false)} className="p-2 hover:bg-ink/5 rounded-lg">
+                <button onClick={() => setShowModal(false)} aria-label="Close dialog" className="p-2 hover:bg-ink/5 rounded-lg">
                   <X className="w-5 h-5 text-gray-500" />
                 </button>
               </div>

@@ -49,7 +49,7 @@ export default function ConfigPush(){
           <div className="space-y-3">
             <div>
               <label className="form-label">Agent</label>
-              <select className="select" value={agentId} onChange={e=>setAgentId(e.target.value)}>
+              <select className="select" aria-label="Agent" value={agentId} onChange={e=>setAgentId(e.target.value)}>
                 <option value="">Select an agent</option>
                 <option value="all">All enabled agents</option>
                 {agents.map(a => <option key={a.id} value={a.id} disabled={!a.enabled}>{a.name} ({a.addr}){a.enabled ? '' : ' - disabled'}</option>)}

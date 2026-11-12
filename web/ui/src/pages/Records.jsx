@@ -1,4 +1,5 @@
 import React from 'react'
+import { apiErrorMessage } from '../api/errors'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../api/client'
 import { validators } from '../hooks/useFormValidation'
@@ -82,7 +83,7 @@ export default function Records(){
       resetForm()
       load();
     } catch (e) { 
-      const errMsg = e.response?.data?.error || e.message || (editing ? 'update failed' : 'create failed');
+      const errMsg = apiErrorMessage(e, editing ? 'update failed' : 'create failed');
       setError(errMsg)
       notify?.error(errMsg)
     }
@@ -225,7 +226,7 @@ export default function Records(){
             <p className="text-muted">No records in this zone yet</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead>
                 <tr>

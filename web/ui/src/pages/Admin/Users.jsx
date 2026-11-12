@@ -120,7 +120,7 @@ export default function Users(){
             <p className="text-muted">No users found</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="w-full">
               <thead className="bg-surface-2">
                 <tr>
@@ -165,12 +165,14 @@ export default function Users(){
                       <div className="flex items-center justify-end space-x-2">
                         <button 
                           onClick={()=>openEdit(u)}
+                          aria-label={`Edit ${u.username}`}
                           className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 p-1 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
                         <button 
                           onClick={()=>remove(u.id)}
+                          aria-label={`Delete ${u.username}`}
                           className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20"
                         >
                           <Trash2 className="w-4 h-4" />

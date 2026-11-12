@@ -1,4 +1,5 @@
 import React from 'react'
+import { apiErrorMessage } from '../../api/errors'
 import { motion } from 'framer-motion'
 import api from '../../api/client'
 import { Link } from 'react-router-dom'
@@ -81,7 +82,7 @@ export default function Zones(){
       const nsList = response.data?.nameservers
       notify?.success(nsList?.length ? `Zone ${domain} created! Nameservers: ${nsList.join(', ')}` : `Zone ${domain} created`)
     } catch (err) {
-      notify?.error(err.response?.data?.error || err.message || 'Error creating zone')
+      notify?.error(apiErrorMessage(err, 'Error creating zone'))
     } finally {
       setCreating(false)
     }
@@ -267,7 +268,7 @@ export default function Zones(){
 
       {/* Table */}
       <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
           <table className="table">
             <thead>
               <tr>
@@ -321,7 +322,7 @@ export default function Zones(){
                           className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
                             z.geodns_enabled
                               ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400'
-                              : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                              : 'bg-gray-100 text-muted dark:bg-gray-700 dark:text-muted'
                           }`}
                         >
                           {z.geodns_enabled ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
@@ -336,7 +337,7 @@ export default function Zones(){
                             className={`mt-1 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
                               z.ecs_enabled
                                 ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
-                                : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+                                : 'bg-gray-100 text-muted dark:bg-gray-700 dark:text-muted'
                             }`}
                           >
                             {z.ecs_enabled ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
@@ -352,13 +353,13 @@ export default function Zones(){
                           >
                             Records
                           </Link>
-                          <button onClick={() => setToolsZone(z)} className="btn-sm btn-ghost">Manage</button>
+                          <button onClick={() => setToolsZone(z)} aria-label={`Manage ${z.domain}`} className="btn-sm btn-ghost">Manage</button>
                           {(z.access === 'admin' || z.access === 'owner') && canWrite && (
                             <>
-                              <button onClick={() => startEdit(z)} className="btn-sm btn-ghost">
+                              <button onClick={() => startEdit(z)} aria-label={`Edit ${z.domain}`} className="btn-sm btn-ghost">
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
-                              <button onClick={() => deleteZone(z)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                              <button onClick={() => deleteZone(z)} aria-label={`Delete ${z.domain}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </>

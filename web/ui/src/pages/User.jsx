@@ -4,6 +4,7 @@ import { Globe, FileText, Search, ShieldCheck, LifeBuoy, ArrowRight, Plus, Check
 import api from '../api/client';
 import { useAuthStore } from '../store';
 import { StatCard, EmptyState, FlowArt, StatusBadge } from '../components/ui';
+import { QuotaBar } from '../components/Quota';
 
 const total = (res) => {
   const h = Number(res?.headers?.['x-total-count']);
@@ -19,10 +20,10 @@ export default function UserOverview() {
   useEffect(() => {
     const t = localStorage.getItem('token'); if (t) api.setToken(t);
     (async () => {
-      const r = await api.get('/api/v1/zones', { params: { limit: 100 } }).catch(() => null);
-      const zones = r?.data || [];
-      const counts = await Promise.all(zones.map((z) => api.get(`/api/v1/zones/${z.id}/records`, { params: { limit: 1 } }).then(total).catch(() => 0)));
-      setD({ loading: false, error: !r, zones, zoneTotal: r ? total(r) : 0, records: counts.reduce((a, b) => a + b, 0) });
+      // ONE aggregated, tenant-scoped request: zones with record counts and quota usage
+      const r = await api.get('/api/v1/overview').catch(() => null);
+      const ov = r?.data;
+      setD({ loading: false, error: !ov, zones: ov?.zones || [], zoneTotal: ov?.zones_total ?? 0, records: ov?.records_total ?? 0, tenants: ov?.tenants || [] });
     })();
   }, []);
 
@@ -74,6 +75,13 @@ export default function UserOverview() {
         </div>
 
         <div className="space-y-6">
+          {(d.tenants || []).map((t) => (
+            <div key={t.id} className="card p-5 space-y-3" data-testid="quota-card">
+              <h2 className="panel-title">Plan & usage <span className="text-xs text-muted font-normal">· {t.name}</span></h2>
+              <QuotaBar label="Zones" used={t.zones} limit={t.max_zones} />
+              <QuotaBar label="Records" used={t.records} limit={t.max_records} />
+            </div>
+          ))}
           <div className="card p-5">
             <h2 className="panel-title mb-3">Service status</h2>
             <div className="flex items-center gap-2 text-sm text-ink"><CheckCircle2 className="w-4 h-4 text-success-500" />{pending.length ? `${pending.length} zone(s) not served yet` : 'Your zones are being served'}</div>

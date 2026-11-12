@@ -18,8 +18,8 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     const ok = (p) => p.catch(() => null);
-    const [zones, servers, agents, users, pub, queries, audit] = await Promise.all([
-      ok(api.get('/api/v1/zones', { params: { limit: 1 } })),
+    const [overview, servers, agents, users, pub, queries, audit] = await Promise.all([
+      ok(api.get('/api/v1/overview', { params: { limit: 0 } })),   // ONE aggregated, tenant-scoped request (no per-zone calls)
       ok(api.get('/api/v1/servers')),
       ok(api.get('/api/v1/agents')),
       ok(api.get('/api/v1/users', { params: { limit: 1 } })),
@@ -27,16 +27,10 @@ export default function Dashboard() {
       api.get('/api/v1/metrics/queries').then((r) => ({ state: 'ok', ...r.data })).catch((e) => ({ state: e.response?.status === 503 ? 'unconfigured' : 'error' })),
       ok(api.get('/api/v1/audit/logs', { params: { limit: 8 } })),
     ]);
-    // record total = sum of the per-zone totals (one cheap request per zone, count only)
-    let records = null;
-    const zoneList = zones ? (await api.get('/api/v1/zones', { params: { limit: 200 } }).catch(() => null))?.data || [] : [];
-    if (zones) {
-      const counts = await Promise.all(zoneList.map((z) => api.get(`/api/v1/zones/${z.id}/records`, { params: { limit: 1 } }).then(total).catch(() => 0)));
-      records = counts.reduce((a, b) => a + b, 0);
-    }
+    const ov = overview?.data;
     setData({
       loading: false,
-      zones: zones ? total(zones) : null, zoneList, records,
+      zones: ov ? ov.zones_total : null, pendingZones: ov ? ov.zones_pending : 0, records: ov ? ov.records_total : null,
       servers: servers?.data || [], agents: agents?.data || [], users: users ? total(users) : null,
       pub: pub?.data || null, queries, audit: audit?.data || [],
     });
@@ -53,7 +47,7 @@ export default function Dashboard() {
   const enabledAgents = (d.agents || []).filter((a) => a.enabled);
   const behind = enabledAgents.filter((a) => !a.in_sync);
   const serversUp = (d.servers || []).filter((s) => s.status === 'running').length;
-  const pending = (d.zoneList || []).filter((z) => z.status === 'pending').length;
+  const pending = d.pendingZones || 0;
   const failedZones = d.pub?.last_publish?.failed || [];
   const publishFailed = d.pub?.last_publish && !d.pub.last_publish.ok;
 

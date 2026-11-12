@@ -4,6 +4,7 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import api from '../../api/client';
 import { useUIStore } from '../../store';
 import { PageHeader, EmptyState, ErrorState, StatCard } from '../../components/ui';
+import AnalyticsHistory from '../../components/AnalyticsHistory';
 
 const POLL_MS = 10000;
 
@@ -43,9 +44,12 @@ export default function Analytics() {
 
   return (
     <div className="page">
-      <PageHeader icon={BarChart3} eyebrow="Insights" title="Analytics" description="Query counters reported by the DNS server."
+      <PageHeader icon={BarChart3} eyebrow="Insights" title="Analytics" description="Persisted query history (global and per tenant) plus live counters from the DNS server."
         actions={<button className="btn-secondary" onClick={sample}><RefreshCw className="w-4 h-4" />Refresh</button>} />
 
+      <AnalyticsHistory scope="admin" />
+
+      <h2 className="font-display text-lg font-semibold text-ink pt-2">Live counters</h2>
       {state.phase === 'loading' && <div className="grid sm:grid-cols-3 gap-4">{[0, 1, 2].map((i) => <div key={i} className="card p-5"><div className="skeleton h-8 w-24" /></div>)}</div>}
       {state.phase === 'unconfigured' && <div className="card"><EmptyState icon={BarChart3} title="Query statistics are not configured" description="Point DNS_METRICS_URL on the control API at the DNS server's Prometheus endpoint (for example http://dns:9000/metrics)." /></div>}
       {state.phase === 'error' && <ErrorState title="Could not read the DNS server's metrics" description={state.message} onRetry={sample} />}
@@ -67,7 +71,7 @@ export default function Analytics() {
                     <defs><linearGradient id="qps" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#F5F020" stopOpacity=".45" /><stop offset="1" stopColor="#F5F020" stopOpacity="0" /></linearGradient></defs>
                     <XAxis dataKey="t" tick={{ fill: tick, fontSize: 11 }} stroke={grid} minTickGap={32} />
                     <YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={44} />
-                    <Tooltip contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
+                    <Tooltip itemStyle={{ color: theme === 'dark' ? '#E6E8EE' : '#14161C' }} contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
                     <Area type="monotone" dataKey="qps" stroke="#F5F020" strokeWidth={2} fill="url(#qps)" />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -77,7 +81,7 @@ export default function Analytics() {
 
           <div className="card overflow-hidden">
             <div className="px-5 py-4 border-b border-line"><h2 className="panel-title">Counters</h2></div>
-            <div className="overflow-x-auto"><table className="table"><thead><tr><th>Metric</th><th className="text-right">Value</th></tr></thead>
+            <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table"><table className="table"><thead><tr><th>Metric</th><th className="text-right">Value</th></tr></thead>
               <tbody>{counters.map(([k, v]) => <tr key={k}><td className="font-mono text-xs">{k}</td><td className="text-right tabular-nums">{Number(v).toLocaleString()}</td></tr>)}
                 {counters.length === 0 && <tr><td colSpan="2"><EmptyState title="No counters reported yet" /></td></tr>}</tbody></table></div>
           </div>

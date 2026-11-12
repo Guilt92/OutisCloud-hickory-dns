@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Moon, Sun, Monitor, Palette, User, Bell, Shield, Globe } from 'lucide-react';
+import { Moon, Sun, Palette, User, Globe } from 'lucide-react';
 import { useUIStore, useAuthStore } from '../../store';
 import PasswordChangeForm from '../../components/PasswordChangeForm';
 import MfaCard from '../../components/MfaCard';

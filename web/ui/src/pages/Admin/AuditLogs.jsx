@@ -59,10 +59,10 @@ export default function AuditLogs(){
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
           <div className="relative w-full sm:w-auto">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input className="input pl-9" placeholder="Filter this page..." value={q} onChange={e=>setQ(e.target.value)} />
+            <input className="input pl-9" aria-label="Filter this page" placeholder="Filter this page..." value={q} onChange={e=>setQ(e.target.value)} />
           </div>
-          <input className="input w-full sm:w-36" placeholder="action" value={action} onChange={e=>{setPage(0); setAction(e.target.value.trim())}} />
-          <select className="select w-full sm:w-36" value={resource} onChange={e=>{setPage(0); setResource(e.target.value)}}>
+          <input className="input w-full sm:w-36" aria-label="Action" placeholder="action" value={action} onChange={e=>{setPage(0); setAction(e.target.value.trim())}} />
+          <select className="select w-full sm:w-36" aria-label="Resource type" value={resource} onChange={e=>{setPage(0); setResource(e.target.value)}}>
             <option value="">all resources</option>
             {['user','zone','record','georule','nameserver','agent'].map(r => <option key={r} value={r}>{r}</option>)}
           </select>
@@ -84,7 +84,7 @@ export default function AuditLogs(){
             <p className="text-muted">No audit logs found</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead>
                 <tr>

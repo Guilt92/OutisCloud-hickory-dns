@@ -125,30 +125,31 @@ export default function GeoRules(){
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
               <label className="form-label">Zone</label>
-              <select className="select" value={zone} onChange={e=>setZone(e.target.value)}>
+              <select className="select" aria-label="Zone" value={zone} onChange={e=>setZone(e.target.value)}>
                 <option value="">Select a zone</option>
                 {zones.map(z=> <option key={z.id} value={z.id}>{z.domain}</option>)}
               </select>
             </div>
             <div>
               <label className="form-label">Match Type</label>
-              <select className="select" value={matchType} onChange={e=>setMatchType(e.target.value)}>
+              <select className="select" aria-label="Match type" value={matchType} onChange={e=>setMatchType(e.target.value)}>
                 <option value="country">Country</option>
                 <option value="region">Region</option>
                 <option value="continent">Continent</option>
+                <option value="city">City</option>
               </select>
             </div>
             <div>
               <label className="form-label">Match Value</label>
-              <input className="input" placeholder="e.g., US, EU, NA" value={matchValue} onChange={e=>setMatchValue(e.target.value)} />
+              <input className="input" aria-label="Match value" placeholder="e.g., US, EU, NA, DE:Berlin" value={matchValue} onChange={e=>setMatchValue(e.target.value)} />
             </div>
             <div>
               <label className="form-label">Target IP</label>
-              <input className="input" placeholder="e.g., 192.0.2.1" value={target} onChange={e=>setTarget(e.target.value)} />
+              <input className="input" aria-label="Target IP" placeholder="e.g., 192.0.2.1" value={target} onChange={e=>setTarget(e.target.value)} />
             </div>
             <div>
               <label className="form-label">Priority</label>
-              <input type="number" min="0" className="input" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
+              <input type="number" min="0" aria-label="Priority" className="input" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
             </div>
             <div className="flex items-end pb-0.5">
               <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
@@ -158,11 +159,11 @@ export default function GeoRules(){
             </div>
             <div>
               <label className="form-label">Record Name</label>
-              <input className="input" placeholder="optional" value={recordName} onChange={e=>setRecordName(e.target.value)} />
+              <input className="input" aria-label="Record name" placeholder="optional" value={recordName} onChange={e=>setRecordName(e.target.value)} />
             </div>
             <div>
               <label className="form-label">Record Type</label>
-              <input className="input" placeholder="e.g., A, AAAA" value={recordType} onChange={e=>setRecordType(e.target.value)} />
+              <input className="input" aria-label="Record type" placeholder="e.g., A, AAAA" value={recordType} onChange={e=>setRecordType(e.target.value)} />
             </div>
           </div>
           <div className="form-actions mt-4">
@@ -194,7 +195,7 @@ export default function GeoRules(){
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex-1 min-w-[200px]">
             <label className="form-label">Client IP Address</label>
-            <input className="input" placeholder="e.g., 8.8.8.8" value={testIp} onChange={e=>setTestIp(e.target.value)} />
+            <input className="input" aria-label="Client IP address" placeholder="e.g., 8.8.8.8" value={testIp} onChange={e=>setTestIp(e.target.value)} />
           </div>
           <button className="btn-primary" onClick={testResolve} disabled={testing}>
             <Play className={`w-4 h-4 ${testing ? 'animate-pulse' : ''}`} />
@@ -231,7 +232,7 @@ export default function GeoRules(){
             <p className="text-muted">No GeoDNS rules configured yet</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead>
                 <tr>
@@ -266,17 +267,17 @@ export default function GeoRules(){
                     <td className="font-mono text-muted">{r.target}</td>
                     <td className="text-muted">{r.priority}</td>
                     <td>
-                      <input type="checkbox" checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-line text-green-600 focus:ring-green-500" />
+                      <input type="checkbox" aria-label={`Rule ${r.match_value} enabled`} checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-line text-green-600 focus:ring-green-500" />
                     </td>
                     <td className="text-muted">
                       {r.record_name || '-'}{r.record_type ? `/${r.record_type}` : ''}
                     </td>
                     <td className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={()=>startEditRule(r)} className="btn-sm btn-ghost">
+                        <button onClick={()=>startEditRule(r)} aria-label={`Edit rule ${r.match_value}`} className="btn-sm btn-ghost">
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={()=>remove(r.id)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                        <button onClick={()=>remove(r.id)} aria-label={`Delete rule ${r.match_value}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>

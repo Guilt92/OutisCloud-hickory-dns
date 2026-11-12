@@ -22,6 +22,8 @@ const UserDashboard = lazy(() => import('./pages/User'));
 const UserSettings = lazy(() => import('./pages/UserSettings'));
 const AdminAnalytics = lazy(() => import('./pages/Admin/Analytics'));
 const Help = lazy(() => import('./pages/Help'));
+const AdminTenants = lazy(() => import('./pages/Admin/Tenants'));
+const UserAnalytics = lazy(() => import('./pages/UserAnalytics'));
 
 function ProtectedRoute({ children, requireAdmin = false }) {
   const { isAuthenticated, user, sessionExpired } = useAuthStore();
@@ -99,6 +101,7 @@ export default function App() {
             <Route path="agents" element={<AdminAgents />} />
             <Route path="georules" element={<AdminGeoRules />} />
             <Route path="metrics" element={<AdminAnalytics />} />
+            <Route path="tenants" element={<AdminTenants />} />
             <Route path="audit" element={<AdminAuditLogs />} />
             <Route path="config" element={<AdminConfigPush />} />
             <Route path="settings" element={<AdminSettings />} />
@@ -117,6 +120,7 @@ export default function App() {
             <Route path="zones/:id/records" element={<Records />} />
             <Route path="dns-lookup" element={<AdminDnsLookup />} />
             <Route path="settings" element={<UserSettings />} />
+            <Route path="analytics" element={<UserAnalytics />} />
             <Route path="help" element={<Help />} />
           </Route>
 

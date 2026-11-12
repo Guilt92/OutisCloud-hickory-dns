@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Menu, X, LayoutDashboard, Globe, Users, Server, Settings, LogOut, ChevronDown, MapPin,
-  BarChart3, Activity, Search, User, Radio, Network, RefreshCw, LifeBuoy, ShieldCheck,
+  BarChart3, Building2, Activity, Search, User, Radio, Network, RefreshCw, LifeBuoy, ShieldCheck,
 } from 'lucide-react';
 import { useAuthStore } from '../store';
 import clsx from 'clsx';
@@ -27,6 +27,7 @@ const ADMIN_NAV = [
     { to: '/admin/config', icon: RefreshCw, label: 'Config Sync' },
   ]},
   { title: 'Administration', items: [
+    { to: '/admin/tenants', icon: Building2, label: 'Tenants & Quotas' },
     { to: '/admin/users', icon: Users, label: 'Users & Roles' },
     { to: '/admin/audit', icon: Activity, label: 'Audit Log' },
     { to: '/admin/settings', icon: Settings, label: 'Settings' },
@@ -37,6 +38,7 @@ const USER_NAV = [
   { title: null, items: [
     { to: '/user', icon: LayoutDashboard, label: 'Overview', exact: true },
     { to: '/user/zones', icon: Globe, label: 'My Zones' },
+    { to: '/user/analytics', icon: BarChart3, label: 'Analytics' },
     { to: '/user/dns-lookup', icon: Search, label: 'DNS Lookup' },
   ]},
   { title: 'Account', items: [
@@ -48,7 +50,7 @@ const USER_NAV = [
 const CRUMBS = {
   admin: 'Overview', zones: 'Zones', records: 'Records', nameservers: 'Nameservers', georules: 'GeoDNS', 'dns-lookup': 'DNS Lookup',
   servers: 'DNS Servers', agents: 'Agents', config: 'Config Sync', users: 'Users & Roles', audit: 'Audit Log', settings: 'Settings',
-  metrics: 'Analytics', user: 'Overview', help: 'Help & Docs',
+  metrics: 'Analytics', analytics: 'Analytics', tenants: 'Tenants & Quotas', user: 'Overview', help: 'Help & Docs',
 };
 
 function NavItem({ to, icon: Icon, label, exact, onNavigate }) {
@@ -149,7 +151,7 @@ export default function Layout({ children }) {
         <nav className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4 space-y-5">
           {nav.map((group, gi) => (
             <div key={gi}>
-              {group.title && <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted/80">{group.title}</p>}
+              {group.title && <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">{group.title}</p>}
               <div className="space-y-0.5">
                 {group.items.map((it) => <NavItem key={it.to} {...it} onNavigate={() => setMenuOpen(false)} />)}
               </div>

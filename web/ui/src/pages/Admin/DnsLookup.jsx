@@ -30,7 +30,10 @@ export default function DnsLookup() {
       });
       setResults(response.data);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'DNS lookup failed');
+      const d = err.response?.data;
+      if (err.response?.status === 429) setError(d?.details || 'Too many lookups, please wait a moment.');
+      else if (err.response?.status === 502) setError('The resolver did not answer: ' + (d?.details || 'unreachable') + '. This is a resolver problem, not an empty result.');
+      else setError(d?.error || err.message || 'DNS lookup failed');
     } finally {
       setLoading(false);
     }
@@ -72,7 +75,7 @@ export default function DnsLookup() {
       >
         <div>
           <h1 className="text-2xl font-bold text-ink">DNS Lookup</h1>
-          <p className="text-muted">Test DNS resolution for any domain</p>
+          <p className="text-muted">Real DNS queries (UDP/TCP) with TTLs and response codes. Enter an IP address for a PTR (reverse) lookup.</p>
         </div>
       </motion.div>
 
@@ -94,8 +97,9 @@ export default function DnsLookup() {
                 type="text"
                 value={domain}
                 onChange={(e) => setDomain(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder="example.com"
+                onKeyDown={handleKeyPress}
+                placeholder="example.com or 192.0.2.1"
+                aria-label="Domain name or IP address"
                 className="w-full pl-12 pr-4 py-3 border border-line rounded-xl dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
               />
             </div>
@@ -107,6 +111,7 @@ export default function DnsLookup() {
             </label>
             <select
               value={recordType}
+              aria-label="Record type"
               onChange={(e) => setRecordType(e.target.value)}
               className="w-full px-4 py-3 border border-line rounded-xl dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
             >
@@ -162,8 +167,9 @@ export default function DnsLookup() {
               <h3 className="text-lg font-semibold text-ink">
                 DNS Results
               </h3>
-              <p className="text-sm text-muted">
-                {domain} - {recordType} records
+              <p className="text-sm text-muted" data-testid="lookup-summary">
+                {results.domain} · {results.record_type} · <span data-testid="lookup-status" className={results.status === 'NOERROR' ? 'text-success-500 font-semibold' : 'text-danger-500 font-semibold'}>{results.status}</span>
+                {' '}· {results.elapsed_ms} ms via {results.transport?.toUpperCase()} from {results.resolver}{results.authoritative ? ' · authoritative' : ''}
               </p>
             </div>
             <button
@@ -200,7 +206,7 @@ export default function DnsLookup() {
                             TTL: {record.ttl}
                           </span>
                         </div>
-                        <p className="text-sm text-muted font-mono truncate">
+                        <p className="text-sm text-muted font-mono break-all" data-testid="lookup-value">
                           {record.value}
                         </p>
                       </div>
@@ -211,7 +217,15 @@ export default function DnsLookup() {
             ) : (
               <div className="text-center py-8">
                 <AlertCircle className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-                <p className="text-muted">No {recordType} records found for {domain}</p>
+                <p className="text-muted" data-testid="lookup-empty">{results.note || `No ${results.record_type} records found for ${results.domain}`}</p>
+              </div>
+            )}
+            {results.authority?.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-line">
+                <p className="text-xs uppercase tracking-wide text-muted mb-2">Authority (negative caching)</p>
+                {results.authority.map((a, i) => (
+                  <p key={i} className="text-xs font-mono text-muted break-all">{a.name} {a.ttl} {a.type} {a.value}</p>
+                ))}
               </div>
             )}
           </div>

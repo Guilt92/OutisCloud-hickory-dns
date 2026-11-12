@@ -101,8 +101,8 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
         <button
           type="button"
           onClick={() => togglePassword(field)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          tabIndex={-1}
+          aria-label={showPasswords[field] ? 'Hide password' : 'Show password'}
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-ink"
         >
           {showPasswords[field] ? (
             <EyeOff className="w-4 h-4" />
