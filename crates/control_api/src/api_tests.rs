@@ -41,7 +41,7 @@ async fn setup() -> Option<Env> {
         dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
         verify_resolver: "127.0.0.1:9".parse().unwrap(),
         verify_domains: false,
-        dns_metrics_url: None,
+        dns_metrics_url: None, lookup_resolvers: vec![],
     };
     let geo = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/dns/GeoLite2-Country.mmdb"))
         .ok()
@@ -1379,7 +1379,7 @@ async fn legacy_schema_upgrades_in_place_keeping_data() {
     let state = AppState {
         db: pool.clone(), jwt_secret: "unit-test-secret-unit-test-secret-1234".into(),
         dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
-        verify_resolver: "127.0.0.1:9".parse().unwrap(), verify_domains: false, dns_metrics_url: None,
+        verify_resolver: "127.0.0.1:9".parse().unwrap(), verify_domains: false, dns_metrics_url: None, lookup_resolvers: vec![],
     };
     let full = FullState { inner: state.clone(), geo: Arc::new(tokio::sync::Mutex::new(GeoState { db: None })), processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())) };
     let env = Env { state, full, dir, schema: schema.clone(), admin: uid };
@@ -1506,7 +1506,7 @@ async fn fake_multi_resolver() -> std::net::SocketAddr {
 #[actix_web::test]
 async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
     let Some(mut env) = setup().await else { return };
-    env.state.verify_resolver = fake_multi_resolver().await; env.full.inner = env.state.clone();
+    env.state.lookup_resolvers = lookup::parse_resolvers(&fake_multi_resolver().await.to_string()).unwrap(); env.full.inner = env.state.clone();
     let user = add_user(&env.state, "lookup-user", "lookup-pass-1", "user").await;
     let viewer = add_user(&env.state, "lookup-viewer", "lookup-pass-2", "viewer").await;
     let (tu, tv) = (env.token(&user, "user"), env.token(&viewer, "viewer"));
@@ -1554,12 +1554,17 @@ async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
     // per-account rate limit (default 30/min): the 31st call in a window is refused, other accounts are unaffected
     let spammer = add_user(&env.state, "spammer", "spam-pass-1", "user").await;
     let ts = env.token(&spammer, "user");
+    // fixed 60 s windows on the database clock: a window boundary can fall inside the loop, so allow one retry round
     let mut limited = 0;
-    for _ in 0..40 {
-        let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&ts), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
-        if st == 429 { limited += 1; }
+    for _round in 0..2 {
+        limited = 0;
+        for _ in 0..40 {
+            let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&ts), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+            if st == 429 { limited += 1; }
+        }
+        if limited >= 10 { break; }
     }
-    assert_eq!(limited, 10, "exactly the calls above the budget are refused");
+    assert!(limited >= 10, "calls above the budget are refused (got {limited})");
     let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
     assert_eq!(st, 200);
     env.cleanup().await;
@@ -1569,12 +1574,13 @@ async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
 async fn dns_lookup_reports_unreachable_resolver_as_error_not_empty_result() {
     let Some(mut env) = setup().await else { return };
     // a closed port on localhost: the resolver is unreachable
-    env.state.verify_resolver = "127.0.0.1:9".parse().unwrap(); env.full.inner = env.state.clone();
+    env.state.lookup_resolvers = lookup::parse_resolvers("127.0.0.1:9").unwrap(); env.full.inner = env.state.clone();
     let u = add_user(&env.state, "lk2", "lookup-pass-1", "user").await;
     let tu = env.token(&u, "user");
     let app = app!(env);
     let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
     assert_eq!(st, 502, "{raw}"); assert_eq!(b["error"], "resolver_unavailable");
+    assert!(!raw.contains("127.0.0.1") && !raw.contains("attempts"), "customers must not learn resolver addresses: {raw}");
     env.cleanup().await;
 }
 
@@ -1844,5 +1850,399 @@ async fn analytics_are_persistent_tenant_scoped_and_retained_configurably() {
     assert!(tenants::purge_analytics(&env.state.db, 30).await.unwrap() > 0);
     let n: i64 = env.state.db.query_one("SELECT count(*) FROM zone_query_samples", &[]).await.unwrap().get(0);
     assert_eq!(n, 0, "rows older than the retention are removed");
+    env.cleanup().await;
+}
+
+// ===========================================================================
+// Zone transfer between tenants
+// ===========================================================================
+
+#[actix_web::test]
+async fn zone_transfer_is_atomic_authorised_quota_checked_and_audited() {
+    let Some(env) = setup().await else { return };
+    let alice = add_user(&env.state, "tr-alice", "alice-pass-1", "user").await;
+    let carol = add_user(&env.state, "tr-carol", "carol-pass-1", "user").await;
+    let sharee = add_user(&env.state, "tr-sharee", "sharee-pass-1", "user").await;
+    let (ta, tc, ts, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&sharee, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    let z = make_zone(&env, &app, &ta, "moveme.example").await;
+    let _z2 = make_zone(&env, &app, &ta, "moveme2.example").await;
+    let _cz = make_zone(&env, &app, &tc, "carol-home.example").await;
+    for i in 0..3 { call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&ta), j(serde_json::json!({"name":format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300}))); }
+    let (_, tl, _) = call!(app, get, "/api/v1/tenants", Some(&tadmin), None);
+    let tid = |n: &str| tl.as_array().unwrap().iter().find(|t| t["name"] == n).unwrap()["id"].as_str().unwrap().to_string();
+    let (at, ct) = (tid("personal-tr-alice"), tid("personal-tr-carol"));
+    // a share and a geo rule that must survive / be handled
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/zones/{}/members", z), Some(&ta), j(serde_json::json!({"username":"tr-sharee","role":"viewer"}))); assert_eq!(st, 200, "{raw}");
+    let (st, _, raw) = call!(app, post, "/api/v1/georules", Some(&ta), j(serde_json::json!({"zone_id": z, "match_type":"country","match_value":"DE","target":"192.0.2.9","priority":1,"enabled":true}))); assert!(st == 200 || st == 201, "{raw}");
+    let ids = |v: &serde_json::Value| { let mut x: Vec<String> = v.as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect(); x.sort(); x };
+    let (_, before, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&ta), None);
+    let before_ids = ids(&before);
+    let nrules_before: i64 = env.state.db.query_one("SELECT count(*) FROM georules WHERE CAST(zone_id AS varchar) = $1", &[&z]).await.unwrap().get(0);
+
+    // authorization and validation
+    let uri = format!("/api/v1/zones/{}/tenant", z);
+    for t in [&ta, &tc, &ts] { let (st, _, _) = call!(app, put, &uri, Some(t), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 403, "only administrators transfer zones"); }
+    let (st, _, _) = call!(app, put, &uri, None::<&str>, j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 401);
+    let (st, _, _) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": Uuid::new_v4().to_string()}))); assert_eq!(st, 404, "unknown destination");
+    let (st, _, _) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": "not-a-uuid"}))); assert_eq!(st, 400);
+    let (st, _, _) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": at}))); assert_eq!(st, 400, "same tenant is a no-op error");
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{}/tenant", Uuid::new_v4()), Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 404);
+
+    // quota failures leave EVERYTHING untouched (atomic)
+    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones":1,"max_records":null})));
+    let (st, b, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 403, "{raw}"); assert_eq!(b["quota"], "zones");
+    let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id=r.zone_id WHERE CAST(z.tenant_id AS varchar)=$1", &[&ct]).await.unwrap().get(0);
+    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones":5,"max_records":used + 2})));
+    let (st, b, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 403, "{raw}"); assert_eq!(b["quota"], "records");
+    let cur: (Option<String>, i64) = { let r = env.state.db.query_one("SELECT CAST(tenant_id AS varchar), (SELECT count(*) FROM zone_members WHERE CAST(zone_id AS varchar)=$1) FROM zones WHERE CAST(id AS varchar)=$1", &[&z]).await.unwrap(); (r.get(0), r.get(1)) };
+    assert_eq!(cur.0.as_deref(), Some(at.as_str()), "failed transfer must not move the zone"); assert_eq!(cur.1, 1, "nor drop the share");
+
+    // success
+    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones":5,"max_records":null})));
+    let (st, b, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["records"], before_ids.len() as i64); assert_eq!(b["shares_removed"], 1); assert_eq!(b["owner_changed"], true);
+    assert_eq!(b["from"]["name"], "personal-tr-alice"); assert_eq!(b["to"]["name"], "personal-tr-carol");
+    let (_, after, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tc), None);
+    assert_eq!(ids(&after), before_ids, "same record rows: nothing duplicated or lost");
+    let nrules: i64 = env.state.db.query_one("SELECT count(*) FROM georules WHERE CAST(zone_id AS varchar) = $1", &[&z]).await.unwrap().get(0);
+    assert_eq!(nrules, nrules_before, "geo rules preserved");
+    assert!(env.zone_file("moveme.example").is_file(), "zone still published");
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&ta), None); assert_eq!(st, 403, "previous tenant lost access (owner moved, shares removed)");
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&ts), None); assert_eq!(st, 403, "removed share");
+    let (_, lz, _) = call!(app, get, "/api/v1/zones", Some(&tadmin), None);
+    let row = lz["data"].as_array().unwrap().iter().find(|x| x["domain"] == "moveme.example").unwrap();
+    assert_eq!(row["tenant_name"], "personal-tr-carol"); assert_eq!(row["tenant_id"], ct.as_str());
+    // audit
+    let (_, au, _) = call!(app, get, "/api/v1/audit/logs?action=zone.transfer", Some(&tadmin), None);
+    let e = au.as_array().map(|a| a.to_vec()).or_else(|| au["data"].as_array().cloned()).unwrap_or_default();
+    assert!(!e.is_empty(), "transfer is audited: {au}");
+    let d = e[0]["details"].to_string();
+    assert!(d.contains("personal-tr-alice") && d.contains("personal-tr-carol") && d.contains("moveme.example") && d.contains(&env.admin), "audit lacks source/destination/actor: {d}");
+
+    // keep_shares keeps the explicit grant
+    call!(app, put, &format!("/api/v1/zones/{}/members", _z2), Some(&ta), j(serde_json::json!({"username":"tr-sharee","role":"viewer"})));
+    let (st, b, raw) = call!(app, put, &format!("/api/v1/zones/{}/tenant", _z2), Some(&tadmin), j(serde_json::json!({"tenant_id": ct, "keep_shares": true}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["shares_removed"], 0);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", _z2), Some(&ts), None); assert_eq!(st, 200);
+
+    // race: two zones into a tenant with room for exactly one more
+    let r1 = make_zone(&env, &app, &tadmin, "race-a.example").await; let r2 = make_zone(&env, &app, &tadmin, "race-b.example").await;
+    let zones_now: i64 = env.state.db.query_one("SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar)=$1", &[&ct]).await.unwrap().get(0);
+    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones": zones_now + 1,"max_records":null})));
+    let (u1, u2) = (format!("/api/v1/zones/{}/tenant", r1), format!("/api/v1/zones/{}/tenant", r2));
+    let (a, b) = futures_util::future::join(
+        async { call!(app, put, &u1, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))).0 },
+        async { call!(app, put, &u2, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))).0 }).await;
+    let mut got = vec![a, b]; got.sort();
+    assert_eq!(got, vec![200, 403], "exactly one concurrent transfer fits the quota");
+    let zones_end: i64 = env.state.db.query_one("SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar)=$1", &[&ct]).await.unwrap().get(0);
+    assert_eq!(zones_end, zones_now + 1);
+    // detach to platform
+    let (st, _, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": null}))); assert_eq!(st, 200, "{raw}");
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tc), None); assert_eq!(st, 403, "detached zone is invisible to tenant members");
+    env.cleanup().await;
+}
+
+// ===========================================================================
+// DNS Lookup: multiple resolvers, failover, selection, IPv4/IPv6
+// ===========================================================================
+
+#[derive(Clone, Copy, PartialEq)]
+enum Behave { Answer, Servfail, Refused, Silent }
+
+/// UDP resolver on `bind` that answers A queries with TTL `ttl` (or misbehaves). Counts the queries it received.
+async fn behaving_resolver(bind: &str, how: Behave, ttl: u32) -> Option<(std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>)> {
+    use hickory_proto::op::{Message, ResponseCode};
+    use hickory_proto::rr::{rdata::A, RData, Record};
+    let sock = tokio::net::UdpSocket::bind(bind).await.ok()?;
+    let addr = sock.local_addr().ok()?;
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let h = hits.clone();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 1500];
+        loop {
+            let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
+            h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let Ok(q) = Message::from_vec(&buf[..n]) else { continue };
+            if how == Behave::Silent { continue; }
+            let mut r = Message::response(q.id(), q.op_code());
+            for qq in q.queries() { r.add_query(qq.clone());
+                match how {
+                    Behave::Servfail => { r.set_response_code(ResponseCode::ServFail); }
+                    Behave::Refused => { r.set_response_code(ResponseCode::Refused); }
+                    _ => { r.add_answer(Record::from_rdata(qq.name().clone(), ttl, RData::A(A::new(192, 0, 2, 1)))); }
+                } }
+            let _ = sock.send_to(&r.to_vec().unwrap(), from).await;
+        }
+    });
+    Some((addr, hits))
+}
+
+fn spec(addrs: &[(&str, std::net::SocketAddr)]) -> Vec<lookup::ResolverSpec> {
+    addrs.iter().map(|(l, a)| lookup::ResolverSpec { label: l.to_string(), addr: *a }).collect()
+}
+
+#[actix_web::test]
+async fn dns_lookup_failover_selection_and_information_hiding() {
+    std::env::set_var("DNS_LOOKUP_TIMEOUT_MS", "400");
+    let Some(mut env) = setup().await else { return };
+    let user = add_user(&env.state, "mr-user", "mr-user-pass-1", "user").await;
+    let (tu, tadmin) = (env.token(&user, "user"), env.token(&env.admin, "admin"));
+    let (a1, h1) = behaving_resolver("127.0.0.1:0", Behave::Answer, 111).await.unwrap();
+    let (a2, _h2) = behaving_resolver("127.0.0.1:0", Behave::Answer, 222).await.unwrap();
+    let (sf, _) = behaving_resolver("127.0.0.1:0", Behave::Servfail, 0).await.unwrap();
+    let (rf, _) = behaving_resolver("127.0.0.1:0", Behave::Refused, 0).await.unwrap();
+    let (si, hs) = behaving_resolver("127.0.0.1:0", Behave::Silent, 0).await.unwrap();
+    let q = serde_json::json!({"domain":"www.example","record_type":"A"});
+
+    // 0. nothing configured -> explicit "not configured", never a built-in public resolver
+    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone())); assert_eq!(st, 503, "{raw}"); assert_eq!(b["error"], "not_configured"); }
+
+    // 1. primary success: the second resolver is never asked
+    env.state.lookup_resolvers = spec(&[("primary", a1), ("secondary", a2)]); env.full.inner = env.state.clone();
+    let app = app!(env);
+    let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone()));
+    assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 111);
+    assert!(b.get("resolver").is_none() && b.get("attempts").is_none(), "customers see no resolver details: {raw}");
+    assert!(!raw.contains("127.0.0.1") && !raw.contains("primary"), "{raw}");
+    let (_, ba, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(q.clone()));
+    assert!(ba["resolver"].as_str().unwrap().starts_with("primary (127.0.0.1:"), "{ba}"); assert_eq!(ba["attempts"].as_array().unwrap().len(), 1);
+
+    // 2. primary times out -> fallback answers, within roughly one timeout
+    env.state.lookup_resolvers = spec(&[("dead", si), ("backup", a2)]); env.full.inner = env.state.clone();
+    let app = app!(env);
+    let t0 = std::time::Instant::now();
+    let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone()));
+    let first = t0.elapsed();
+    assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 222);
+    assert!(first >= std::time::Duration::from_millis(380) && first < std::time::Duration::from_millis(1500), "one timeout, not more: {first:?}");
+    let (_, ba, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    // 3. the failed resolver is remembered: the next lookups do not pay the timeout again
+    let before = hs.load(std::sync::atomic::Ordering::SeqCst);
+    let t1 = std::time::Instant::now();
+    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone())); assert_eq!(st, 200);
+    assert!(t1.elapsed() < std::time::Duration::from_millis(300), "demoted resolver must not delay the next lookup: {:?}", t1.elapsed());
+    assert_eq!(hs.load(std::sync::atomic::Ordering::SeqCst), before, "demoted resolver was not queried again");
+    let _ = ba;
+
+    // 4. SERVFAIL / REFUSED on the primary -> fallback success
+    for (label, bad) in [("servfail", sf), ("refused", rf)] {
+        env.state.lookup_resolvers = spec(&[(label, bad), ("good", a1)]); env.full.inner = env.state.clone();
+        let app = app!(env);
+        let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":format!("{label}.example"),"record_type":"A"})));
+        assert_eq!(st, 200, "{label}: {raw}"); assert_eq!(b["status"], "NOERROR"); assert_eq!(b["records"][0]["ttl"], 111);
+    }
+    // 5. every resolver answers SERVFAIL: that status is returned honestly (not an invented success, not a 502)
+    env.state.lookup_resolvers = spec(&[("s1", sf), ("s2", rf)]); env.full.inner = env.state.clone();
+    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"allbad.example","record_type":"A"}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["status"], "REFUSED"); assert!(b["records"].as_array().unwrap().is_empty()); }
+    // 6. all unavailable -> 502; customers see no addresses, administrators see each resolver's outcome
+    env.state.lookup_resolvers = spec(&[("x1", "127.0.0.1:9".parse().unwrap()), ("x2", si)]); env.full.inner = env.state.clone();
+    { let app = app!(env);
+      let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"down.example","record_type":"A"})));
+      assert_eq!(st, 502, "{raw}"); assert_eq!(b["error"], "resolver_unavailable"); assert!(!raw.contains("127.0.0.1") && !raw.contains("x1") && !raw.contains("attempts"), "{raw}");
+      let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"down2.example","record_type":"A"})));
+      assert_eq!(st, 502); assert_eq!(b["attempts"].as_array().unwrap().len(), 2, "{raw}"); assert!(raw.contains("127.0.0.1")); }
+    // 7. selection: administrators may pick a resolver by label, customers may not, unknown labels are rejected
+    env.state.lookup_resolvers = spec(&[("one", a1), ("two", a2)]); env.full.inner = env.state.clone();
+    { let app = app!(env);
+      let (st, b, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"two"}))); assert_eq!(st, 200); assert_eq!(b["records"][0]["ttl"], 222);
+      let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"two"}))); assert_eq!(st, 403);
+      let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"nope"}))); assert_eq!(st, 400); }
+    let _ = h1;
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn dns_lookup_works_with_ipv6_resolvers_and_mixed_families() {
+    std::env::set_var("DNS_LOOKUP_TIMEOUT_MS", "400");
+    let Some(mut env) = setup().await else { return };
+    let Some((v6, _)) = behaving_resolver("[::1]:0", Behave::Answer, 606).await else { eprintln!("SKIPPED: no IPv6 loopback"); env.cleanup().await; return };
+    let (v4dead, _) = behaving_resolver("127.0.0.1:0", Behave::Silent, 0).await.unwrap();
+    let user = add_user(&env.state, "v6-user", "v6-user-pass-1", "user").await;
+    let tu = env.token(&user, "user");
+    assert!(v6.is_ipv6());
+    // textual configuration round trip for IPv6
+    let cfg = lookup::parse_resolvers(&format!("six={}", v6)).unwrap();
+    assert_eq!(cfg[0].addr, v6);
+    env.state.lookup_resolvers = cfg; env.full.inner = env.state.clone();
+    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"v6.example","record_type":"A"}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 606); }
+    env.state.lookup_resolvers = spec(&[("v4dead", v4dead), ("six", v6)]); env.full.inner = env.state.clone();
+    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"mixed.example","record_type":"A"}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 606, "IPv4 resolver down -> IPv6 fallback"); }
+    env.cleanup().await;
+}
+
+// ===========================================================================
+// Shared coordination primitives (what the multi-replica lab relies on)
+// ===========================================================================
+
+#[actix_web::test]
+async fn shared_rate_limit_is_atomic_under_concurrency() {
+    let Some(env) = setup().await else { return };
+    // 40 concurrent "replicas" (separate pooled connections) against ONE bucket with a budget of 10
+    let db = env.state.db.clone();
+    let mut tasks = vec![];
+    for _ in 0..40 { let db = db.clone(); tasks.push(tokio::spawn(async move { shared::hit(&db, "t:one", 10, 60).await.unwrap() })); }
+    let mut allowed = 0; for t in tasks { if t.await.unwrap().is_none() { allowed += 1; } }
+    assert_eq!(allowed, 10, "exactly the budget is granted, never more");
+    // buckets are isolated from each other
+    assert!(shared::hit(&db, "t:other", 10, 60).await.unwrap().is_none());
+    let wait = shared::hit(&db, "t:one", 10, 60).await.unwrap().unwrap();
+    assert!(wait >= 1 && wait <= 60, "retry-after is reported: {wait}");
+    // purge removes only expired windows
+    db.execute("UPDATE shared_rate_limits SET window_start = window_start - interval '1 hour' WHERE bucket = 't:other'", &[]).await.unwrap();
+    assert_eq!(shared::purge_rate_limits(&db).await.unwrap(), 1);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn collector_lease_has_one_holder_and_expires() {
+    let Some(env) = setup().await else { return };
+    let db = &env.state.db;
+    assert!(shared::try_lease(db, "x", "A", 60.0).await.unwrap());
+    assert!(!shared::try_lease(db, "x", "B", 60.0).await.unwrap(), "second replica is refused while the lease is valid");
+    assert!(shared::try_lease(db, "x", "A", 60.0).await.unwrap(), "holder renews");
+    db.execute("UPDATE collector_lease SET expires_at = now() - interval '1 second' WHERE name = 'x'", &[]).await.unwrap();
+    assert!(shared::try_lease(db, "x", "B", 60.0).await.unwrap(), "expired lease is taken over");
+    assert!(!shared::try_lease(db, "x", "A", 60.0).await.unwrap(), "the former holder is now refused");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn persisted_collector_state_prevents_duplicates_and_loses_nothing() {
+    let Some(env) = setup().await else { return };
+    let db = &env.state.db;
+    let alice = add_user(&env.state, "cs-alice", "alice-pass-1", "user").await;
+    let ta = env.token(&alice, "user");
+    let app = app!(env);
+    let _ = make_zone(&env, &app, &ta, "cs-zone.example").await;
+    let m = |total: u32, z: u32| format!("hickory_request_total{{class=\"in\"}} {total}\nhickory_zone_queries_total{{zone=\"cs-zone.example.\",result=\"ok\"}} {z}\n");
+    let sum = || async { let r = db.query_one("SELECT COALESCE(sum(requests),0)::bigint, (SELECT COALESCE(sum(queries),0)::bigint FROM zone_query_samples) FROM analytics_samples", &[]).await.unwrap(); (r.get::<_, i64>(0), r.get::<_, i64>(1)) };
+    let now = chrono::Utc::now().timestamp();
+    tenants::ingest_persistent(db, &m(1000, 100), now - 100).await.unwrap();         // baseline
+    tenants::ingest_persistent(db, &m(1050, 130), now - 90).await.unwrap();           // +50 / +30
+    // a second replica (or a retry) delivering the SAME scrape adds nothing
+    tenants::ingest_persistent(db, &m(1050, 130), now - 85).await.unwrap();
+    assert_eq!(sum().await, (50, 30), "duplicate delivery must not double count");
+    // two writers racing on the same new scrape: exactly one delta
+    let (m1, m2) = (m(1100, 160), m(1100, 160));
+    let (a, b) = tokio::join!(tenants::ingest_persistent(db, &m1, now - 80), tenants::ingest_persistent(db, &m2, now - 79));
+    a.unwrap(); b.unwrap();
+    assert_eq!(sum().await, (100, 60), "concurrent writers produce one sample, not two");
+    // an outage: several scrapes are never ingested; the first one afterwards records the entire gap
+    tenants::ingest_persistent(db, &m(1400, 400), now - 10).await.unwrap();
+    assert_eq!(sum().await, (400, 300), "no data lost across a gap");
+    // a failed write rolls back everything including the stored counters (so it is retried, not skipped)
+    db.batch_execute("ALTER TABLE analytics_samples RENAME TO analytics_samples_x").await.unwrap();
+    assert!(tenants::ingest_persistent(db, &m(1500, 500), now).await.is_err());
+    db.batch_execute("ALTER TABLE analytics_samples_x RENAME TO analytics_samples").await.unwrap();
+    tenants::ingest_persistent(db, &m(1500, 500), now).await.unwrap();
+    assert_eq!(sum().await, (500, 400), "the failed attempt left no trace and the retry recorded the full delta");
+    // counter reset (DNS server restart): the new value is the delta
+    tenants::ingest_persistent(db, &m(20, 5), now + 5).await.unwrap();
+    assert_eq!(sum().await, (520, 405));
+    env.cleanup().await;
+}
+
+// ===========================================================================
+// Record-type / country breakdowns
+// ===========================================================================
+
+#[actix_web::test]
+async fn breakdowns_are_isolated_bounded_honest_and_from_real_samples() {
+    let Some(env) = setup().await else { return };
+    let db = &env.state.db;
+    let alice = add_user(&env.state, "bd-alice", "alice-pass-1", "user").await;
+    let carol = add_user(&env.state, "bd-carol", "carol-pass-1", "user").await;
+    let (ta, tc, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    let _ = make_zone(&env, &app, &ta, "bd-alice.example").await; let _ = make_zone(&env, &app, &ta, "bd-alice2.example").await; let _ = make_zone(&env, &app, &tc, "bd-carol.example").await;
+    let scrape = |k: u32| format!(
+        "hickory_request_total{{class=\"in\"}} {}\n\
+         hickory_zone_queries_total{{zone=\"bd-alice.example.\",result=\"ok\"}} {}\n\
+         hickory_zone_qtype_total{{zone=\"bd-alice.example.\",qtype=\"A\"}} {}\nhickory_zone_qtype_total{{zone=\"bd-alice.example.\",qtype=\"MX\"}} {}\n\
+         hickory_zone_qtype_total{{zone=\"bd-alice2.example.\",qtype=\"TXT\"}} {}\n\
+         hickory_zone_qtype_total{{zone=\"bd-carol.example.\",qtype=\"CAA\"}} {}\n\
+         hickory_zone_qtype_total{{zone=\"bd-alice.example.\",qtype=\"A;DROP\"}} 99999\n\
+         hickory_zone_country_total{{zone=\"bd-alice.example.\",country=\"DE\"}} {}\nhickory_zone_country_total{{zone=\"bd-alice.example.\",country=\"ZZ-private\"}} {}\n\
+         hickory_zone_country_total{{zone=\"bd-alice2.example.\",country=\"ZZ-unknown\"}} {}\n\
+         hickory_zone_country_total{{zone=\"bd-carol.example.\",country=\"ZZ-nodata\"}} {}\nhickory_zone_country_total{{zone=\"bd-carol.example.\",country=\"ZZ-private\"}} {}\n\
+         hickory_geoip_build_epoch 1700000000\n",
+        100 + 10 * k, 5 * k, 3 * k, 2 * k, 4 * k, k, 2 * k, k, 4 * k, 6 * k, k);
+    let now = chrono::Utc::now().timestamp();
+    tenants::ingest_persistent(db, &scrape(0), now - 100).await.unwrap();
+    tenants::ingest_persistent(db, &scrape(10), now - 50).await.unwrap();
+    tenants::ingest_persistent(db, &scrape(10), now - 40).await.unwrap(); // duplicate delivery: no change
+
+    let (st, a, raw) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&ta), None); assert_eq!(st, 200, "{raw}");
+    let qt: Vec<(String, i64)> = a["breakdown"]["qtypes"].as_array().unwrap().iter().map(|x| (x["qtype"].as_str().unwrap().to_string(), x["queries"].as_i64().unwrap())).collect();
+    assert_eq!(qt, vec![("TXT".into(), 40), ("A".into(), 30), ("MX".into(), 20)], "alice sees only her zones, summed over zones, malicious label ignored: {raw}");
+    let co = a["breakdown"]["countries"].as_array().unwrap();
+    let find = |kind: &str| co.iter().find(|c| c["kind"] == kind).map(|c| c["queries"].as_i64().unwrap());
+    assert_eq!(co.iter().find(|c| c["code"] == "DE").unwrap()["queries"], 20);
+    assert_eq!(find("private"), Some(10)); assert_eq!(find("unknown"), Some(40)); assert_eq!(find("no_geoip"), None, "carol's sentinel must not leak into alice's view");
+    assert_eq!(a["breakdown"]["country_status"], "ok");
+    assert_eq!(a["breakdown"]["geoip"]["available"], true);
+    // zone filter inside the tenant
+    let (_, z, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h&zone=bd-alice2.example", Some(&ta), None);
+    assert_eq!(z["breakdown"]["qtypes"].as_array().unwrap().len(), 1); assert_eq!(z["breakdown"]["qtypes"][0]["qtype"], "TXT");
+    // carol: only CAA, and her country data is entirely "GeoIP unavailable" (+private) -> status says so instead of inventing a country
+    let (_, c, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&tc), None);
+    assert_eq!(c["breakdown"]["qtypes"].as_array().unwrap().len(), 1); assert_eq!(c["breakdown"]["qtypes"][0]["qtype"], "CAA");
+    assert_eq!(c["breakdown"]["country_status"], "geoip_unavailable");
+    assert!(c["breakdown"]["countries"].as_array().unwrap().iter().all(|x| x["code"] == ""), "no country codes fabricated");
+    // asking for another tenant's data is refused; foreign zone filter yields nothing
+    let (_, tl, _) = call!(app, get, "/api/v1/tenants", Some(&tadmin), None);
+    let ctid = tl.as_array().unwrap().iter().find(|t| t["name"] == "personal-bd-carol").unwrap()["id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, get, &format!("/api/v1/analytics/tenant?tenant_id={}", ctid), Some(&ta), None); assert_eq!(st, 404);
+    let (_, x, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h&zone=bd-carol.example", Some(&ta), None);
+    assert!(x["breakdown"]["qtypes"].as_array().unwrap().is_empty(), "foreign zone filter leaks nothing: {x}");
+    // admin: global view is separate and covers everyone; customers cannot call it
+    let (st, g, raw) = call!(app, get, "/api/v1/analytics/global?range=1h", Some(&tadmin), None); assert_eq!(st, 200, "{raw}");
+    assert_eq!(g["breakdown"]["qtypes"].as_array().unwrap().len(), 4);
+    let (st, _, _) = call!(app, get, "/api/v1/analytics/global", Some(&ta), None); assert_eq!(st, 403);
+    // intervals
+    let (st, i, _) = call!(app, get, "/api/v1/analytics/tenant?range=7d&interval=1d", Some(&ta), None); assert_eq!(st, 200); assert_eq!(i["bucket_seconds"], 86400);
+    let (st, _, _) = call!(app, get, "/api/v1/analytics/tenant?range=90d&interval=1m", Some(&ta), None); assert_eq!(st, 400, "would exceed 2,000 buckets");
+    let (st, _, _) = call!(app, get, "/api/v1/analytics/tenant?interval=7s", Some(&ta), None); assert_eq!(st, 400);
+    // retention covers the new tables
+    db.execute("UPDATE zone_qtype_samples SET ts = ts - interval '200 days'", &[]).await.unwrap();
+    db.execute("UPDATE zone_country_samples SET ts = ts - interval '200 days'", &[]).await.unwrap();
+    assert!(tenants::purge_analytics(db, 90).await.unwrap() > 0);
+    let n: i64 = db.query_one("SELECT (SELECT count(*) FROM zone_qtype_samples) + (SELECT count(*) FROM zone_country_samples)", &[]).await.unwrap().get(0);
+    assert_eq!(n, 0);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn rollup_preserves_sums_bounds_growth_and_is_idempotent() {
+    let Some(env) = setup().await else { return };
+    let db = &env.state.db;
+    let alice = add_user(&env.state, "ru-alice", "alice-pass-1", "user").await;
+    let ta = env.token(&alice, "user");
+    let app = app!(env);
+    let _ = make_zone(&env, &app, &ta, "ru.example").await;
+    // 5-minute samples: 3 days old (to be rolled up) and 10 minutes old (must stay untouched)
+    db.batch_execute("INSERT INTO zone_query_samples (ts, tenant_id, domain, queries, failed) \
+        SELECT now() - interval '3 days' + make_interval(secs => s * 300), (SELECT tenant_id FROM zones WHERE domain='ru.example'), 'ru.example', 10, s % 2 FROM generate_series(0, 287) s; \
+        INSERT INTO zone_qtype_samples (ts, tenant_id, domain, qtype, queries) SELECT now() - interval '3 days' + make_interval(secs => s * 300), (SELECT tenant_id FROM zones WHERE domain='ru.example'), 'ru.example', t, 2 FROM generate_series(0, 287) s, unnest(ARRAY['A','MX']) t; \
+        INSERT INTO zone_country_samples (ts, tenant_id, domain, country, queries) SELECT now() - interval '3 days' + make_interval(secs => s * 300), (SELECT tenant_id FROM zones WHERE domain='ru.example'), 'ru.example', 'DE', 3 FROM generate_series(0, 287) s; \
+        INSERT INTO analytics_samples (ts, requests) SELECT now() - interval '3 days' + make_interval(secs => s * 300), 7 FROM generate_series(0, 287) s; \
+        INSERT INTO zone_query_samples (ts, tenant_id, domain, queries, failed) VALUES (now() - interval '10 minutes', (SELECT tenant_id FROM zones WHERE domain='ru.example'), 'ru.example', 5, 0)").await.unwrap();
+    let snap = || async { let r = db.query_one("SELECT (SELECT sum(queries)::bigint FROM zone_query_samples), (SELECT sum(failed)::bigint FROM zone_query_samples), (SELECT sum(queries)::bigint FROM zone_qtype_samples), (SELECT sum(queries)::bigint FROM zone_country_samples), (SELECT sum(requests)::bigint FROM analytics_samples), (SELECT count(*) FROM zone_query_samples) + (SELECT count(*) FROM zone_qtype_samples) + (SELECT count(*) FROM zone_country_samples) + (SELECT count(*) FROM analytics_samples)", &[]).await.unwrap();
+        ((r.get::<_, i64>(0), r.get::<_, i64>(1), r.get::<_, i64>(2), r.get::<_, i64>(3), r.get::<_, i64>(4)), r.get::<_, i64>(5)) };
+    let (sums_before, rows_before) = snap().await;
+    assert!(tenants::rollup_analytics(db).await.unwrap() > 0);
+    let (sums_after, rows_after) = snap().await;
+    assert_eq!(sums_before, sums_after, "every sum is preserved exactly");
+    assert!(rows_after < rows_before / 4, "row count shrinks: {rows_before} -> {rows_after}");
+    let recent: i64 = db.query_one("SELECT count(*) FROM zone_query_samples WHERE ts > now() - interval '1 hour'", &[]).await.unwrap().get(0);
+    assert_eq!(recent, 1, "recent detail is kept");
+    let non_hour: i64 = db.query_one("SELECT count(*) FROM zone_qtype_samples WHERE ts < now() - interval '49 hours' AND ts <> date_trunc('hour', ts)", &[]).await.unwrap().get(0);
+    assert_eq!(non_hour, 0, "old rows are hour-aligned");
+    assert_eq!(tenants::rollup_analytics(db).await.unwrap(), 0, "idempotent: nothing left to merge");
+    assert_eq!(snap().await.0, sums_before);
+    // the API serves the same totals from the rolled-up data
+    let (_, a, _) = call!(app, get, "/api/v1/analytics/tenant?range=7d", Some(&ta), None);
+    assert_eq!(a["total_queries"], 288 * 10 + 5);
     env.cleanup().await;
 }

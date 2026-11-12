@@ -17,6 +17,7 @@ mod dnssec;
 mod metrics;
 mod lookup;
 mod tenants;
+mod shared;
 use db_pool::Pool;
 use dns_manager::DnsManager;
 use dns_validator::*;
@@ -216,6 +217,11 @@ struct ZoneWithOwner {
     access: String,
     #[serde(default)]
     ecs_enabled: bool,
+    /// owning tenant (id and name), if any
+    #[serde(default)]
+    tenant_id: Option<String>,
+    #[serde(default)]
+    tenant_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -225,6 +231,8 @@ struct AppState {
     dns_manager: Arc<DnsManager>,
     /// resolver used for domain-ownership TXT checks
     verify_resolver: std::net::SocketAddr,
+    /// ordered DNS Lookup resolvers (empty = not configured); see lookup.rs
+    lookup_resolvers: Vec<lookup::ResolverSpec>,
     /// require a TXT challenge before a non-admin's zone is served
     verify_domains: bool,
     /// http://host:port/metrics of the DNS server (query statistics)
@@ -890,6 +898,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
     // DNSSEC keys
     client.batch_execute(dnssec::SCHEMA).await?;
     client.batch_execute(tenants::SCHEMA).await?;
+    client.batch_execute(shared::SCHEMA).await?;
     // users: MFA
     client.batch_execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
@@ -977,13 +986,15 @@ async fn login(body: web::Json<LoginRequest>, data: web::Data<AppState>, http_re
     }
     // per-client-address budget (proxy-aware) in addition to the per-username one
     if let Some(ip) = real_client_ip(&http_req) {
-        if !login_ip_allowed(&ip) {
+        let per_ip: u32 = std::env::var("LOGIN_RATE_PER_IP").ok().and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(60);
+        if shared::limited(&data.db, &format!("login-ip:{}", ip), per_ip, 60, || login_ip_allowed(&ip)).await.is_some() {
             return HttpResponse::TooManyRequests()
                 .insert_header((header::RETRY_AFTER, "60"))
                 .json(serde_json::json!({"error": "too_many_attempts", "details": "Too many login attempts from this address"}));
         }
     }
-    if !login_allowed(username) {
+    let ukey: String = username.to_ascii_lowercase().chars().take(64).collect();
+    if shared::limited(&data.db, &format!("login-user:{}", ukey), LOGIN_ATTEMPTS_PER_MINUTE, 60, || login_allowed(username)).await.is_some() {
         return HttpResponse::TooManyRequests()
             .insert_header((header::RETRY_AFTER, "60"))
             .json(serde_json::json!({"error": "too_many_attempts", "details": "Too many login attempts; try again later"}));
@@ -2649,7 +2660,8 @@ async fn list_zones(page: web::Query<ext::PageQuery>, data: web::Data<AppState>,
         "SELECT CAST(z.id AS varchar), z.domain, COALESCE(CAST(z.owner AS varchar), '') as owner, z.zone_type, z.created_at::text, \
                 COALESCE(z.geodns_enabled, true), z.status, z.ecs_enabled, \
                 CASE WHEN $1 THEN 'admin' WHEN CAST(z.owner AS varchar) = $2 THEN 'owner' \
-                     ELSE COALESCE(m.role, (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2), '') END, count(*) OVER() \
+                     ELSE COALESCE(m.role, (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2), '') END, count(*) OVER(), \
+                CAST(z.tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = z.tenant_id) \
          FROM zones z LEFT JOIN zone_members m ON m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2 \
          WHERE ({}) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
          ORDER BY z.domain LIMIT $4::bigint OFFSET $5::bigint", tenants::ZONE_VISIBLE);
@@ -2671,6 +2683,8 @@ async fn list_zones(page: web::Query<ext::PageQuery>, data: web::Data<AppState>,
                 status: r.try_get(6).unwrap_or_default(),
                 ecs_enabled: r.try_get(7).unwrap_or(false),
                 access: r.try_get(8).unwrap_or_default(),
+                tenant_id: r.try_get(10).unwrap_or(None),
+                tenant_name: r.try_get(11).unwrap_or(None),
             }).collect();
             HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(ApiResponse { success: true, data: Some(zones), error: None })
         }
@@ -2863,6 +2877,9 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
 #[derive(Deserialize)]
 struct DnsLookupRequest {
     domain: String,
+    /// administrators only: label of one configured resolver
+    #[serde(default)]
+    resolver: Option<String>,
     #[serde(default = "default_record_type")]
     record_type: String,
 }
@@ -2876,7 +2893,8 @@ fn default_record_type() -> String {
 async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
     let tok = match auth_from_header(&req, &data.jwt_secret) { Some(t) => t, None => return unauthorized() };
     // the tool sends real queries to a shared resolver: bound the rate per account
-    if let Err(wait) = lookup::check_rate(&tok.claims.sub, lookup::rate_limit_per_minute()) {
+    let lim = lookup::rate_limit_per_minute();
+    if let Some(wait) = shared::limited(&data.db, &format!("lookup:{}", tok.claims.sub), lim, 60, || lookup::check_rate(&tok.claims.sub, lim).is_ok()).await {
         return HttpResponse::TooManyRequests().insert_header(("Retry-After", wait.to_string()))
             .json(serde_json::json!({"error": "rate_limited", "details": format!("too many lookups, retry in {} s", wait)}));
     }
@@ -2885,14 +2903,28 @@ async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>
             "error": "unsupported record type", "supported": lookup::SUPPORTED_TYPES
         }));
     };
-    match lookup::lookup(data.verify_resolver, &body.domain, rtype).await {
-        Ok(r) => HttpResponse::Ok().json(r),
-        Err(e) if e.contains("required") || e.contains("invalid") || e.contains("too long") || e.contains("only be used") || e.contains("characters") => {
-            HttpResponse::BadRequest().json(serde_json::json!({"error": e}))
+    let is_admin = tok.claims.role == "admin";
+    if data.lookup_resolvers.is_empty() {
+        return HttpResponse::ServiceUnavailable().json(serde_json::json!({"error": "not_configured", "details": "DNS lookup is not available on this installation"}));
+    }
+    // only administrators may pick a specific resolver (diagnostics); customers always get the managed failover chain
+    let only = if is_admin { body.resolver.as_deref().filter(|s| !s.is_empty()) } else { None };
+    if body.resolver.as_deref().map(|s| !s.is_empty()).unwrap_or(false) && !is_admin {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "resolver selection is not permitted"}));
+    }
+    match lookup::lookup_failover(&data.lookup_resolvers, only, &body.domain, rtype, lookup::timeout_per_resolver(), lookup::total_deadline()).await {
+        Ok(mut r) => {
+            if !is_admin { r.resolver = None; r.attempts.clear(); }
+            HttpResponse::Ok().json(r)
         }
-        Err(e) => {
-            warn!("dns_lookup: resolver error: {}", e);
-            HttpResponse::BadGateway().json(serde_json::json!({"error": "resolver_unavailable", "details": e}))
+        // a malformed question or an unknown resolver label: nothing was sent, nothing to hide
+        Err((e, attempts)) if attempts.is_empty() => HttpResponse::BadRequest().json(serde_json::json!({"error": e})),
+        Err((e, attempts)) => {
+            warn!("dns_lookup: {} ({:?})", e, attempts);
+            // customers learn only that the service is unavailable; administrators see what each resolver did
+            let mut body = serde_json::json!({"error": "resolver_unavailable", "details": "the lookup service could not reach a resolver, please try again shortly"});
+            if is_admin { body["attempts"] = serde_json::json!(attempts); }
+            HttpResponse::BadGateway().json(body)
         }
     }
 }
@@ -3533,7 +3565,7 @@ async fn get_zone(
     };
     
     match (&*data.db).query_one(
-        "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) as geodns_enabled, status, ecs_enabled FROM zones WHERE CAST(id AS varchar) = $1",
+        "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) as geodns_enabled, status, ecs_enabled, CAST(tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = zones.tenant_id) FROM zones WHERE CAST(id AS varchar) = $1",
         &[&zone_id]
     ).await {
         Ok(row) => {
@@ -3546,6 +3578,8 @@ async fn get_zone(
                 geodns_enabled: row.try_get(5).unwrap_or(true),
                 status: row.try_get(6).unwrap_or_default(),
                 ecs_enabled: row.try_get(7).unwrap_or(false),
+                tenant_id: row.try_get(8).unwrap_or(None),
+                tenant_name: row.try_get(9).unwrap_or(None),
                 access: access.role.clone(),
             };
             
@@ -4107,7 +4141,18 @@ async fn main() -> std::io::Result<()> {
     let pool_size: usize = std::env::var("DB_POOL_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
     // Connections are replaced automatically when they drop (see db_pool).
     let client = Pool::connect(&database_url, pool_size, None).await.expect("cannot connect to db");
-    migrate_db(&*client).await.expect("db migrate failed");
+    // Several replicas starting together run the same idempotent DDL; PostgreSQL can reject the loser of a
+    // concurrent CREATE ... IF NOT EXISTS race, so retry (the second run finds everything in place).
+    {
+        let mut attempt = 0;
+        loop {
+            match migrate_db(&*client).await {
+                Ok(()) => break,
+                Err(e) if attempt < 5 => { attempt += 1; warn!("migration attempt {} failed ({}), retrying", attempt, full_error_string(&e)); tokio::time::sleep(std::time::Duration::from_millis(400 * attempt)).await; }
+                Err(e) => panic!("db migrate failed: {}", e),
+            }
+        }
+    }
 
     // Bootstrap admin user if environment variables are set
     let force_bootstrap = std::env::var("FORCE_BOOTSTRAP").unwrap_or_else(|_| "false".to_string()).to_lowercase() == "true";
@@ -4192,6 +4237,7 @@ async fn main() -> std::io::Result<()> {
         db: client.clone(), 
         jwt_secret: jwt_secret.clone(),
         dns_manager: dns_manager.clone(),
+        lookup_resolvers: match lookup::resolvers_from_env() { Ok(v) => v, Err(e) => { eprintln!("invalid configuration: {}", e); std::process::exit(2); } },
         verify_resolver: std::env::var("DNS_VERIFY_RESOLVER").ok().and_then(|v| v.parse().ok())
             .unwrap_or_else(|| "1.1.1.1:53".parse().unwrap()),
         verify_domains: std::env::var("VERIFY_DOMAINS").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false),
