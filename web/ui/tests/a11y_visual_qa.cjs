@@ -13,8 +13,8 @@ const BASELINE = process.env.VISUAL_BASELINE || path.join(__dirname, 'visual-bas
 const MAX_DIFF_RATIO = Number(process.env.MAX_DIFF_RATIO || 0.002);
 const ADMIN_ROUTES = ['/admin', '/admin/metrics', '/admin/zones', '/admin/nameservers', '/admin/georules', '/admin/dns-lookup', '/admin/servers', '/admin/agents', '/admin/config', '/admin/tenants', '/admin/users', '/admin/audit', '/admin/settings'];
 const USER_ROUTES = ['/user', '/user/zones', '/user/analytics', '/user/dns-lookup', '/user/settings', '/user/help'];
-// deterministic pages only (no clocks, charts or audit trails)
-const VISUAL = { admin: ['/admin/nameservers', '/admin/dns-lookup', '/admin/tenants', '/admin/settings', '/admin/config'], user: ['/user/dns-lookup', '/user/help', '/user/settings'] };
+// deterministic pages only: no clocks, charts, audit trails or pages whose content depends on data created by other suites (e.g. tenants)
+const VISUAL = { admin: ['/admin/nameservers', '/admin/dns-lookup', '/admin/settings', '/admin/config'], user: ['/user/dns-lookup', '/user/help', '/user/settings'] };
 let pass = 0, fail = 0;
 const ok = (n, c, x = '') => { c ? pass++ : fail++; console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  -- ' + String(x).slice(0, 300) : '')); };
 async function login(page, [u, p]) {

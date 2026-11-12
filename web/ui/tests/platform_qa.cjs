@@ -182,6 +182,20 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   const [, aApi] = await api('GET', '/api/v1/analytics/tenant?range=1h', alice); const [, cApi] = await api('GET', '/api/v1/analytics/tenant?range=1h', carol);
   ok('analytics (API): counts are exact multiples of the stub increments (10 ok + 1 error per scrape)', aApi.total_queries > 0 && aApi.total_queries % 11 === 0 && cApi.total_queries > 0, `${aApi.total_queries} / ${cApi.total_queries}`);
   ok('analytics (API): tenants are disjoint', aApi.zones.every((z) => z.domain.startsWith('alice')) && cApi.zones.every((z) => z.domain.startsWith('carol')));
+  // record-type and country breakdowns (stub emits 6 A + 4 MX and 7 DE + 2 private + 1 unknown per scrape and zone)
+  const bdA = aApi.breakdown, bdC = cApi.breakdown;
+  const q = (b, t) => (b.qtypes.find((x) => x.qtype === t) || {}).queries || 0;
+  ok('breakdown (API): record types keep the 6:4 ratio emitted by the exporter', q(bdA, 'A') > 0 && q(bdA, 'A') * 4 === q(bdA, 'MX') * 6, `${q(bdA, 'A')}:${q(bdA, 'MX')}`);
+  ok('breakdown (API): countries are DE / private / unknown only, labelled honestly', bdA.countries.some((c) => c.code === 'DE') && bdA.countries.some((c) => c.kind === 'private') && bdA.countries.some((c) => c.kind === 'unknown') && !bdA.countries.some((c) => c.kind === 'no_geoip'));
+  await apg.waitForSelector('[data-testid="breakdowns"]'); await apg.waitForTimeout(500);
+  ok('breakdown (customer UI): record-type chart shows A and MX from the database', /A/.test(await apg.textContent('[data-testid="qtype-chart"]')) && /MX/.test(await apg.textContent('[data-testid="qtype-chart"]')));
+  const ctext = await apg.textContent('[data-testid="country-chart"]');
+  ok('breakdown (customer UI): countries list DE and explains private / unknown', /DE/.test(ctext) && /Private \/ reserved/.test(ctext) && /Not found in the GeoIP database/.test(ctext));
+  ok('breakdown (customer UI): GeoIP database age is shown from the exporter data', /GeoIP database \d+ days old/.test(await apg.textContent('body')));
+  await apg.selectOption('#an-interval', '1h'); await apg.waitForTimeout(1000);
+  ok('analytics (customer): interval filter reloads data', (await apg.locator('[data-testid="queries-chart"]').count()) === 1);
+  await page.goto(BASE + '/admin/metrics'); await page.waitForSelector('[data-testid="breakdowns"]'); await page.waitForTimeout(800);
+  ok('breakdown (admin UI): global view shows both charts', (await page.locator('[data-testid="qtype-chart"]').count()) === 1 && /DE/.test(await page.textContent('[data-testid="country-chart"]')));
   await apg.selectOption('#an-range', '7d'); await apg.waitForTimeout(1200);
   ok('analytics (customer): range filter reloads data', (await apg.locator('[data-testid="top-zones"]').count()) === 1);
   await page.goto(BASE + '/admin/metrics'); await page.waitForSelector('[data-testid="analytics-history"]'); await page.waitForTimeout(1500);
@@ -220,6 +234,48 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   const t2 = Date.now(); const [, small] = await api('GET', '/api/v1/overview', alice); const custMs = Date.now() - t2;
   ok('performance: customer overview stays fast and scoped while 5,000 other zones exist', small.zones_total === 2 && custMs < 500, `${small.zones_total} zones, ${custMs} ms`);
   psql("DELETE FROM records WHERE zone_id IN (SELECT id FROM zones WHERE domain LIKE 'perf%'); DELETE FROM zones WHERE domain LIKE 'perf%'");
+
+  // ===== 10. Zone transfer between tenants (admin workflow)
+  {
+    const [, nt] = await api('POST', '/api/v1/tenants', AT, { name: 'Transfer Target', max_zones: 1, max_records: null });
+    for (const d of ['xfer-one.example', 'xfer-two.example']) { await api('POST', '/api/v1/zones', AT, { domain: d, geodns_enabled: false }); }
+    const search = async (d) => { await page.goto(BASE + '/admin/zones'); await page.fill('input[placeholder="Search zones by domain..."]', d); await page.waitForSelector(`[data-testid="zone-tenant-${d}"]`, { timeout: 10000 }); };
+    await search('xfer-one.example');
+    ok('transfer: admin sees the current tenant of a zone', /Platform zone/.test(await page.textContent('[data-testid="zone-tenant-xfer-one.example"]')));
+    await page.click('button[aria-label="Transfer xfer-one.example"]'); await page.waitForSelector('[data-testid="transfer-form"]');
+    ok('transfer: dialog shows the source tenant', /Platform \(no tenant\)/.test(await page.textContent('[data-testid="transfer-source"]')));
+    ok('transfer: submit is disabled until a destination is chosen', await page.locator('[data-testid="transfer-form"] button[type="submit"]').isDisabled());
+    await page.waitForFunction(() => [...document.querySelectorAll('#transfer-dest option')].some((o) => /Transfer Target/.test(o.textContent)), null, { timeout: 10000 });
+    const optVal = await page.$$eval('#transfer-dest option', (o) => o.find((x) => /Transfer Target/.test(x.textContent))?.value);
+    await page.selectOption('#transfer-dest', optVal); await page.click('[data-testid="transfer-form"] button[type="submit"]');
+    await page.waitForSelector('[data-testid="confirm-dialog"]');
+    const msg = await page.textContent('[data-testid="confirm-dialog"]');
+    ok('transfer: confirmation names source and destination', /Platform \(no tenant\)/.test(msg) && /Transfer Target/.test(msg), msg.slice(0, 160));
+    await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+    const [, still] = await api('GET', '/api/v1/zones?q=xfer-one.example', AT);
+    ok('transfer: cancelling the confirmation changes nothing', !still.data[0].tenant_id);
+    await page.click('[data-testid="transfer-form"] button[type="submit"]'); await page.waitForSelector('[data-testid="confirm-dialog"]'); await confirmYes(page);
+    const okToast = await page.waitForSelector('text=/moved to Transfer Target/', { timeout: 10000 }).then((e) => e.textContent()).catch(() => '');
+    ok('transfer: success notification', /moved to Transfer Target/.test(okToast), okToast);
+    await search('xfer-one.example');
+    ok('transfer: list shows the new tenant', /Tenant: Transfer Target/.test(await page.textContent('[data-testid="zone-tenant-xfer-one.example"]')));
+    // quota failure: the target tenant allows only one zone
+    await search('xfer-two.example');
+    await page.click('button[aria-label="Transfer xfer-two.example"]'); await page.waitForSelector('[data-testid="transfer-form"]');
+    await page.waitForFunction(() => [...document.querySelectorAll('#transfer-dest option')].some((o) => /Transfer Target/.test(o.textContent)), null, { timeout: 10000 });
+    await page.selectOption('#transfer-dest', await page.$$eval('#transfer-dest option', (o) => o.find((x) => /Transfer Target/.test(x.textContent))?.value));
+    await page.click('[data-testid="transfer-form"] button[type="submit"]'); await page.waitForSelector('[data-testid="confirm-dialog"]'); await confirmYes(page);
+    const errToast = await page.waitForSelector('text=/Quota reached/', { timeout: 10000 }).then((e) => e.textContent()).catch(() => '');
+    ok('transfer: quota failure is reported and the zone is unchanged', /Quota reached/.test(errToast) && /not changed/.test(errToast), errToast);
+    const [, two] = await api('GET', '/api/v1/zones?q=xfer-two.example', AT); ok('transfer: refused zone still has no tenant', !two.data[0].tenant_id);
+    // authorization
+    await apg.goto(BASE + '/user/zones'); await apg.waitForTimeout(1200);
+    ok('transfer: customers get no Transfer action', (await apg.locator('button:has-text("Transfer")').count()) === 0);
+    const [fz] = (await api('GET', '/api/v1/zones', alice))[1].data;
+    ok('transfer: customers are refused by the API (403)', (await api('PUT', `/api/v1/zones/${fz.id}/tenant`, alice, { tenant_id: nt.id }))[0] === 403);
+    const [, au] = await api('GET', '/api/v1/audit/logs?action=zone.transfer&limit=5', AT);
+    ok('transfer: recorded in the audit log with source and destination', JSON.stringify(au).includes('Transfer Target') && JSON.stringify(au).includes('xfer-one.example'));
+  }
 
   await browser.close();
   console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
