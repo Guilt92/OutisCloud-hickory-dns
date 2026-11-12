@@ -28,6 +28,11 @@ class H(http.server.BaseHTTPRequestHandler):
         for z, (ok, er) in zones.items():
             out.append('hickory_zone_queries_total{zone="%s.",result="ok"} %d' % (z, ok))
             out.append('hickory_zone_queries_total{zone="%s.",result="error"} %d' % (z, er))
+            n = ok // 10                      # scrapes seen for this zone: deterministic breakdowns (6 A + 4 MX, 7 DE + 2 private + 1 unknown + 1 GeoIP-less per scrape)
+            out.append('hickory_zone_qtype_total{zone="%s.",qtype="A"} %d' % (z, 6 * n)); out.append('hickory_zone_qtype_total{zone="%s.",qtype="MX"} %d' % (z, 4 * n))
+            out.append('hickory_zone_country_total{zone="%s.",country="DE"} %d' % (z, 7 * n)); out.append('hickory_zone_country_total{zone="%s.",country="ZZ-private"} %d' % (z, 2 * n))
+            out.append('hickory_zone_country_total{zone="%s.",country="ZZ-unknown"} %d' % (z, 1 * n)); out.append('hickory_zone_country_total{zone="%s.",country="ZZ-nodata"} %d' % (z, 0 * n))
+        out.append('hickory_geoip_build_epoch 1771921361')
         b = ("\n".join(out) + "\n").encode()
         self.send_response(200); self.send_header("content-type", "text/plain"); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
 http.server.HTTPServer(("127.0.0.1", 19100), H).serve_forever()
