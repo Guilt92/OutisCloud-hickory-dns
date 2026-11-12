@@ -197,9 +197,12 @@ async fn login_is_rate_limited_per_username() {
     let app = app!(env);
     let name = format!("victim-{}", Uuid::new_v4().simple());
     let mut last = 0;
-    for _ in 0..(LOGIN_ATTEMPTS_PER_MINUTE + 5) {
+    // The budget refills continuously (1 token per 60/N s) and a debug-build login takes a while
+    // under parallel test load, so keep trying until the limiter trips instead of assuming a speed.
+    for _ in 0..(LOGIN_ATTEMPTS_PER_MINUTE * 6) {
         let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username": name, "password":"x"})));
         last = st;
+        if st == 429 { break; }
     }
     assert_eq!(last, 429);
     env.cleanup().await;
@@ -1428,5 +1431,418 @@ async fn publication_is_serialised_across_api_instances() {
     let rep = publish.await.unwrap().unwrap();
     assert!(rep.failed.is_empty());
     assert!(started.elapsed() >= std::time::Duration::from_millis(1200));
+    env.cleanup().await;
+}
+
+// ===========================================================================
+// DNS lookup, tenants, quotas, overview, analytics, authorization
+// ===========================================================================
+
+/// UDP+TCP fake resolver answering every supported type; `big.example` is truncated over UDP.
+async fn fake_multi_resolver() -> std::net::SocketAddr {
+    use hickory_proto::op::{Message, ResponseCode};
+    use hickory_proto::rr::rdata::{caa::KeyValue, A, AAAA, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT};
+    use hickory_proto::rr::{Name, RData, Record, RecordType};
+    use hickory_proto::dnssec::{rdata::{DNSKEY, DS}, Algorithm, DigestType, PublicKeyBuf};
+    fn answer(q: &Message, over_udp: bool) -> Vec<u8> {
+        let mut r = Message::response(q.id(), q.op_code());
+        r.set_recursion_available(true);
+        for qq in q.queries() {
+            r.add_query(qq.clone());
+            let n = qq.name().clone();
+            let s = n.to_ascii();
+            if s.starts_with("nx.") { r.set_response_code(ResponseCode::NXDomain);
+                r.add_authority(Record::from_rdata(Name::from_ascii("example.").unwrap(), 900, RData::SOA(SOA::new(Name::from_ascii("ns.example.").unwrap(), Name::from_ascii("h.example.").unwrap(), 1, 2, 3, 4, 900)))); continue; }
+            if s.starts_with("nodata.") { r.add_authority(Record::from_rdata(Name::from_ascii("example.").unwrap(), 777, RData::SOA(SOA::new(Name::from_ascii("ns.example.").unwrap(), Name::from_ascii("h.example.").unwrap(), 1, 2, 3, 4, 777)))); continue; }
+            if s.starts_with("big.") && over_udp { r.set_truncated(true); continue; }
+            let t = |x: RData, ttl: u32| Record::from_rdata(n.clone(), ttl, x);
+            let rr = match qq.query_type() {
+                RecordType::A => Some(t(RData::A(A::new(192, 0, 2, 1)), 301)),
+                RecordType::AAAA => Some(t(RData::AAAA(AAAA::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)), 302)),
+                RecordType::MX => Some(t(RData::MX(MX::new(10, Name::from_ascii("mail.example.").unwrap())), 303)),
+                RecordType::TXT => Some(t(RData::TXT(TXT::new(vec!["v=spf1 -all".into()])), 304)),
+                RecordType::NS => Some(t(RData::NS(NS(Name::from_ascii("ns1.example.").unwrap())), 305)),
+                RecordType::CNAME => Some(t(RData::CNAME(CNAME(Name::from_ascii("target.example.").unwrap())), 306)),
+                RecordType::SOA => Some(t(RData::SOA(SOA::new(Name::from_ascii("ns1.example.").unwrap(), Name::from_ascii("hostmaster.example.").unwrap(), 2024010101, 7200, 3600, 1209600, 300)), 307)),
+                RecordType::SRV => Some(t(RData::SRV(SRV::new(5, 6, 5060, Name::from_ascii("sip.example.").unwrap())), 308)),
+                RecordType::PTR => Some(t(RData::PTR(PTR(Name::from_ascii("host.example.").unwrap())), 309)),
+                RecordType::CAA => Some(t(RData::CAA(CAA::new_issue(false, Some(Name::from_ascii("letsencrypt.org").unwrap()), Vec::<KeyValue>::new())), 310)),
+                RecordType::DNSKEY => Some(t(RData::DNSSEC(hickory_proto::dnssec::rdata::DNSSECRData::DNSKEY(DNSKEY::new(true, true, false, PublicKeyBuf::new(vec![7u8; 64], Algorithm::ECDSAP256SHA256)))), 311)),
+                RecordType::DS => Some(t(RData::DNSSEC(hickory_proto::dnssec::rdata::DNSSECRData::DS(DS::new(12345, Algorithm::ECDSAP256SHA256, DigestType::SHA256, vec![0xab; 32]))), 312)),
+                _ => None,
+            };
+            if let Some(rr) = rr { r.add_answer(rr); }
+        }
+        r.to_vec().unwrap()
+    }
+    let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = udp.local_addr().unwrap();
+    let tcp = tokio::net::TcpListener::bind(addr).await.unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 1500];
+        loop {
+            let Ok((n, from)) = udp.recv_from(&mut buf).await else { return };
+            let Ok(q) = Message::from_vec(&buf[..n]) else { continue };
+            let _ = udp.send_to(&answer(&q, true), from).await;
+        }
+    });
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut s, _)) = tcp.accept().await else { return };
+            let mut l = [0u8; 2];
+            if s.read_exact(&mut l).await.is_err() { continue; }
+            let mut b = vec![0u8; u16::from_be_bytes(l) as usize];
+            if s.read_exact(&mut b).await.is_err() { continue; }
+            let Ok(q) = Message::from_vec(&b) else { continue };
+            let a = answer(&q, false);
+            let mut out = (a.len() as u16).to_be_bytes().to_vec(); out.extend(a);
+            let _ = s.write_all(&out).await;
+        }
+    });
+    addr
+}
+
+#[actix_web::test]
+async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
+    let Some(mut env) = setup().await else { return };
+    env.state.verify_resolver = fake_multi_resolver().await; env.full.inner = env.state.clone();
+    let user = add_user(&env.state, "lookup-user", "lookup-pass-1", "user").await;
+    let viewer = add_user(&env.state, "lookup-viewer", "lookup-pass-2", "viewer").await;
+    let (tu, tv) = (env.token(&user, "user"), env.token(&viewer, "viewer"));
+    let app = app!(env);
+    let expect: [(&str, u32, &str); 12] = [
+        ("A", 301, "192.0.2.1"), ("AAAA", 302, "2001:db8::1"), ("MX", 303, "10 mail.example."), ("TXT", 304, "v=spf1 -all"),
+        ("NS", 305, "ns1.example."), ("CNAME", 306, "target.example."), ("SOA", 307, "ns1.example. hostmaster.example. 2024010101 7200 3600 1209600 300"),
+        ("SRV", 308, "5 6 5060 sip.example."), ("PTR", 309, "host.example."), ("CAA", 310, "0 issue \"letsencrypt.org\""),
+        ("DNSKEY", 311, "257 3 13"), ("DS", 312, "12345 13 2"),
+    ];
+    assert_eq!(expect.len(), lookup::SUPPORTED_TYPES.len());
+    for (t, ttl, needle) in expect {
+        let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":t})));
+        assert_eq!(st, 200, "{t}: {raw}");
+        assert_eq!(b["status"], "NOERROR", "{t}");
+        let recs = b["records"].as_array().unwrap();
+        assert_eq!(recs.len(), 1, "{t}: {raw}");
+        assert_eq!(recs[0]["type"], t, "{raw}");
+        assert_eq!(recs[0]["ttl"], ttl, "{t} ttl: {raw}");
+        assert!(recs[0]["value"].as_str().unwrap().contains(needle), "{t}: {} should contain {needle}", recs[0]["value"]);
+        assert!(b["note"].is_null(), "{t}: a populated answer needs no note");
+    }
+    // PTR from an IP address
+    let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"192.0.2.1","record_type":"PTR"})));
+    assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["value"], "host.example.");
+    // negative answers are reported honestly, with the SOA that proves them
+    let (_, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"nx.example","record_type":"A"})));
+    assert_eq!(b["status"], "NXDOMAIN", "{raw}"); assert_eq!(b["records"].as_array().unwrap().len(), 0); assert_eq!(b["authority"][0]["ttl"], 900);
+    let (_, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"nodata.example","record_type":"MX"})));
+    assert_eq!(b["status"], "NOERROR", "{raw}"); assert_eq!(b["records"].as_array().unwrap().len(), 0);
+    assert!(b["note"].as_str().unwrap().contains("no MX"), "{raw}");
+    // truncated UDP answers are retried over TCP
+    let (_, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"big.example","record_type":"A"})));
+    assert_eq!(b["transport"], "tcp", "{raw}"); assert_eq!(b["records"][0]["value"], "192.0.2.1");
+    // validation
+    for (d, t) in [("www.example", "ANY"), ("www.example", "AXFR"), ("bad name", "A"), ("", "A"), ("192.0.2.1", "A")] {
+        let (st, _, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":d,"record_type":t})));
+        assert_eq!(st, 400, "{d}/{t}: {raw}");
+    }
+    // authorization: login required, read-only accounts may use the (read-only) tool
+    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", None::<&str>, j(serde_json::json!({"domain":"www.example"})));
+    assert_eq!(st, 401);
+    let (st, _, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tv), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    assert_eq!(st, 200, "viewer: {raw}");
+    // per-account rate limit (default 30/min): the 31st call in a window is refused, other accounts are unaffected
+    let spammer = add_user(&env.state, "spammer", "spam-pass-1", "user").await;
+    let ts = env.token(&spammer, "user");
+    let mut limited = 0;
+    for _ in 0..40 {
+        let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&ts), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+        if st == 429 { limited += 1; }
+    }
+    assert_eq!(limited, 10, "exactly the calls above the budget are refused");
+    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn dns_lookup_reports_unreachable_resolver_as_error_not_empty_result() {
+    let Some(mut env) = setup().await else { return };
+    // a closed port on localhost: the resolver is unreachable
+    env.state.verify_resolver = "127.0.0.1:9".parse().unwrap(); env.full.inner = env.state.clone();
+    let u = add_user(&env.state, "lk2", "lookup-pass-1", "user").await;
+    let tu = env.token(&u, "user");
+    let app = app!(env);
+    let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    assert_eq!(st, 502, "{raw}"); assert_eq!(b["error"], "resolver_unavailable");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn nameservers_and_server_status_authorization() {
+    let Some(env) = setup().await else { return };
+    let cust = add_user(&env.state, "cust", "cust-pass-123", "user").await;
+    let (tc, ta) = (env.token(&cust, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    env.state.db.execute("INSERT INTO nameservers (id, hostname, ip_address, sort_order, enabled) VALUES (gen_random_uuid(), 'ns-on.example', '192.0.2.53', 1, true), (gen_random_uuid(), 'ns-off.example', '192.0.2.54', 2, false)", &[]).await.unwrap();
+    let (st, _, _) = call!(app, get, "/api/v1/nameservers", None::<&str>, None);
+    assert_eq!(st, 401);
+    let (st, b, raw) = call!(app, get, "/api/v1/nameservers", Some(&tc), None);
+    assert_eq!(st, 200, "{raw}");
+    let hosts: Vec<String> = b.as_array().unwrap().iter().map(|n| n["hostname"].as_str().unwrap().to_string()).collect();
+    assert!(hosts.contains(&"ns-on.example".to_string()) && !hosts.contains(&"ns-off.example".to_string()), "customers see enabled nameservers only: {hosts:?}");
+    let (_, b, _) = call!(app, get, "/api/v1/nameservers", Some(&ta), None);
+    assert_eq!(b.as_array().unwrap().len(), 2, "admins see all");
+    // writes stay admin-only
+    let (st, _, _) = call!(app, post, "/api/v1/nameservers", Some(&tc), j(serde_json::json!({"hostname":"evil.example","ip_address":"192.0.2.9"})));
+    assert_eq!(st, 403);
+    // server status (infrastructure probe) is admin-only
+    let (st, _, _) = call!(app, get, "/api/v1/servers/00000000-0000-0000-0000-000000000000/status", Some(&tc), None);
+    assert_eq!(st, 403);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn legacy_zones_migrate_into_personal_tenants_without_loss() {
+    let Some(env) = setup().await else { return };
+    // state before this feature: users own zones, zones have no tenant
+    let bob = add_user(&env.state, "bob", "bob-pass-1234", "user").await;
+    let zid = Uuid::new_v4().to_string();
+    env.state.db.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'bob-legacy.example', $2::text::uuid)", &[&zid, &bob]).await.unwrap();
+    env.state.db.execute("UPDATE zones SET tenant_id = NULL", &[]).await.unwrap();
+    env.state.db.execute("DELETE FROM tenant_members", &[]).await.unwrap();
+    env.state.db.execute("DELETE FROM tenants", &[]).await.unwrap();
+    let admin_zone = Uuid::new_v4().to_string();
+    env.state.db.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'platform.example', $2::text::uuid)", &[&admin_zone, &env.admin]).await.unwrap();
+    for _ in 0..2 { env.state.db.batch_execute(tenants::SCHEMA).await.unwrap(); } // idempotent
+    let n: i64 = env.state.db.query_one("SELECT count(*) FROM tenants", &[]).await.unwrap().get(0);
+    assert_eq!(n, 1, "one personal tenant for the one non-admin user (admins get none), not duplicated on re-run");
+    let r = env.state.db.query_one("SELECT CAST(tenant_id AS varchar) IS NOT NULL FROM zones WHERE domain = 'bob-legacy.example'", &[]).await.unwrap();
+    assert!(r.get::<_, bool>(0), "legacy zone assigned to the owner's tenant");
+    let r = env.state.db.query_one("SELECT tenant_id IS NULL FROM zones WHERE domain = 'platform.example'", &[]).await.unwrap();
+    assert!(r.get::<_, bool>(0), "admin-owned zones stay platform-level");
+    let (m, q): (i64, i64) = { let r = env.state.db.query_one("SELECT (SELECT count(*) FROM tenant_members WHERE role='owner'), (SELECT count(*) FROM tenants WHERE max_zones IS NOT NULL OR max_records IS NOT NULL)", &[]).await.unwrap(); (r.get(0), r.get(1)) };
+    assert_eq!((m, q), (1, 0), "owner membership created, migrated tenants are unlimited");
+    // still fully functional through the API
+    let tb = env.token(&bob, "user");
+    let app = app!(env);
+    let (st, b, raw) = call!(app, get, "/api/v1/zones", Some(&tb), None);
+    assert_eq!(st, 200, "{raw}"); assert_eq!(b["data"].as_array().unwrap().len(), 1);
+    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", zid), Some(&tb), j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.7","ttl":300})));
+    assert_eq!(st, 201, "{raw}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn tenants_isolate_customers_and_enforce_quotas() {
+    let Some(env) = setup().await else { return };
+    let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
+    let carol = add_user(&env.state, "carol", "carol-pass-1", "user").await;
+    let (ta, tc, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    let az = make_zone(&env, &app, &ta, "alice-one.example").await;
+    let _cz = make_zone(&env, &app, &tc, "carol-one.example").await;
+
+    // each customer lives in their own tenant and only sees it
+    let (_, at, _) = call!(app, get, "/api/v1/tenants", Some(&ta), None);
+    let (_, ct, _) = call!(app, get, "/api/v1/tenants", Some(&tc), None);
+    assert_eq!(at.as_array().unwrap().len(), 1); assert_eq!(ct.as_array().unwrap().len(), 1);
+    let atid = at[0]["id"].as_str().unwrap().to_string();
+    let ctid = ct[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(atid, ctid);
+    assert_eq!(at[0]["zones"], 1);
+    // cross-tenant access is refused everywhere
+    for (m, uri) in [("members", format!("/api/v1/tenants/{}/members", ctid))] {
+        let _ = m;
+        let (st, _, _) = call!(app, get, &uri, Some(&ta), None); assert_eq!(st, 404, "{uri}");
+    }
+    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}/members", ctid), Some(&ta), j(serde_json::json!({"username":"alice","role":"owner"}))); assert_eq!(st, 404);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/analytics/tenant?tenant_id={}", ctid), Some(&ta), None); assert_eq!(st, 404);
+    let (st, _, _) = call!(app, get, "/api/v1/analytics/global", Some(&ta), None); assert_eq!(st, 403);
+    let (st, _, _) = call!(app, post, "/api/v1/tenants", Some(&ta), j(serde_json::json!({"name":"mine"}))); assert_eq!(st, 403);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&ta), j(serde_json::json!({"name":"x","max_zones":9999}))); assert_eq!(st, 403, "customers cannot raise their own quota");
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/tenants/{}", atid), Some(&ta), None); assert_eq!(st, 403);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{}/tenant", az), Some(&ta), j(serde_json::json!({"tenant_id": ctid}))); assert_eq!(st, 403, "customers cannot move zones between tenants");
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", az), Some(&tc), None); assert_eq!(st, 403);
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&ta), j(serde_json::json!({"domain":"x.example","tenant_id": ctid}))); assert_eq!(st, 403, "cannot create zones in someone else's tenant");
+    let (_, ov, _) = call!(app, get, "/api/v1/overview", Some(&tc), None);
+    let doms: Vec<&str> = ov["zones"].as_array().unwrap().iter().map(|z| z["domain"].as_str().unwrap()).collect();
+    assert_eq!(doms, vec!["carol-one.example"], "overview never leaks other tenants' zones");
+
+    // quotas: zones
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), j(serde_json::json!({"name":"personal-alice","max_zones":2,"max_records":null})));
+    assert_eq!(st, 200, "{raw}");
+    let _ = make_zone(&env, &app, &ta, "alice-two.example").await;
+    let (st, b, raw) = call!(app, post, "/api/v1/zones", Some(&ta), j(serde_json::json!({"domain":"alice-three.example"})));
+    assert_eq!(st, 403, "{raw}"); assert_eq!(b["error"], "quota_exceeded"); assert_eq!(b["quota"], "zones"); assert_eq!(b["limit"], 2); assert_eq!(b["used"], 2);
+    assert!(!env.zone_file("alice-three.example").exists());
+    // admin override (platform operators are not limited) and quota relief by raising the limit
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain":"admin-for-alice.example","tenant_id": atid}))); assert_eq!(st, 201);
+    // records
+    let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id=r.zone_id WHERE CAST(z.tenant_id AS varchar)=$1", &[&atid]).await.unwrap().get(0);
+    call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), j(serde_json::json!({"name":"personal-alice","max_zones":10,"max_records":used + 2})));
+    for i in 0..2 {
+        let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&ta), j(serde_json::json!({"name":format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})));
+        assert_eq!(st, 201, "{raw}");
+    }
+    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&ta), j(serde_json::json!({"name":"over","record_type":"A","value":"192.0.2.1","ttl":300})));
+    assert_eq!(st, 403, "{raw}"); assert_eq!(b["quota"], "records");
+    let (st, b, _) = call!(app, post, &format!("/api/v1/zones/{}/import", az), Some(&ta), j(serde_json::json!({"records":[{"name":"i1","record_type":"A","value":"192.0.2.2"}]})));
+    assert_eq!(st, 403, "import counts against the quota: {b}");
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&tadmin), j(serde_json::json!({"name":"adm","record_type":"A","value":"192.0.2.1","ttl":300}))); assert_eq!(st, 201, "admin bypasses record quota");
+    // deleting frees quota; other tenants were never affected
+    let (_, recs, _) = call!(app, get, &format!("/api/v1/zones/{}/records", az), Some(&ta), None);
+    let victim = recs.as_array().unwrap().iter().find(|r| r["name"] == "h0").unwrap()["id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{}/records/{}", az, victim), Some(&ta), None); assert_eq!(st, 200);
+    // (admin added one record above, so usage is still at the limit until a second deletion)
+    let victim2 = recs.as_array().unwrap().iter().find(|r| r["name"] == "h1").unwrap()["id"].as_str().unwrap().to_string();
+    call!(app, delete, &format!("/api/v1/zones/{}/records/{}", az, victim2), Some(&ta), None);
+    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&ta), j(serde_json::json!({"name":"again","record_type":"A","value":"192.0.2.1","ttl":300}))); assert_eq!(st, 201, "{raw}");
+    let (st, _, raw) = call!(app, post, "/api/v1/zones", Some(&tc), j(serde_json::json!({"domain":"carol-two.example"}))); assert_eq!(st, 201, "carol unlimited: {raw}");
+    // a restore cannot be used to get around the record quota (only growth is counted)
+    let big: String = env.state.db.query_one("SELECT CAST(id AS varchar) FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 ORDER BY jsonb_array_length(records) DESC LIMIT 1", &[&az]).await.unwrap().get(0);
+    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{}/revisions/{}/restore", az, big), Some(&ta), None);
+    assert_eq!(st, 403, "restoring a larger revision must respect the quota: {raw}"); assert_eq!(b["error"], "quota_exceeded");
+
+    // invalid quota values
+    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), j(serde_json::json!({"name":"personal-alice","max_zones":-1}))); assert_eq!(st, 400);
+    // deleting a tenant that owns zones is refused (no silent orphaning)
+    let (st, b, _) = call!(app, delete, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), None); assert_eq!(st, 409, "{b}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn tenant_roles_control_zone_access_and_membership() {
+    let Some(env) = setup().await else { return };
+    let owner = add_user(&env.state, "org-owner", "owner-pass-1", "user").await;
+    let ed = add_user(&env.state, "org-editor", "editor-pass-1", "user").await;
+    let vw = add_user(&env.state, "org-viewer", "viewer-pass-1", "user").await;
+    let out = add_user(&env.state, "outsider", "outsider-pass-1", "user").await;
+    let (to, te, tv, tx, tadmin) = (env.token(&owner, "user"), env.token(&ed, "user"), env.token(&vw, "user"), env.token(&out, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    let z = make_zone(&env, &app, &to, "org.example").await;
+    let (_, ts, _) = call!(app, get, "/api/v1/tenants", Some(&to), None);
+    let tid = ts[0]["id"].as_str().unwrap().to_string();
+    // owner invites an editor and a viewer
+    for (u, r) in [("org-editor", "editor"), ("org-viewer", "viewer")] {
+        let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}/members", tid), Some(&to), j(serde_json::json!({"username":u,"role":r}))); assert_eq!(st, 200, "{raw}");
+    }
+    let rec = serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.3","ttl":300});
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&te), j(rec.clone())); assert_eq!(st, 201, "editor writes");
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tv), None); assert_eq!(st, 200, "viewer reads");
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&tv), j(rec.clone())); assert_eq!(st, 403, "tenant viewer cannot write");
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{}", z), Some(&te), None); assert_eq!(st, 403, "editor cannot delete the zone");
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tx), None); assert_eq!(st, 403, "outsider");
+    let (_, l, _) = call!(app, get, "/api/v1/zones", Some(&te), None);
+    assert_eq!(l["data"][0]["access"], "editor"); assert_eq!(l["data"].as_array().unwrap().len(), 1);
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tv), j(serde_json::json!({"domain":"v.example"}))); assert!(st == 403 || st == 201 && false, "a tenant viewer's own personal tenant is separate; creating in the org tenant is refused");
+    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tv), j(serde_json::json!({"domain":"v.example","tenant_id":tid}))); assert_eq!(st, 403);
+    // membership management is owner-only
+    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}/members", tid), Some(&te), j(serde_json::json!({"username":"outsider","role":"viewer"}))); assert_eq!(st, 403);
+    let (st, m, _) = call!(app, get, &format!("/api/v1/tenants/{}/members", tid), Some(&tv), None); assert_eq!(st, 200); assert_eq!(m.as_array().unwrap().len(), 3);
+    // the last owner cannot be removed or demoted
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/tenants/{}/members/{}", tid, owner), Some(&to), None); assert_eq!(st, 409);
+    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}/members", tid), Some(&to), j(serde_json::json!({"user_id":owner,"role":"viewer"}))); assert_eq!(st, 409);
+    // revocation is immediate
+    let (st, _, _) = call!(app, delete, &format!("/api/v1/tenants/{}/members/{}", tid, ed), Some(&to), None); assert_eq!(st, 200);
+    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&te), j(rec)); assert_eq!(st, 403);
+    // admin can reassign the zone; target quota applies
+    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{}/tenant", z), Some(&tadmin), j(serde_json::json!({"tenant_id": null}))); assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tv), None); assert_eq!(st, 403, "detached zone is no longer visible through the tenant");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn overview_is_one_accurate_tenant_scoped_query_and_scales() {
+    let Some(env) = setup().await else { return };
+    let alice = add_user(&env.state, "ov-alice", "alice-pass-1", "user").await;
+    let other = add_user(&env.state, "ov-other", "other-pass-1", "user").await;
+    let (ta, to, tadmin) = (env.token(&alice, "user"), env.token(&other, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    let z1 = make_zone(&env, &app, &ta, "ov-a.example").await;
+    let _z2 = make_zone(&env, &app, &ta, "ov-b.example").await;
+    let _zo = make_zone(&env, &app, &to, "ov-other.example").await;
+    for i in 0..5 { call!(app, post, &format!("/api/v1/zones/{}/records", z1), Some(&ta), j(serde_json::json!({"name":format!("r{i}"),"record_type":"A","value":"192.0.2.1","ttl":300}))); }
+    call!(app, post, &format!("/api/v1/zones/{}/records", z1), Some(&ta), j(serde_json::json!({"name":"m","record_type":"TXT","value":"hello","ttl":300})));
+    let (st, ov, raw) = call!(app, get, "/api/v1/overview", Some(&ta), None);
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(ov["zones_total"], 2);
+    // counts equal what the records endpoint lists, per zone
+    let mut sum = 0;
+    for z in ov["zones"].as_array().unwrap() {
+        let (_, recs, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z["id"].as_str().unwrap()), Some(&ta), None);
+        assert_eq!(z["records"].as_i64().unwrap(), recs.as_array().unwrap().len() as i64, "{}", z["domain"]);
+        sum += z["records"].as_i64().unwrap();
+    }
+    assert_eq!(ov["records_total"], sum);
+    assert_eq!(ov["records_by_type"]["TXT"], 1);
+    assert_eq!(ov["tenants"].as_array().unwrap().len(), 1);
+    assert_eq!(ov["tenants"][0]["records"], sum);
+
+    // scale: 3,000 zones x 10 records in one tenant-less admin view plus a big customer
+    env.state.db.batch_execute("INSERT INTO zones (id, domain, owner, tenant_id) SELECT gen_random_uuid(), 'bulk' || g || '.example', NULL, NULL FROM generate_series(1, 3000) g").await.unwrap();
+    env.state.db.batch_execute("INSERT INTO records (id, zone_id, name, record_type, value, ttl) SELECT gen_random_uuid(), z.id, 'h' || g, 'A', '192.0.2.' || (g % 250 + 1), 300 FROM zones z, generate_series(1, 10) g WHERE z.domain LIKE 'bulk%'").await.unwrap();
+    let t0 = std::time::Instant::now();
+    let (st, ov, raw) = call!(app, get, "/api/v1/overview", Some(&tadmin), None);
+    let admin_ms = t0.elapsed().as_millis();
+    assert_eq!(st, 200, "{}", &raw[..200.min(raw.len())]);
+    assert!(ov["zones_total"].as_i64().unwrap() >= 3003);
+    assert!(ov["records_total"].as_i64().unwrap() >= 30000);
+    let t0 = std::time::Instant::now();
+    let (_, ov2, _) = call!(app, get, "/api/v1/overview", Some(&ta), None);
+    let cust_ms = t0.elapsed().as_millis();
+    assert_eq!(ov2["zones_total"], 2, "bulk platform zones never leak into a customer's overview");
+    eprintln!("overview timing: admin ({} zones, {} records) {} ms; customer {} ms", ov["zones_total"], ov["records_total"], admin_ms, cust_ms);
+    assert!(admin_ms < 3000, "admin overview over 3,000 zones took {admin_ms} ms");
+    assert!(cust_ms < 500, "customer overview took {cust_ms} ms");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn analytics_are_persistent_tenant_scoped_and_retained_configurably() {
+    let Some(env) = setup().await else { return };
+    let alice = add_user(&env.state, "an-alice", "alice-pass-1", "user").await;
+    let carol = add_user(&env.state, "an-carol", "carol-pass-1", "user").await;
+    let (ta, tc, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&env.admin, "admin"));
+    let app = app!(env);
+    let _ = make_zone(&env, &app, &ta, "an-alice.example").await;
+    let _ = make_zone(&env, &app, &tc, "an-carol.example").await;
+    let metrics = |a: u32, c: u32, total: u32, ae: u32| format!(
+        "hickory_request_total{{class=\"in\"}} {total}\nhickory_zone_queries_total{{zone=\"an-alice.example.\",result=\"ok\"}} {a}\n\
+         hickory_zone_queries_total{{zone=\"an-alice.example.\",result=\"error\"}} {ae}\nhickory_zone_queries_total{{zone=\"an-carol.example.\",result=\"ok\"}} {c}\n");
+    let mut prev = tenants::Prev::default();
+    let now = chrono::Utc::now().timestamp();
+    // first scrape is the baseline (no delta can be computed), later scrapes store the differences
+    assert_eq!(tenants::ingest(&env.state.db, &metrics(100, 50, 1000, 0), &mut prev, now - 120).await.unwrap(), (0, 0));
+    assert_eq!(tenants::ingest(&env.state.db, &metrics(160, 55, 1100, 4), &mut prev, now - 60).await.unwrap(), (100, 2));
+    // a restart of the DNS server resets counters: the new value is the delta
+    tenants::ingest(&env.state.db, &metrics(10, 0, 20, 0), &mut prev, now).await.unwrap();
+    tenants::snapshot_usage(&env.state.db, now).await.unwrap();
+
+    let (st, a, raw) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&ta), None);
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(a["total_queries"], 60 + 4 + 10, "alice: 60 ok + 4 errors in the first interval, 10 after reset: {raw}");
+    let zones: Vec<&str> = a["zones"].as_array().unwrap().iter().map(|z| z["domain"].as_str().unwrap()).collect();
+    assert_eq!(zones, vec!["an-alice.example"], "a customer never sees other tenants' zones");
+    assert!(a["usage"].as_array().unwrap().len() >= 1);
+    let (_, c, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&tc), None);
+    assert_eq!(c["total_queries"], 5);
+    assert_eq!(c["zones"].as_array().unwrap().len(), 1);
+    // admin: global totals and any tenant
+    let (st, g, raw) = call!(app, get, "/api/v1/analytics/global?range=24h", Some(&tadmin), None);
+    assert_eq!(st, 200, "{raw}"); assert_eq!(g["total"], 100 + 20); assert!(g["top_zones"].as_array().unwrap().len() >= 2);
+    let (_, all, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&tadmin), None);
+    assert_eq!(all["zones"].as_array().unwrap().len(), 2);
+    // zone filter inside a tenant
+    let (_, f, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h&zone=an-alice.example", Some(&ta), None);
+    assert_eq!(f["total_queries"], 74);
+    // history survives deleting the zone (no foreign key) and is purged by the configurable retention
+    env.state.db.execute("DELETE FROM zones WHERE domain = 'an-alice.example'", &[]).await.unwrap();
+    let n: i64 = env.state.db.query_one("SELECT count(*) FROM zone_query_samples WHERE domain='an-alice.example'", &[]).await.unwrap().get(0);
+    assert!(n > 0, "history persists after zone deletion");
+    env.state.db.execute("UPDATE zone_query_samples SET ts = ts - interval '40 days'", &[]).await.unwrap();
+    assert!(tenants::purge_analytics(&env.state.db, 30).await.unwrap() > 0);
+    let n: i64 = env.state.db.query_one("SELECT count(*) FROM zone_query_samples", &[]).await.unwrap().get(0);
+    assert_eq!(n, 0, "rows older than the retention are removed");
     env.cleanup().await;
 }

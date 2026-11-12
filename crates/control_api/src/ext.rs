@@ -226,6 +226,9 @@ pub async fn restore_revision(path: web::Path<(String, String)>, data: web::Data
     if let Err(e) = precheck_zone_change(&data.db, &access.domain, rows.clone()).await {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "revision can no longer be published", "details": e}));
     }
+    // a restore must not be a way around the tenant's record quota (only growth counts)
+    let cur: i64 = data.db.query_one("SELECT count(*) FROM records WHERE CAST(zone_id AS varchar) = $1", &[&zone_id]).await.map(|r| r.get(0)).unwrap_or(0);
+    if let Err(resp) = tenants::check_zone_records_quota(&data.db, &zone_id, rows.len() as i64 - cur, &tok).await { return resp; }
     snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "before restore").await;
     let ids: Vec<String> = rows.iter().map(|_| Uuid::new_v4().to_string()).collect();
     let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
@@ -584,7 +587,12 @@ pub async fn probe_server(host: &str, port: i32) -> (&'static str, Option<u128>)
 }
 
 pub async fn server_status(path: web::Path<String>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
-    if auth_from_header(&req, &data.jwt_secret).is_none() { return unauthorized(); }
+    // infrastructure detail (and a TCP probe from the control plane): administrators only
+    match auth_from_header(&req, &data.jwt_secret) {
+        None => return unauthorized(),
+        Some(t) if t.claims.role != "admin" => return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"})),
+        Some(_) => {}
+    }
     let id = path.into_inner();
     match data.db.query_opt("SELECT address, port FROM servers WHERE CAST(id AS varchar) = $1", &[&id]).await {
         Ok(Some(r)) => {
@@ -598,7 +606,7 @@ pub async fn server_status(path: web::Path<String>, data: web::Data<AppState>, r
 }
 
 /// Plain HTTP GET (the DNS server's Prometheus endpoint is plain HTTP).
-async fn http_get(url: &str) -> Result<String, String> {
+pub async fn http_get(url: &str) -> Result<String, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let rest = url.strip_prefix("http://").ok_or("only http:// metrics URLs are supported")?;
     let (hostport, path) = match rest.find('/') { Some(i) => (&rest[..i], &rest[i..]), None => (rest, "/") };

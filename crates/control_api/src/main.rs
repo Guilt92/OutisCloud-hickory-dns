@@ -15,6 +15,8 @@ mod db_pool;
 mod ext;
 mod dnssec;
 mod metrics;
+mod lookup;
+mod tenants;
 use db_pool::Pool;
 use dns_manager::DnsManager;
 use dns_validator::*;
@@ -318,7 +320,8 @@ async fn zone_access_at(
     let row = db
         .query_opt(
             "SELECT z.domain, COALESCE(CAST(z.owner AS varchar), ''), \
-                    (SELECT m.role FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2) \
+                    (SELECT m.role FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2), \
+                    (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2) \
              FROM zones z WHERE CAST(z.id AS varchar) = $1",
             &[&zone_id, &tok.claims.sub],
         )
@@ -328,16 +331,17 @@ async fn zone_access_at(
             let domain: String = r.try_get(0).unwrap_or_default();
             let owner: String = r.try_get(1).unwrap_or_default();
             let member: Option<String> = r.try_get(2).unwrap_or(None);
+            let tenant_member: Option<String> = r.try_get(3).unwrap_or(None);
+            let rank = |x: &str| match x { "owner" => 3, "editor" => 2, "viewer" => 1, _ => 0 };
             let role = if tok.claims.role == "admin" {
                 "admin"
             } else if !owner.is_empty() && owner == tok.claims.sub {
                 "owner"
             } else {
-                match member.as_deref() {
-                    Some("editor") => "editor",
-                    Some("viewer") => "viewer",
-                    _ => "",
-                }
+                // best of zone sharing and tenant membership
+                let a = match member.as_deref() { Some("editor") => "editor", Some("viewer") => "viewer", _ => "" };
+                let b = tenants::tenant_role_to_zone_role(tenant_member.as_deref());
+                if rank(b) > rank(a) { b } else { a }
             };
             let granted = match role {
                 "admin" | "owner" => Level::Owner,
@@ -417,6 +421,7 @@ async fn zone_overlaps_other_owner(
     let row = db
         .query_opt(
             "SELECT 1 FROM zones WHERE COALESCE(CAST(owner AS varchar), '') <> $2 AND CAST(id AS varchar) <> $3 \
+             AND (tenant_id IS NULL OR NOT EXISTS (SELECT 1 FROM tenant_members tm WHERE tm.tenant_id = zones.tenant_id AND CAST(tm.user_id AS varchar) = $2)) \
              AND (domain = $1 OR domain LIKE '%.' || $1 OR $1 LIKE '%.' || domain) LIMIT 1",
             &[&candidate, &owner, &excl],
         )
@@ -435,7 +440,9 @@ fn is_read_method(m: &actix_web::http::Method) -> bool {
 
 /// Endpoints a read-only account still needs for managing its own session.
 fn viewer_may_write(path: &str) -> bool {
-    matches!(path, "/api/v1/auth/logout" | "/api/v1/auth/refresh" | "/api/v1/auth/change-password")
+    // own-account actions and the (read-only, rate-limited) DNS lookup tool
+    matches!(path, "/api/v1/auth/logout" | "/api/v1/auth/refresh" | "/api/v1/auth/change-password"
+        | "/api/v1/auth/mfa/setup" | "/api/v1/auth/mfa/enable" | "/api/v1/auth/mfa/disable" | "/api/v1/dns/lookup")
 }
 
 const MAX_RECORD_TTL: u32 = 2_147_483_647; // RFC 2181: TTLs are 31-bit values
@@ -882,6 +889,7 @@ async fn migrate_db(client: &tokio_postgres::Client) -> Result<(), tokio_postgre
     ).await?;
     // DNSSEC keys
     client.batch_execute(dnssec::SCHEMA).await?;
+    client.batch_execute(tenants::SCHEMA).await?;
     // users: MFA
     client.batch_execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
@@ -1891,16 +1899,17 @@ struct CreateNameserverReq {
 }
 
 async fn list_nameservers(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
-    if auth_from_header(&req, &data.jwt_secret).is_none() {
+    let Some(tok) = auth_from_header(&req, &data.jwt_secret) else {
         return HttpResponse::Unauthorized().json(serde_json::json!({
             "error": "unauthorized",
             "details": "Authentication required"
         }));
-    }
-    
+    };
+    // Customers need the public nameservers to delegate their domains, but not disabled/internal entries.
+    let only_enabled = tok.claims.role != "admin";
     match (&*data.db).query(
-        "SELECT CAST(id AS varchar), hostname, ip_address, glue_ip, sort_order, enabled FROM nameservers ORDER BY sort_order, hostname", 
-        &[]
+        "SELECT CAST(id AS varchar), hostname, ip_address, glue_ip, sort_order, enabled FROM nameservers WHERE (enabled OR NOT $1) ORDER BY sort_order, hostname",
+        &[&only_enabled]
     ).await {
         Ok(rows) => {
             let nameservers: Vec<NameserverInfo> = rows.into_iter().map(|r| NameserverInfo {
@@ -2462,7 +2471,8 @@ async fn list_georules(data: web::Data<FullState>, req: HttpRequest) -> impl Res
     let rows = (&*data.inner.db).query(
         "SELECT CAST(g.id AS varchar), CAST(g.zone_id AS varchar), g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type \
          FROM georules g JOIN zones z ON z.id = g.zone_id \
-         WHERE $1 OR CAST(z.owner AS varchar) = $2 OR EXISTS (SELECT 1 FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2) \
+         WHERE ($1 OR CAST(z.owner AS varchar) = $2 OR EXISTS (SELECT 1 FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2) \
+                OR EXISTS (SELECT 1 FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2)) \
          ORDER BY z.domain, g.priority DESC, g.match_type, g.match_value, g.id",
         &[&(tok.claims.role == "admin"), &tok.claims.sub]
     ).await;
@@ -2616,6 +2626,9 @@ struct CreateZoneReq {
     domain: String,
     #[serde(default)]
     geodns_enabled: Option<bool>,
+    /// tenant that will own the zone (customers: one of their tenants; default: their own tenant)
+    #[serde(default)]
+    tenant_id: Option<String>,
 }
 
 async fn list_zones(page: web::Query<ext::PageQuery>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
@@ -2632,13 +2645,16 @@ async fn list_zones(page: web::Query<ext::PageQuery>, data: web::Data<AppState>,
     // Admins see every zone; others the zones they own or that were shared with them.
     let is_admin = tok.claims.role == "admin";
     let (limit, offset, qtext) = page.parts();
-    let query_result = (&*data.db).query(
+    let list_sql = format!(
         "SELECT CAST(z.id AS varchar), z.domain, COALESCE(CAST(z.owner AS varchar), '') as owner, z.zone_type, z.created_at::text, \
                 COALESCE(z.geodns_enabled, true), z.status, z.ecs_enabled, \
-                CASE WHEN $1 THEN 'admin' WHEN CAST(z.owner AS varchar) = $2 THEN 'owner' ELSE COALESCE(m.role, '') END, count(*) OVER() \
+                CASE WHEN $1 THEN 'admin' WHEN CAST(z.owner AS varchar) = $2 THEN 'owner' \
+                     ELSE COALESCE(m.role, (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2), '') END, count(*) OVER() \
          FROM zones z LEFT JOIN zone_members m ON m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2 \
-         WHERE ($1 OR CAST(z.owner AS varchar) = $2 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
-         ORDER BY z.domain LIMIT $4::bigint OFFSET $5::bigint",
+         WHERE ({}) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
+         ORDER BY z.domain LIMIT $4::bigint OFFSET $5::bigint", tenants::ZONE_VISIBLE);
+    let query_result = (&*data.db).query(
+        &list_sql,
         &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset]
     ).await;
     
@@ -2712,6 +2728,19 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
         }
     }
     
+    // Tenant ownership and zone quota. Customers always act inside a tenant; admins may assign one.
+    let zone_tenant: Option<String> = if tok.claims.role == "admin" {
+        body.tenant_id.clone().filter(|t| !t.is_empty())
+    } else {
+        match tenants::tenant_for_user(&data.db, owner_uuid_str, body.tenant_id.as_deref(), true).await {
+            Ok(t) => Some(t),
+            Err(resp) => return resp,
+        }
+    };
+    if let (Some(t), false) = (&zone_tenant, tok.claims.role == "admin") {
+        if let Err(resp) = tenants::check_quota(&data.db, t, 1, 0).await { return resp; }
+    }
+
     // With VERIFY_DOMAINS a non-admin's zone stays "pending" (not served) until
     // a TXT challenge proves control of the domain.
     let needs_verification = data.verify_domains && tok.claims.role != "admin";
@@ -2723,8 +2752,8 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
 
     // Create zone
     match (&*data.db).execute(
-        "INSERT INTO zones (id, domain, owner, geodns_enabled, status, verify_token) VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5, $6)",
-        &[&zone_id_str, &domain, &owner_uuid_str, &geodns_enabled, &zone_status, &verify_token]
+        "INSERT INTO zones (id, domain, owner, geodns_enabled, status, verify_token, tenant_id) VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5, $6, $7::text::uuid)",
+        &[&zone_id_str, &domain, &owner_uuid_str, &geodns_enabled, &zone_status, &verify_token, &zone_tenant]
     ).await {
         Ok(_) => {
             info!("Created zone: {} for owner: {}", domain, owner_uuid_str);
@@ -2845,63 +2874,27 @@ fn default_record_type() -> String {
 /// Perform a system DNS lookup (A/AAAA records only via the OS resolver).
 /// For full record type support, enable the `hickory-resolver` feature.
 async fn dns_lookup(body: web::Json<DnsLookupRequest>, data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
-    let auth = auth_from_header(&req, &data.jwt_secret);
-    if auth.is_none() {
-        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+    let tok = match auth_from_header(&req, &data.jwt_secret) { Some(t) => t, None => return unauthorized() };
+    // the tool sends real queries to a shared resolver: bound the rate per account
+    if let Err(wait) = lookup::check_rate(&tok.claims.sub, lookup::rate_limit_per_minute()) {
+        return HttpResponse::TooManyRequests().insert_header(("Retry-After", wait.to_string()))
+            .json(serde_json::json!({"error": "rate_limited", "details": format!("too many lookups, retry in {} s", wait)}));
     }
-    
-    let domain = body.domain.trim();
-    let record_type = body.record_type.to_uppercase();
-    
-    if domain.is_empty() {
-        return HttpResponse::BadRequest().json(serde_json::json!({"error": "domain is required"}));
-    }
-    
-    let mut records = Vec::new();
-    
-    if record_type == "A" || record_type == "AAAA" {
-        use std::net::ToSocketAddrs;
-        // the OS resolver is a blocking call: keep it off the async workers
-        let target = format!("{}:0", domain);
-        let resolved = tokio::task::spawn_blocking(move || target.to_socket_addrs().map(|a| a.collect::<Vec<_>>()))
-            .await
-            .ok()
-            .and_then(|r| r.ok());
-        if let Some(addrs) = resolved {
-            for addr in addrs {
-                match addr {
-                    std::net::SocketAddr::V4(v4) if record_type == "A" => {
-                        records.push(serde_json::json!({
-                            "name": domain,
-                            "type": "A",
-                            "ttl": 300,
-                            "value": v4.ip().to_string()
-                        }));
-                    }
-                    std::net::SocketAddr::V6(v6) if record_type == "AAAA" => {
-                        records.push(serde_json::json!({
-                            "name": domain,
-                            "type": "AAAA",
-                            "ttl": 300,
-                            "value": v6.ip().to_string()
-                        }));
-                    }
-                    _ => {}
-                }
-            }
+    let Some(rtype) = lookup::parse_type(&body.record_type) else {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "unsupported record type", "supported": lookup::SUPPORTED_TYPES
+        }));
+    };
+    match lookup::lookup(data.verify_resolver, &body.domain, rtype).await {
+        Ok(r) => HttpResponse::Ok().json(r),
+        Err(e) if e.contains("required") || e.contains("invalid") || e.contains("too long") || e.contains("only be used") || e.contains("characters") => {
+            HttpResponse::BadRequest().json(serde_json::json!({"error": e}))
+        }
+        Err(e) => {
+            warn!("dns_lookup: resolver error: {}", e);
+            HttpResponse::BadGateway().json(serde_json::json!({"error": "resolver_unavailable", "details": e}))
         }
     }
-    
-    HttpResponse::Ok().json(serde_json::json!({
-        "domain": domain,
-        "record_type": record_type,
-        "records": records,
-        "note": if records.is_empty() {
-            Some(format!("No {} records found. Only A/AAAA lookups supported without hickory-resolver.", record_type))
-        } else {
-            None
-        }
-    }))
 }
 
 #[derive(Deserialize)]
@@ -3144,6 +3137,7 @@ async fn create_record(
         Ok(a) => a,
         Err(resp) => return resp,
     };
+    if let Err(resp) = tenants::check_zone_records_quota(db, &zone_id_str, 1, &tok).await { return resp; }
 
     let rec = match validate_record_input(
         &access.domain, &body.name, &body.record_type, &body.value,
@@ -3872,6 +3866,8 @@ async fn import_zone(
         }));
     }
 
+    if let Err(resp) = tenants::check_zone_records_quota(db, &zone_id, fresh.len() as i64, &tok).await { return resp; }
+
     let ids: Vec<String> = fresh.iter().map(|_| Uuid::new_v4().to_string()).collect();
     let names: Vec<String> = fresh.iter().map(|r| r.name.clone()).collect();
     let types: Vec<String> = fresh.iter().map(|r| r.rtype.clone()).collect();
@@ -4009,6 +4005,7 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Audit Logs
     .route("/api/v1/audit/logs", web::get().to(ext::list_audit))
     .configure(ext::configure)
+    .configure(tenants::configure)
     // DNSSEC
     .route("/api/v1/zones/{id}/dnssec", web::get().to(dnssec::get_dnssec))
     .route("/api/v1/zones/{id}/dnssec/enable", web::post().to(dnssec::enable_dnssec))
@@ -4216,6 +4213,9 @@ async fn main() -> std::io::Result<()> {
             }
         });
     }
+
+    // persistent analytics (global counters, per-zone counters when the DNS server exports them)
+    tenants::spawn_collector(app_state.db.clone(), app_state.dns_metrics_url.clone());
 
     // Load GeoIP DB if provided
     let geo_db = std::env::var("GEOIP_DB_PATH").ok().and_then(|p| {
