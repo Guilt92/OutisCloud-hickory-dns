@@ -4,7 +4,8 @@ import { X } from 'lucide-react'
 export default function Modal({ title, open, onClose, children, wide = false }) {
   React.useEffect(() => {
     if (!open) return
-    const onKey = (e) => { if (e.key === 'Escape') onClose && onClose() }
+    // a confirmation dialog on top handles Escape itself; do not close the dialog underneath it as well
+    const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('[data-testid="confirm-dialog"]')) onClose && onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])

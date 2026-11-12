@@ -466,7 +466,7 @@ export default function Agents() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="card w-full max-w-xl p-6 space-y-3">
             <h3 className="text-lg font-bold text-ink">{credentials.title}</h3>
-            <p className="text-sm text-amber-600">These values are shown once. Store them in the agent's environment now.</p>
+            <p className="text-sm text-amber-600">These values are shown once. Store them in the agent&apos;s environment now.</p>
             <pre className="bg-gray-50 dark:bg-gray-900 p-3 rounded-lg text-xs overflow-x-auto select-all">{`AGENT_ID=${credentials.id}
 AGENT_TOKEN=${credentials.token}
 AGENT_SIGNING_KEY=${credentials.signing_key}`}</pre>

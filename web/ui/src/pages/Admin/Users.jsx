@@ -42,7 +42,7 @@ export default function Users(){
       <div className="p-8 text-center">
         <Shield className="w-16 h-16 text-red-500 mx-auto mb-4" />
         <h2 className="text-xl font-bold text-ink mb-2">Access Denied</h2>
-        <p className="text-muted">You don't have permission to manage users.</p>
+        <p className="text-muted">You don&apos;t have permission to manage users.</p>
       </div>
     )
   }

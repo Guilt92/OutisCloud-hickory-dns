@@ -7,6 +7,7 @@ import { useAuthStore } from '../../store'
 import { Globe, Plus, Download, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
 import BulkImport from '../../components/BulkImport'
 import ZoneTools from '../../components/ZoneTools'
+import TransferZone from '../../components/TransferZone'
 import Notifications from '../../components/Notifications'
 import { useFormValidation, validators, FormField, downloadTemplate } from '../../hooks/useFormValidation'
 import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
@@ -17,6 +18,7 @@ export default function Zones(){
   const { user } = useAuthStore()
   const canWrite = user?.role !== 'viewer'          // viewers are read-only
   const [toolsZone, setToolsZone] = React.useState(null)
+  const [transferZone, setTransferZone] = React.useState(null)
   const paged = useServerPagination(api, '/api/v1/zones', { pageSize: 10 })
   const zones = paged.items
   const loading = paged.loading
@@ -289,6 +291,7 @@ export default function Zones(){
                     <tr>
                       <td className="font-medium text-ink">
                         {z.domain}
+                        {user?.role === 'admin' && <span data-testid={`zone-tenant-${z.domain}`} className="block text-xs font-normal text-muted">{z.tenant_name ? `Tenant: ${z.tenant_name}` : 'Platform zone'}</span>}
                         {z.status === 'pending' && <span className="badge badge-warning ml-2">pending verification</span>}
                         {z.access && z.access !== 'admin' && z.access !== 'owner' && <span className="badge badge-info ml-2">shared: {z.access}</span>}
                       </td>
@@ -354,6 +357,7 @@ export default function Zones(){
                             Records
                           </Link>
                           <button onClick={() => setToolsZone(z)} aria-label={`Manage ${z.domain}`} className="btn-sm btn-ghost">Manage</button>
+                          {user?.role === 'admin' && <button onClick={() => setTransferZone(z)} aria-label={`Transfer ${z.domain}`} className="btn-sm btn-ghost">Transfer</button>}
                           {(z.access === 'admin' || z.access === 'owner') && canWrite && (
                             <>
                               <button onClick={() => startEdit(z)} aria-label={`Edit ${z.domain}`} className="btn-sm btn-ghost">
@@ -385,6 +389,7 @@ export default function Zones(){
           <PaginationControls pagination={pagination} />
         </div>
       </div>
+      {transferZone && <TransferZone zone={transferZone} onClose={() => setTransferZone(null)} onDone={load} />}
       {toolsZone && <ZoneTools zone={toolsZone} onClose={() => setToolsZone(null)} onChanged={load} />}
     </div>
   )

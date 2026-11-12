@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { BarChart3 } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, BarChart, Bar, Cell } from 'recharts';
 import api from '../api/client';
 import { useUIStore } from '../store';
 import { EmptyState, ErrorState, StatCard } from './ui';
@@ -19,6 +19,7 @@ export default function AnalyticsHistory({ scope }) {
   const [range, setRange] = useState('24h');
   const [tenant, setTenant] = useState('');
   const [zone, setZone] = useState('');
+  const [interval, setIntervalChoice] = useState('auto');
   const [tenants, setTenants] = useState([]);
   const [state, setState] = useState({ phase: 'loading' });
 
@@ -32,15 +33,16 @@ export default function AnalyticsHistory({ scope }) {
       const params = { range };
       if (tenant) params.tenant_id = tenant;
       if (zone) params.zone = zone;
+      if (interval !== 'auto') params.interval = interval;
       const [tn, gl] = await Promise.all([
         api.get('/api/v1/analytics/tenant', { params }),
-        scope === 'admin' ? api.get('/api/v1/analytics/global', { params: { range } }) : Promise.resolve(null),
+        scope === 'admin' ? api.get('/api/v1/analytics/global', { params: { range, ...(interval !== 'auto' ? { interval } : {}) } }) : Promise.resolve(null),
       ]);
       setState({ phase: 'ok', tn: tn.data, gl: gl?.data });
     } catch (e) {
       setState({ phase: 'error', message: e.response?.data?.error || e.message });
     }
-  }, [range, tenant, zone, scope]);
+  }, [range, tenant, zone, interval, scope]);
 
   useEffect(() => { setState((s) => (s.phase === 'ok' ? s : { phase: 'loading' })); load(); const id = setInterval(load, 60000); return () => clearInterval(id); }, [load]);
 
@@ -53,6 +55,11 @@ export default function AnalyticsHistory({ scope }) {
   const globalRows = (gl?.series || []).map((p) => ({ t: fmtTs(p.ts, range), requests: p.requests }));
   const usage = (tn?.usage || []).map((p) => ({ t: fmtTs(p.ts, range), zones: p.zones, records: p.records }));
   const hasZoneData = (tn?.zones || []).length > 0;
+  const bd = tn?.breakdown || {};
+  const qtypes = bd.qtypes || [];
+  const countries = bd.countries || [];
+  const maxCountry = Math.max(1, ...countries.map((c) => c.queries));
+  const palette = ['#F5F020', '#5B7CFA', '#9B6BFF', '#22C55E', '#F59E0B', '#EF4444', '#14B8A6', '#EC4899'];
 
   return (
     <section aria-label="Query history" data-testid="analytics-history" className="space-y-6">
@@ -72,6 +79,12 @@ export default function AnalyticsHistory({ scope }) {
             </select>
           </div>
         )}
+        <div>
+          <label className="block text-xs text-muted mb-1" htmlFor="an-interval">Interval</label>
+          <select id="an-interval" className="select" value={interval} onChange={(e) => setIntervalChoice(e.target.value)}>
+            {[['auto', 'Automatic'], ['1m', '1 minute'], ['5m', '5 minutes'], ['15m', '15 minutes'], ['1h', '1 hour'], ['6h', '6 hours'], ['1d', '1 day']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
         <div>
           <label className="block text-xs text-muted mb-1" htmlFor="an-zone">Zone</label>
           <select id="an-zone" className="select" value={zone} onChange={(e) => setZone(e.target.value)}>
@@ -124,6 +137,49 @@ export default function AnalyticsHistory({ scope }) {
                 <Line type="monotone" dataKey="requests" stroke="#5B7CFA" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div>
             </div>
           )}
+
+          <div className="grid lg:grid-cols-2 gap-6" data-testid="breakdowns">
+            <div className="card">
+              <div className="px-5 py-4 border-b border-line"><h2 className="panel-title">Queries by record type</h2></div>
+              <div className="p-5" data-testid="qtype-chart">
+                {qtypes.length === 0 ? (
+                  <EmptyState title="No record-type data in this range" description={scope === 'admin' ? 'Needs DNS_ZONE_QUERY_METRICS=true and DNS_ZONE_BREAKDOWN=true on the DNS server.' : 'No queries recorded yet.'} />
+                ) : (
+                  <div style={{ height: Math.max(160, qtypes.length * 30 + 20) }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={qtypes} layout="vertical" margin={{ left: 8, right: 16 }}>
+                        <XAxis type="number" tick={{ fill: tick, fontSize: 11 }} stroke={grid} />
+                        <YAxis type="category" dataKey="qtype" width={64} tick={{ fill: tick, fontSize: 11 }} stroke={grid} />
+                        <Tooltip contentStyle={tip} itemStyle={tipItem} cursor={{ fill: 'transparent' }} />
+                        <Bar dataKey="queries" radius={[0, 4, 4, 0]}>{qtypes.map((_, i) => <Cell key={i} fill={palette[i % palette.length]} />)}</Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+                {qtypes.length > 0 && <table className="sr-only"><caption>Queries by record type</caption><tbody>{qtypes.map((x) => <tr key={x.qtype}><th scope="row">{x.qtype}</th><td>{x.queries}</td></tr>)}</tbody></table>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Queries by country</h2>
+                {bd.geoip?.available && <span className={bd.geoip.stale ? 'badge-warning' : 'badge-default'} title="Age of the GeoIP database used by the DNS server">GeoIP database {bd.geoip.age_days} days old{bd.geoip.stale ? ' — stale' : ''}</span>}
+              </div>
+              <div className="p-5" data-testid="country-chart">
+                {bd.country_status === 'geoip_unavailable' && <p role="status" className="text-sm text-warning-700 dark:text-warning-400 mb-3">The DNS server has no GeoIP database loaded, so countries cannot be determined. These queries are shown as &quot;GeoIP database unavailable&quot;, not as an unknown country.</p>}
+                {countries.length === 0 ? (
+                  <EmptyState title="No country data in this range" description={scope === 'admin' ? 'Needs DNS_ZONE_BREAKDOWN=true on the DNS server. Country is derived from the resolver address (or ECS subnet); the address itself is never stored.' : 'No queries recorded yet.'} />
+                ) : (
+                  <ul className="space-y-2">
+                    {countries.map((c, i) => (
+                      <li key={(c.code || c.kind) + i} className="text-sm">
+                        <div className="flex justify-between"><span className="text-ink">{c.code ? <><span className="font-mono">{c.code}</span></> : c.label}</span><span className="tabular-nums text-muted">{c.queries.toLocaleString()}</span></div>
+                        <div className="h-1.5 rounded-full bg-ink/10 overflow-hidden mt-1" aria-hidden="true"><div className={`h-full ${c.code ? 'bg-accent' : 'bg-secondary-500'}`} style={{ width: `${Math.max(2, (c.queries / maxCountry) * 100)}%` }} /></div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
 
           <div className="grid lg:grid-cols-2 gap-6">
             <div className="card overflow-hidden">
