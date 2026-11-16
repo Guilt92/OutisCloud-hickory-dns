@@ -385,6 +385,8 @@ pub struct TomlConfigBuilder {
     zones: Vec<TomlZone>,
     listen_ipv4: Vec<String>,
     listen_ipv6: Vec<String>,
+    /// base directory for the DNS server (zone files and the config itself)
+    directory: Option<String>,
     /// address of the DNS server's Prometheus exporter (`PROMETHEUS_LISTEN_ADDR`)
     prometheus_listen: Option<String>,
 }
@@ -419,8 +421,16 @@ impl TomlConfigBuilder {
             zones: Vec::new(),
             listen_ipv4: vec!["0.0.0.0".to_string()],
             listen_ipv6: Vec::new(),
+            directory: None,
             prometheus_listen: None,
         }
+    }
+
+    /// Sets the DNS server's base configuration directory. Hickory watches this
+    /// directory for zone file changes, so it must point at the directory where
+    /// the generated zone files live.
+    pub fn set_directory(&mut self, directory: &str) {
+        self.directory = Some(directory.to_string());
     }
 
     /// Listen addresses from `LISTEN_ADDRS_IPV4` (default `0.0.0.0`) and
@@ -504,6 +514,9 @@ impl TomlConfigBuilder {
     /// Builds the final TOML string.
     pub fn build(&self) -> Result<String> {
         let mut result = String::new();
+        if let Some(dir) = &self.directory {
+            result.push_str(&format!("directory = \"{}\"\n", toml_escape(dir)));
+        }
         result.push_str("listen_addrs_ipv4 = ["); 
         for (i, addr) in self.listen_ipv4.iter().enumerate() {
             if i > 0 {
@@ -709,6 +722,7 @@ mod tests {
     #[test]
     fn test_toml_config_builder() {
         let mut builder = TomlConfigBuilder::new();
+        builder.set_directory("/etc/hickory");
         builder
             .add_zone(
                 "example.com".to_string(),
@@ -722,6 +736,7 @@ mod tests {
         assert!(result.is_ok());
         let toml_str = result.unwrap();
         assert!(toml_str.contains("zone = \"example.com\""));
+        assert!(toml_str.contains("directory = \"/etc/hickory\""));
         assert!(toml_str.contains("listen_addrs_ipv4"));
     }
 

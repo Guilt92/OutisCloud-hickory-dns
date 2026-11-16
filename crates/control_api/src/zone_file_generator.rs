@@ -396,6 +396,7 @@ pub fn generate_full(
 
     // Build TOML configuration
     let mut toml_builder = TomlConfigBuilder::from_env();
+    toml_builder.set_directory(base_dir);
 
     for (zone_id, domain, geodns_enabled) in &zones {
         let domain_norm = domain.trim_end_matches('.').to_ascii_lowercase();
