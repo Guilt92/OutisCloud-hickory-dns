@@ -1727,7 +1727,13 @@ async fn concurrent_zone_creates_cannot_exceed_quota() {
     let (_, ts, _) = call!(app, get, "/api/v1/tenants", Some(&td), None);
     let tid = ts[0]["id"].as_str().unwrap().to_string();
     let tname = ts[0]["name"].as_str().unwrap().to_string();
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", tid), Some(&tadmin), j(serde_json::json!({"name": tname, "max_zones": 1, "max_records": null})));
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", tid),
+        Some(&tadmin),
+        j(serde_json::json!({"name": tname, "max_zones": 1, "max_records": null}))
+    );
     assert_eq!(st, 200, "{raw}");
     let app_ref = &app;
     let results = futures_util::future::join_all((0..8).map(|i| {
@@ -1744,12 +1750,27 @@ async fn concurrent_zone_creates_cannot_exceed_quota() {
     }))
     .await;
     let created = results.iter().filter(|s| **s == 201).count();
-    assert_eq!(created, 1, "only one concurrent creation may fit: {results:?}");
+    assert_eq!(
+        created, 1,
+        "only one concurrent creation may fit: {results:?}"
+    );
     for st in results {
         assert!(st == 201 || st == 403, "unexpected status {st}");
     }
-    let n: i64 = env.state.db.query_one("SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
-    assert_eq!(n, 1, "the quota must be enforced in the database, not just pre-checked");
+    let n: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar) = $1",
+            &[&tid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        n, 1,
+        "the quota must be enforced in the database, not just pre-checked"
+    );
     env.cleanup().await;
 }
 
@@ -1765,7 +1786,13 @@ async fn concurrent_record_creates_cannot_exceed_quota() {
     let tid = ts[0]["id"].as_str().unwrap().to_string();
     let tname = ts[0]["name"].as_str().unwrap().to_string();
     let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE CAST(z.tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", tid), Some(&tadmin), j(serde_json::json!({"name": tname, "max_zones": null, "max_records": used + 1})));
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", tid),
+        Some(&tadmin),
+        j(serde_json::json!({"name": tname, "max_zones": null, "max_records": used + 1}))
+    );
     assert_eq!(st, 200, "{raw}");
     let app_ref = &app;
     let results = futures_util::future::join_all((0..8).map(|i| {
@@ -1782,7 +1809,10 @@ async fn concurrent_record_creates_cannot_exceed_quota() {
     }))
     .await;
     let created = results.iter().filter(|s| **s == 201).count();
-    assert_eq!(created, 1, "only one concurrent record may fit: {results:?}");
+    assert_eq!(
+        created, 1,
+        "only one concurrent record may fit: {results:?}"
+    );
     for st in results {
         assert!(st == 201 || st == 403, "unexpected status {st}");
     }
@@ -1803,7 +1833,13 @@ async fn concurrent_imports_cannot_exceed_quota() {
     let tid = ts[0]["id"].as_str().unwrap().to_string();
     let tname = ts[0]["name"].as_str().unwrap().to_string();
     let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE CAST(z.tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", tid), Some(&tadmin), j(serde_json::json!({"name": tname, "max_zones": null, "max_records": used + 1})));
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", tid),
+        Some(&tadmin),
+        j(serde_json::json!({"name": tname, "max_zones": null, "max_records": used + 1}))
+    );
     assert_eq!(st, 200, "{raw}");
     let app_ref = &app;
     let results = futures_util::future::join_all((0..4).map(|i| {
@@ -1820,7 +1856,10 @@ async fn concurrent_imports_cannot_exceed_quota() {
     }))
     .await;
     let imported = results.iter().filter(|s| **s == 200).count();
-    assert_eq!(imported, 1, "only one concurrent import may fit: {results:?}");
+    assert_eq!(
+        imported, 1,
+        "only one concurrent import may fit: {results:?}"
+    );
     for st in results {
         assert!(st == 200 || st == 403, "unexpected status {st}");
     }
