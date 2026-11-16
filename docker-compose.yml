@@ -21,6 +21,21 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # The DNS config/zone directory is bind-mounted and written by control-api
+  # (uid 1000). On a fresh checkout or a host that previously ran the stack as
+  # root, the directory can be root-owned and zone creation then fails with
+  # EACCES. Normalise ownership before the API starts.
+  dns-dir-init:
+    image: debian:bookworm-slim
+    container_name: outiscloud-dns-dir-init
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 1000:1000 /etc/hickory"]
+    volumes:
+      - ./deploy/dns:/etc/hickory
+    restart: "no"
+    networks:
+      - outiscloud-network
+
   # Control API (Backend)
   control-api:
     build:
@@ -45,6 +60,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      dns-dir-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
