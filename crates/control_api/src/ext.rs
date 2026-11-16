@@ -237,25 +237,56 @@ pub async fn restore_revision(path: web::Path<(String, String)>, data: web::Data
     let ttls: Vec<i32> = rows.iter().map(|r| r.ttl).collect();
     let prios: Vec<i32> = rows.iter().map(|r| r.priority).collect();
     // replace the records in one real transaction so the swap is atomic
+    enum RestoreSwapError {
+        Db(tokio_postgres::Error),
+        Quota(HttpResponse),
+    }
     let swap = async {
-        let tx = data.db.begin().await?;
+        let tx = data.db.begin().await.map_err(RestoreSwapError::Db)?;
         let c = tx.client;
-        c.batch_execute("BEGIN").await?;
-        let r = async {
-            c.execute("DELETE FROM records WHERE CAST(zone_id AS varchar) = $1", &[&zone_id]).await?;
+        c.batch_execute("BEGIN").await.map_err(RestoreSwapError::Db)?;
+        let r: Result<(), RestoreSwapError> = async {
+            // Re-check the record quota under the same locks as the swap: the
+            // earlier check is only a fast path and can race with other writes.
+            let zone_row = c
+                .query_opt(
+                    "SELECT CAST(tenant_id AS varchar) FROM zones WHERE CAST(id AS varchar) = $1 FOR UPDATE",
+                    &[&zone_id],
+                )
+                .await
+                .map_err(RestoreSwapError::Db)?;
+            let cur_tx: i64 = c
+                .query_one("SELECT count(*) FROM records WHERE CAST(zone_id AS varchar) = $1", &[&zone_id])
+                .await
+                .map_err(RestoreSwapError::Db)?
+                .get(0);
+            let growth = rows.len() as i64 - cur_tx;
+            if growth > 0 && tok.claims.role != "admin" {
+                if let Some(t) = zone_row.and_then(|r| r.get::<_, Option<String>>(0)) {
+                    tenants::reserve_quota_tx(c, &t, 0, growth)
+                        .await
+                        .map_err(RestoreSwapError::Quota)?;
+                }
+            }
+            c.execute("DELETE FROM records WHERE CAST(zone_id AS varchar) = $1", &[&zone_id]).await.map_err(RestoreSwapError::Db)?;
             c.execute(
                 "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) \
                  SELECT u.id::uuid, $1::text::uuid, u.n, u.t, u.v, u.ttl, u.p \
                  FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) AS u(id, n, t, v, ttl, p)",
-                &[&zone_id, &ids, &names, &types, &values, &ttls, &prios]).await?;
-            c.batch_execute("COMMIT").await
+                &[&zone_id, &ids, &names, &types, &values, &ttls, &prios]).await.map_err(RestoreSwapError::Db)?;
+            c.batch_execute("COMMIT").await.map_err(RestoreSwapError::Db)?;
+            Ok(())
         }.await;
         if r.is_err() { let _ = c.batch_execute("ROLLBACK").await; }
         r
     }.await;
-    if let Err(e) = swap {
-        warn!("restore failed: {}", full_error_string(&e));
-        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "restore failed; zone unchanged"}));
+    match swap {
+        Ok(()) => {}
+        Err(RestoreSwapError::Quota(resp)) => return resp,
+        Err(RestoreSwapError::Db(e)) => {
+            warn!("restore failed: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "restore failed; zone unchanged"}));
+        }
     }
     if let Err(e) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await { return publish_failed(&e); }
     snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "restore").await;

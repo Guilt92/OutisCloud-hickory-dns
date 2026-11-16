@@ -2751,8 +2751,40 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
             Err(resp) => return resp,
         }
     };
-    if let (Some(t), false) = (&zone_tenant, tok.claims.role == "admin") {
-        if let Err(resp) = tenants::check_quota(&data.db, t, 1, 0).await { return resp; }
+
+    // Authoritative nameservers for this zone: enabled rows of the
+    // nameservers table, falling back to PUBLIC_NAMESERVERS. Resolve and
+    // validate them before the transaction so the quota reservation also
+    // covers the default NS and SOA rows created below.
+    let ns_rows = match (&*data.db).query(
+        "SELECT hostname FROM nameservers WHERE enabled = true ORDER BY sort_order, hostname",
+        &[]
+    ).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("create_zone nameserver lookup failed: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let candidates: Vec<String> = if !ns_rows.is_empty() {
+        ns_rows.iter().filter_map(|r| r.try_get::<_, String>(0).ok()).collect()
+    } else {
+        std::env::var("PUBLIC_NAMESERVERS")
+            .unwrap_or_else(|_| "ns1.my-dns.com.,ns2.my-dns.com.".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let mut ns_values: Vec<String> = Vec::new();
+    for hostname in candidates {
+        let ns_value = if hostname.ends_with('.') { hostname } else { format!("{}.", hostname) };
+        // Validate NS value through Hickory before inserting
+        if let Err(e) = validate_record_value("NS", &ns_value) {
+            warn!("Failed to validate NS record '{}': {}", ns_value, e.message);
+            continue;
+        }
+        ns_values.push(ns_value);
     }
 
     // With VERIFY_DOMAINS a non-admin's zone stays "pending" (not served) until
@@ -2764,114 +2796,106 @@ async fn create_zone(body: web::Json<CreateZoneReq>, data: web::Data<AppState>, 
         ("active", None)
     };
 
-    // Create zone
-    match (&*data.db).execute(
+    // The zone row and its quota reservation commit together. Concurrent
+    // creations for the same tenant serialise on the tenant row, so they
+    // cannot both observe the same free slot.
+    let tx = match data.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("create_zone transaction: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let c = tx.client;
+    if let Err(e) = c.batch_execute("BEGIN").await {
+        warn!("create_zone begin: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+    }
+    if let (Some(t), false) = (&zone_tenant, tok.claims.role == "admin") {
+        if let Err(resp) = tenants::reserve_quota_tx(c, t, 1, 1 + ns_values.len() as i64).await {
+            let _ = c.batch_execute("ROLLBACK").await;
+            return resp;
+        }
+    }
+    if let Err(e) = c.execute(
         "INSERT INTO zones (id, domain, owner, geodns_enabled, status, verify_token, tenant_id) VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5, $6, $7::text::uuid)",
         &[&zone_id_str, &domain, &owner_uuid_str, &geodns_enabled, &zone_status, &verify_token, &zone_tenant]
     ).await {
-        Ok(_) => {
-            info!("Created zone: {} for owner: {}", domain, owner_uuid_str);
+        let _ = c.batch_execute("ROLLBACK").await;
+        // e.to_string() only shows the top-level "db error"; the actual
+        // SQLSTATE message (e.g. the unique-violation detail) is deeper in
+        // the error chain, so inspect the whole chain for the conflict.
+        let err_str = full_error_string(&e);
+        warn!("create_zone error: {}", err_str);
+        return if err_str.contains("unique") || err_str.contains("duplicate") {
+            HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}))
+        } else {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}))
+        };
+    }
+    if let Err(e) = c.batch_execute("COMMIT").await {
+        warn!("create_zone commit failed: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}));
+    }
+    drop(tx);
+    info!("Created zone: {} for owner: {}", domain, owner_uuid_str);
 
-            // Authoritative nameservers for this zone: enabled rows of the
-            // nameservers table, falling back to PUBLIC_NAMESERVERS.
-            let ns_rows = match (&*data.db).query(
-                "SELECT hostname FROM nameservers WHERE enabled = true ORDER BY sort_order, hostname",
-                &[]
-            ).await {
-                Ok(r) => r,
-                Err(e) => {
-                    warn!("create_zone nameserver lookup failed: {}", full_error_string(&e));
-                    let _ = (&*data.db).execute("DELETE FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id_str]).await;
-                    return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
-                }
-            };
-            let candidates: Vec<String> = if !ns_rows.is_empty() {
-                ns_rows.iter().filter_map(|r| r.try_get::<_, String>(0).ok()).collect()
-            } else {
-                std::env::var("PUBLIC_NAMESERVERS")
-                    .unwrap_or_else(|_| "ns1.my-dns.com.,ns2.my-dns.com.".to_string())
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            };
-
-            let mut assigned_nameservers: Vec<String> = Vec::new();
-            for hostname in candidates {
-                let ns_value = if hostname.ends_with('.') { hostname } else { format!("{}.", hostname) };
-                // Validate NS value through Hickory before inserting
-                if let Err(e) = validate_record_value("NS", &ns_value) {
-                    warn!("Failed to validate NS record '{}': {}", ns_value, e.message);
-                    continue;
-                }
-                let ns_id = Uuid::new_v4().to_string();
-                match (&*data.db).execute(
-                    "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
-                    &[&ns_id, &zone_id_str, &"@", &"NS", &ns_value, &3600]
-                ).await {
-                    Ok(_) => assigned_nameservers.push(ns_value),
-                    Err(e) => warn!("Failed to add NS record for zone {} ({}): {}", domain, zone_id_str, full_error_string(&e)),
-                }
-            }
-            
-            // Default SOA with a date-based serial (YYYYMMDD00). The zone
-            // generator advances the serial whenever the zone's content
-            // changes, so this is only the initial value. MNAME is the first
-            // real nameserver.
-            let soa_id = Uuid::new_v4().to_string();
-            let serial = chrono::Utc::now().format("%Y%m%d00").to_string();
-            let mname = assigned_nameservers.first().cloned().unwrap_or_else(|| format!("ns1.{}.", domain));
-            let soa_value = format!("{} hostmaster.{}. {} 3600 3600 604800 3600", mname, domain, serial);
-            if let Err(e) = (&*data.db).execute(
-                "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
-                &[&soa_id, &zone_id_str, &"@", &"SOA", &soa_value, &3600]
-            ).await {
-                // A zone without its SOA row is half-created: undo it.
-                warn!("Failed to add default SOA record: {}", full_error_string(&e));
-                let _ = (&*data.db).execute("DELETE FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id_str]).await;
-                return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}));
-            }
-
-            // Publish. If the new zone cannot be published, do not keep a zone
-            // that is not being served.
-            if let Err(e) = publish(&data.dns_manager, &data.db, Some(&domain)).await {
-                warn!("Failed to publish new zone {}: {}", domain, e);
-                let _ = (&*data.db).execute("DELETE FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id_str]).await;
-                return HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": "publish_failed",
-                    "details": format!("zone could not be published and was not created: {}", e),
-                    "saved": false,
-                    "published": false
-                }));
-            }
-            audit(&data.db, Some(&tok.claims.sub), "create_zone", "zone", Some(zone_id_str.clone()), &req, serde_json::json!({"domain": domain})).await;
-            ext::snapshot_zone(&data.db, &zone_id_str, Some(&tok.claims.sub), "created").await;
-            
-            HttpResponse::Created().json(serde_json::json!({
-                "id": zone_id_str, 
-                "domain": domain,
-                "status": zone_status,
-                "verification": verify_token.as_ref().map(|t| serde_json::json!({
-                    "type": "TXT", "name": format!("{}.{}", ext::CHALLENGE_LABEL, domain), "value": t,
-                    "next": "publish the TXT record, then POST /api/v1/zones/{id}/verify"
-                })),
-                "nameservers": assigned_nameservers,
-                "message": "Zone created successfully. Please configure the following nameservers at your domain registrar: ".to_string() + &assigned_nameservers.join(", ")
-            }))
-        }
-        Err(e) => {
-            // e.to_string() only shows the top-level "db error"; the actual
-            // SQLSTATE message (e.g. the unique-violation detail) is deeper in
-            // the error chain, so inspect the whole chain for the conflict.
-            let err_str = full_error_string(&e);
-            warn!("create_zone error: {}", err_str);
-            if err_str.contains("unique") || err_str.contains("duplicate") {
-                HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}))
-            } else {
-                HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}))
-            }
+    let mut assigned_nameservers: Vec<String> = Vec::new();
+    for ns_value in ns_values {
+        let ns_id = Uuid::new_v4().to_string();
+        match (&*data.db).execute(
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+            &[&ns_id, &zone_id_str, &"@", &"NS", &ns_value, &3600]
+        ).await {
+            Ok(_) => assigned_nameservers.push(ns_value),
+            Err(e) => warn!("Failed to add NS record for zone {} ({}): {}", domain, zone_id_str, full_error_string(&e)),
         }
     }
+
+    // Default SOA with a date-based serial (YYYYMMDD00). The zone
+    // generator advances the serial whenever the zone's content
+    // changes, so this is only the initial value. MNAME is the first
+    // real nameserver.
+    let soa_id = Uuid::new_v4().to_string();
+    let serial = chrono::Utc::now().format("%Y%m%d00").to_string();
+    let mname = assigned_nameservers.first().cloned().unwrap_or_else(|| format!("ns1.{}.", domain));
+    let soa_value = format!("{} hostmaster.{}. {} 3600 3600 604800 3600", mname, domain, serial);
+    if let Err(e) = (&*data.db).execute(
+        "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+        &[&soa_id, &zone_id_str, &"@", &"SOA", &soa_value, &3600]
+    ).await {
+        // A zone without its SOA row is half-created: undo it.
+        warn!("Failed to add default SOA record: {}", full_error_string(&e));
+        let _ = (&*data.db).execute("DELETE FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id_str]).await;
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}));
+    }
+
+    // Publish. If the new zone cannot be published, do not keep a zone
+    // that is not being served.
+    if let Err(e) = publish(&data.dns_manager, &data.db, Some(&domain)).await {
+        warn!("Failed to publish new zone {}: {}", domain, e);
+        let _ = (&*data.db).execute("DELETE FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id_str]).await;
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "publish_failed",
+            "details": format!("zone could not be published and was not created: {}", e),
+            "saved": false,
+            "published": false
+        }));
+    }
+    audit(&data.db, Some(&tok.claims.sub), "create_zone", "zone", Some(zone_id_str.clone()), &req, serde_json::json!({"domain": domain})).await;
+    ext::snapshot_zone(&data.db, &zone_id_str, Some(&tok.claims.sub), "created").await;
+
+    HttpResponse::Created().json(serde_json::json!({
+        "id": zone_id_str,
+        "domain": domain,
+        "status": zone_status,
+        "verification": verify_token.as_ref().map(|t| serde_json::json!({
+            "type": "TXT", "name": format!("{}.{}", ext::CHALLENGE_LABEL, domain), "value": t,
+            "next": "publish the TXT record, then POST /api/v1/zones/{id}/verify"
+        })),
+        "nameservers": assigned_nameservers,
+        "message": "Zone created successfully. Please configure the following nameservers at your domain registrar: ".to_string() + &assigned_nameservers.join(", ")
+    }))
 }
 
 #[derive(Deserialize)]
@@ -3169,7 +3193,6 @@ async fn create_record(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    if let Err(resp) = tenants::check_zone_records_quota(db, &zone_id_str, 1, &tok).await { return resp; }
 
     let rec = match validate_record_input(
         &access.domain, &body.name, &body.record_type, &body.value,
@@ -3227,44 +3250,65 @@ async fn create_record(
 
     let id = Uuid::new_v4();
     let id_str = id.to_string();
-    match db.execute(
+    // Reserve quota and insert in one transaction: concurrent writers for the
+    // same tenant serialise on the tenant row instead of both passing the
+    // pre-insert count.
+    let tx = match db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("create_record transaction: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let c = tx.client;
+    if let Err(e) = c.batch_execute("BEGIN").await {
+        warn!("create_record begin: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+    }
+    if let Err(resp) = tenants::reserve_zone_records_quota_tx(c, &zone_id_str, 1, tok.claims.role == "admin").await {
+        let _ = c.batch_execute("ROLLBACK").await;
+        return resp;
+    }
+    if let Err(e) = c.execute(
         "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
         &[&id_str, &zone_id_str, &rec.name, &rec.rtype, &rec.value, &rec.ttl, &rec.priority]
     ).await {
-        Ok(_) => {
-            info!("Created record: {} ({}) in zone: {}", rec.name, rec.rtype, zone_id_str);
-            if let Err(e) = publish(&data.dns_manager, db, Some(&access.domain)).await {
-                // Not served -> do not keep it.
-                warn!("Failed to publish zone after record creation, rolling back: {}", e);
-                let _ = db.execute("DELETE FROM records WHERE CAST(id AS varchar) = $1", &[&id_str]).await;
-                return HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": "publish_failed",
-                    "details": format!("record was not created because the zone could not be published: {}", e),
-                    "saved": false,
-                    "published": false
-                }));
-            }
-            ext::snapshot_zone(db, &zone_id_str, Some(&tok.claims.sub), "record created").await;
-            audit(db, Some(&tok.claims.sub), "create_record", "record", Some(id_str.clone()), &req,
-                  serde_json::json!({"zone": access.domain, "name": rec.name, "type": rec.rtype})).await;
-            HttpResponse::Created().json(serde_json::json!({
-                "id": id_str,
-                "name": rec.name,
-                "type": rec.rtype,
-                "value": rec.value,
-                "ttl": rec.ttl
-            }))
-        }
-        Err(e) => {
-            let err_str = full_error_string(&e);
-            warn!("create_record error for zone {} (type={}, name={}): {}", zone_id_str, rec.rtype, rec.name, err_str);
-            if err_str.contains("unique") || err_str.contains("duplicate") {
-                HttpResponse::Conflict().json(serde_json::json!({"error": "record already exists"}))
-            } else {
-                HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create record"}))
-            }
-        }
+        let _ = c.batch_execute("ROLLBACK").await;
+        let err_str = full_error_string(&e);
+        warn!("create_record error for zone {} (type={}, name={}): {}", zone_id_str, rec.rtype, rec.name, err_str);
+        return if err_str.contains("unique") || err_str.contains("duplicate") {
+            HttpResponse::Conflict().json(serde_json::json!({"error": "record already exists"}))
+        } else {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create record"}))
+        };
     }
+    if let Err(e) = c.batch_execute("COMMIT").await {
+        warn!("create_record commit failed: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create record"}));
+    }
+    drop(tx);
+    info!("Created record: {} ({}) in zone: {}", rec.name, rec.rtype, zone_id_str);
+    if let Err(e) = publish(&data.dns_manager, db, Some(&access.domain)).await {
+        // Not served -> do not keep it.
+        warn!("Failed to publish zone after record creation, rolling back: {}", e);
+        let _ = db.execute("DELETE FROM records WHERE CAST(id AS varchar) = $1", &[&id_str]).await;
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "publish_failed",
+            "details": format!("record was not created because the zone could not be published: {}", e),
+            "saved": false,
+            "published": false
+        }));
+    }
+    ext::snapshot_zone(db, &zone_id_str, Some(&tok.claims.sub), "record created").await;
+    audit(db, Some(&tok.claims.sub), "create_record", "record", Some(id_str.clone()), &req,
+          serde_json::json!({"zone": access.domain, "name": rec.name, "type": rec.rtype})).await;
+    HttpResponse::Created().json(serde_json::json!({
+        "id": id_str,
+        "name": rec.name,
+        "type": rec.rtype,
+        "value": rec.value,
+        "ttl": rec.ttl
+    }))
 }
 
 async fn list_records(
@@ -3900,26 +3944,51 @@ async fn import_zone(
         }));
     }
 
-    if let Err(resp) = tenants::check_zone_records_quota(db, &zone_id, fresh.len() as i64, &tok).await { return resp; }
-
     let ids: Vec<String> = fresh.iter().map(|_| Uuid::new_v4().to_string()).collect();
     let names: Vec<String> = fresh.iter().map(|r| r.name.clone()).collect();
     let types: Vec<String> = fresh.iter().map(|r| r.rtype.clone()).collect();
     let values: Vec<String> = fresh.iter().map(|r| r.value.clone()).collect();
     let ttls: Vec<i32> = fresh.iter().map(|r| r.ttl).collect();
     let prios: Vec<i32> = fresh.iter().map(|r| r.priority).collect();
-    if let Err(e) = db.execute(
+    // Reserve quota and insert all rows in one transaction so concurrent
+    // imports/record writes cannot overshoot the tenant limit.
+    let tx = match db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("import_zone transaction: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let c = tx.client;
+    if let Err(e) = c.batch_execute("BEGIN").await {
+        warn!("import_zone begin: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+    }
+    if let Err(resp) = tenants::reserve_zone_records_quota_tx(c, &zone_id, fresh.len() as i64, tok.claims.role == "admin").await {
+        let _ = c.batch_execute("ROLLBACK").await;
+        return resp;
+    }
+    if let Err(e) = c.execute(
         "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) \
          SELECT u.id::uuid, $1::text::uuid, u.n, u.t, u.v, u.ttl, u.p \
          FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) AS u(id, n, t, v, ttl, p)",
         &[&zone_id, &ids, &names, &types, &values, &ttls, &prios]
     ).await {
+        let _ = c.batch_execute("ROLLBACK").await;
         warn!("failed to import records: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "Import failed",
             "details": "Database error while importing; no records were imported"
         }));
     }
+    if let Err(e) = c.batch_execute("COMMIT").await {
+        warn!("import_zone commit failed: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Import failed",
+            "details": "Database error while importing; no records were imported"
+        }));
+    }
+    drop(tx);
     let imported = fresh.len();
 
     if let Err(e) = publish(&data.dns_manager, db, Some(&access.domain)).await {

@@ -249,6 +249,77 @@ pub async fn check_zone_records_quota(
     }
 }
 
+/// Transactional, serialising quota reservation. Must be called on a
+/// connection with an open transaction: the tenant row lock is held until
+/// COMMIT/ROLLBACK, so concurrent writes for one tenant cannot both observe
+/// the same free slot (the check-then-insert race of [`check_quota`]).
+pub async fn reserve_quota_tx(
+    c: &tokio_postgres::Client,
+    tenant_id: &str,
+    adding_zones: i64,
+    adding_records: i64,
+) -> Result<(), HttpResponse> {
+    let limits = c
+        .query_opt(
+            "SELECT max_zones, max_records FROM tenants WHERE CAST(id AS varchar) = $1 FOR UPDATE",
+            &[&tenant_id],
+        )
+        .await
+        .map_err(|e| db_error("reserve_quota", &e))?;
+    let Some(row) = limits else { return Ok(()) };
+    let max_zones: Option<i32> = row.get(0);
+    let max_records: Option<i32> = row.get(1);
+    if max_zones.is_none() && max_records.is_none() {
+        return Ok(());
+    }
+    let counts = c
+        .query_one(
+            "SELECT (SELECT count(*) FROM zones z WHERE z.tenant_id = $1::text::uuid), \
+                    (SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE z.tenant_id = $1::text::uuid)",
+            &[&tenant_id],
+        )
+        .await
+        .map_err(|e| db_error("reserve_quota", &e))?;
+    let used_zones: i64 = counts.get(0);
+    let used_records: i64 = counts.get(1);
+    if let Some(l) = max_zones {
+        if adding_zones > 0 && used_zones + adding_zones > l as i64 {
+            return Err(quota_exceeded("zones", l, used_zones, adding_zones));
+        }
+    }
+    if let Some(l) = max_records {
+        if adding_records > 0 && used_records + adding_records > l as i64 {
+            return Err(quota_exceeded("records", l, used_records, adding_records));
+        }
+    }
+    Ok(())
+}
+
+/// Zone-scoped variant of [`reserve_quota_tx`]. Locks the zone row first (so a
+/// concurrent transfer cannot change its tenant mid-check) and then reserves
+/// records against the owning tenant. Caller must hold an open transaction.
+pub async fn reserve_zone_records_quota_tx(
+    c: &tokio_postgres::Client,
+    zone_id: &str,
+    adding: i64,
+    is_admin: bool,
+) -> Result<(), HttpResponse> {
+    if is_admin || adding <= 0 {
+        return Ok(());
+    }
+    let row = c
+        .query_opt(
+            "SELECT CAST(tenant_id AS varchar) FROM zones WHERE CAST(id AS varchar) = $1 FOR UPDATE",
+            &[&zone_id],
+        )
+        .await
+        .map_err(|e| db_error("reserve_quota", &e))?;
+    match row.and_then(|r| r.get::<_, Option<String>>(0)) {
+        Some(t) => reserve_quota_tx(c, &t, 0, adding).await,
+        None => Ok(()),
+    }
+}
+
 /// Role of `user_id` in the tenant of `zone` (None = no tenant access).
 pub fn tenant_role_to_zone_role(r: Option<&str>) -> &'static str {
     match r {

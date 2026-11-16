@@ -1718,6 +1718,118 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
 }
 
 #[actix_web::test]
+async fn concurrent_zone_creates_cannot_exceed_quota() {
+    let Some(env) = setup().await else { return };
+    let dave = add_user(&env.state, "race-dave", "dave-pass-1", "user").await;
+    let td = env.token(&dave, "user");
+    let tadmin = env.token(&env.admin, "admin");
+    let app = app!(env);
+    let (_, ts, _) = call!(app, get, "/api/v1/tenants", Some(&td), None);
+    let tid = ts[0]["id"].as_str().unwrap().to_string();
+    let tname = ts[0]["name"].as_str().unwrap().to_string();
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", tid), Some(&tadmin), j(serde_json::json!({"name": tname, "max_zones": 1, "max_records": null})));
+    assert_eq!(st, 200, "{raw}");
+    let app_ref = &app;
+    let results = futures_util::future::join_all((0..8).map(|i| {
+        let td = td.clone();
+        let domain = format!("race-zone-{i}.example");
+        async move {
+            let req = test::TestRequest::post()
+                .uri("/api/v1/zones")
+                .insert_header(("Authorization", format!("Bearer {}", td)))
+                .set_json(serde_json::json!({"domain": domain}))
+                .to_request();
+            test::call_service(app_ref, req).await.status().as_u16()
+        }
+    }))
+    .await;
+    let created = results.iter().filter(|s| **s == 201).count();
+    assert_eq!(created, 1, "only one concurrent creation may fit: {results:?}");
+    for st in results {
+        assert!(st == 201 || st == 403, "unexpected status {st}");
+    }
+    let n: i64 = env.state.db.query_one("SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
+    assert_eq!(n, 1, "the quota must be enforced in the database, not just pre-checked");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn concurrent_record_creates_cannot_exceed_quota() {
+    let Some(env) = setup().await else { return };
+    let dave = add_user(&env.state, "rec-dave", "dave-pass-1", "user").await;
+    let td = env.token(&dave, "user");
+    let tadmin = env.token(&env.admin, "admin");
+    let app = app!(env);
+    let z = make_zone(&env, &app, &td, "race-records.example").await;
+    let (_, ts, _) = call!(app, get, "/api/v1/tenants", Some(&td), None);
+    let tid = ts[0]["id"].as_str().unwrap().to_string();
+    let tname = ts[0]["name"].as_str().unwrap().to_string();
+    let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE CAST(z.tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", tid), Some(&tadmin), j(serde_json::json!({"name": tname, "max_zones": null, "max_records": used + 1})));
+    assert_eq!(st, 200, "{raw}");
+    let app_ref = &app;
+    let results = futures_util::future::join_all((0..8).map(|i| {
+        let td = td.clone();
+        let z = z.clone();
+        async move {
+            let req = test::TestRequest::post()
+                .uri(&format!("/api/v1/zones/{}/records", z))
+                .insert_header(("Authorization", format!("Bearer {}", td)))
+                .set_json(serde_json::json!({"name": format!("r{i}"), "record_type": "A", "value": "192.0.2.1", "ttl": 300}))
+                .to_request();
+            test::call_service(app_ref, req).await.status().as_u16()
+        }
+    }))
+    .await;
+    let created = results.iter().filter(|s| **s == 201).count();
+    assert_eq!(created, 1, "only one concurrent record may fit: {results:?}");
+    for st in results {
+        assert!(st == 201 || st == 403, "unexpected status {st}");
+    }
+    let n: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE CAST(z.tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
+    assert_eq!(n, used + 1);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn concurrent_imports_cannot_exceed_quota() {
+    let Some(env) = setup().await else { return };
+    let dave = add_user(&env.state, "imp-dave", "dave-pass-1", "user").await;
+    let td = env.token(&dave, "user");
+    let tadmin = env.token(&env.admin, "admin");
+    let app = app!(env);
+    let z = make_zone(&env, &app, &td, "race-imports.example").await;
+    let (_, ts, _) = call!(app, get, "/api/v1/tenants", Some(&td), None);
+    let tid = ts[0]["id"].as_str().unwrap().to_string();
+    let tname = ts[0]["name"].as_str().unwrap().to_string();
+    let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE CAST(z.tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
+    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", tid), Some(&tadmin), j(serde_json::json!({"name": tname, "max_zones": null, "max_records": used + 1})));
+    assert_eq!(st, 200, "{raw}");
+    let app_ref = &app;
+    let results = futures_util::future::join_all((0..4).map(|i| {
+        let td = td.clone();
+        let z = z.clone();
+        async move {
+            let req = test::TestRequest::post()
+                .uri(&format!("/api/v1/zones/{}/import", z))
+                .insert_header(("Authorization", format!("Bearer {}", td)))
+                .set_json(serde_json::json!({"records": [{"name": format!("i{i}"), "record_type": "A", "value": "192.0.2.2"}]}))
+                .to_request();
+            test::call_service(app_ref, req).await.status().as_u16()
+        }
+    }))
+    .await;
+    let imported = results.iter().filter(|s| **s == 200).count();
+    assert_eq!(imported, 1, "only one concurrent import may fit: {results:?}");
+    for st in results {
+        assert!(st == 200 || st == 403, "unexpected status {st}");
+    }
+    let n: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE CAST(z.tenant_id AS varchar) = $1", &[&tid]).await.unwrap().get(0);
+    assert_eq!(n, used + 1);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn tenant_roles_control_zone_access_and_membership() {
     let Some(env) = setup().await else { return };
     let owner = add_user(&env.state, "org-owner", "owner-pass-1", "user").await;
