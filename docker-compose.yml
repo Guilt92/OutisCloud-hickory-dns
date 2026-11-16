@@ -68,7 +68,8 @@ services:
     ports:
       - "${UI_PORT:-8081}:80"
     depends_on:
-      - control-api
+      control-api:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - outiscloud-network
