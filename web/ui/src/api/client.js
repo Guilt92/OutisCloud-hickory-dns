@@ -211,6 +211,8 @@ export const agentsApi = {
   heartbeat: (agentData) => api.post('/api/v1/agents/heartbeat', agentData),
   getConfig: (id) => api.get(`/api/v1/agents/${id}/config`),
   rotateToken: (id) => api.post(`/api/v1/agents/${id}/token/rotate`),
+  getZones: (id) => api.get(`/api/v1/agents/${id}/zones`),
+  setZones: (id, zoneIds) => api.put(`/api/v1/agents/${id}/zones`, { zone_ids: zoneIds }),
   delete: (id) => api.delete(`/api/v1/agents/${id}`),
   pushConfig: (agentId, zoneId, config = {}) => api.post('/api/v1/config/push', { agent_id: agentId, zone_id: zoneId, zone_config: config }),
 };

@@ -1,7 +1,7 @@
-use std::{fmt, path::Path};
 use std::str::FromStr;
+use std::{fmt, path::Path};
 
-use hickory_proto::rr::{domain::Name, RData, Record, RecordType};
+use hickory_proto::rr::{RData, Record, RecordType, domain::Name};
 use hickory_proto::serialize::txt::{Parser, RDataParser};
 
 /// Validation failure returned to the control API.
@@ -53,7 +53,10 @@ pub fn normalize_zone_domain(domain: &str) -> Result<String, ValidationError> {
         return Err(ValidationError::new("domain", "Domain cannot be empty"));
     }
     if d.len() > 253 {
-        return Err(ValidationError::new("domain", "Domain exceeds 253 characters"));
+        return Err(ValidationError::new(
+            "domain",
+            "Domain exceeds 253 characters",
+        ));
     }
     let labels: Vec<&str> = d.split('.').collect();
     if labels.len() < 2 {
@@ -64,12 +67,21 @@ pub fn normalize_zone_domain(domain: &str) -> Result<String, ValidationError> {
     }
     for label in labels {
         if label.is_empty() || label.len() > 63 {
-            return Err(ValidationError::new("domain", "Each label must be 1-63 characters"));
+            return Err(ValidationError::new(
+                "domain",
+                "Each label must be 1-63 characters",
+            ));
         }
         if label.starts_with('-') || label.ends_with('-') {
-            return Err(ValidationError::new("domain", "Labels must not start or end with '-'"));
+            return Err(ValidationError::new(
+                "domain",
+                "Labels must not start or end with '-'",
+            ));
         }
-        if !label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
             return Err(ValidationError::new(
                 "domain",
                 "Labels may only contain letters, digits and '-' (use punycode for IDN)",
@@ -77,7 +89,8 @@ pub fn normalize_zone_domain(domain: &str) -> Result<String, ValidationError> {
         }
     }
     // Final structural check through Hickory.
-    Name::from_utf8(format!("{}.", d)).map_err(|err| ValidationError::new("domain", err.to_string()))?;
+    Name::from_utf8(format!("{}.", d))
+        .map_err(|err| ValidationError::new("domain", err.to_string()))?;
     Ok(d)
 }
 
@@ -97,17 +110,26 @@ pub fn validate_record_in_zone(name: &str, domain: &str) -> Result<(), Validatio
     if n == "@" {
         return Ok(());
     }
-    let parsed = Name::from_utf8(if n.ends_with('.') { n.to_string() } else { format!("{}.", n) })
-        .map_err(|err| ValidationError::new("name", err.to_string()))?;
+    let parsed = Name::from_utf8(if n.ends_with('.') {
+        n.to_string()
+    } else {
+        format!("{}.", n)
+    })
+    .map_err(|err| ValidationError::new("name", err.to_string()))?;
     let ascii = parsed.to_ascii().to_ascii_lowercase();
     let ascii_base = ascii.trim_end_matches('.');
     if ascii_base.is_empty() {
-        return Err(ValidationError::new("name", "Record name cannot be the root"));
+        return Err(ValidationError::new(
+            "name",
+            "Record name cannot be the root",
+        ));
     }
     for label in ascii_base.split('.') {
         if label.is_empty()
             || label.len() > 63
-            || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'*')
+            || !label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'*')
         {
             return Err(ValidationError::new(
                 "name",
@@ -131,10 +153,7 @@ pub fn validate_record_in_zone(name: &str, domain: &str) -> Result<(), Validatio
 ///
 /// Record names may be absolute or relative. The special value `@` refers to
 /// the zone origin and requires an origin to be provided.
-pub fn validate_record_name(
-    name: &str,
-    origin: Option<&Name>,
-) -> Result<Name, ValidationError> {
+pub fn validate_record_name(name: &str, origin: Option<&Name>) -> Result<Name, ValidationError> {
     let trimmed = name.trim();
 
     if trimmed.is_empty() {
@@ -142,9 +161,9 @@ pub fn validate_record_name(
     }
 
     if trimmed == "@" {
-        return origin
-            .cloned()
-            .ok_or_else(|| ValidationError::new("name", "Zone origin is required for '@' record name"));
+        return origin.cloned().ok_or_else(|| {
+            ValidationError::new("name", "Zone origin is required for '@' record name")
+        });
     }
 
     let fqdn = if trimmed.ends_with('.') {
@@ -198,10 +217,7 @@ pub fn validate_record_name_input(name: &str) -> Result<(), ValidationError> {
 }
 
 /// Validate a DNS record type string using Hickory's RecordType parser.
-pub fn validate_record_value(
-    record_type: &str,
-    value: &str,
-) -> Result<RData, ValidationError> {
+pub fn validate_record_value(record_type: &str, value: &str) -> Result<RData, ValidationError> {
     let record_type = validate_record_type(record_type)?;
     RData::try_from_str(record_type, value)
         .map_err(|err| ValidationError::new("value", err.to_string()))
@@ -217,7 +233,10 @@ pub fn validate_ttl(ttl: u32) -> Result<(), ValidationError> {
 }
 
 /// Validate NS record value against a configured set of allowed nameservers.
-pub fn validate_ns_value(value: &str, allowed_nameservers: &[String]) -> Result<(), ValidationError> {
+pub fn validate_ns_value(
+    value: &str,
+    allowed_nameservers: &[String],
+) -> Result<(), ValidationError> {
     if allowed_nameservers.is_empty() {
         return Ok(());
     }
@@ -240,9 +259,8 @@ pub fn validate_ns_value(value: &str, allowed_nameservers: &[String]) -> Result<
 
 /// Return the configured global nameservers from environment or fallback defaults.
 pub fn get_global_nameservers() -> Vec<String> {
-    let env = std::env::var("PUBLIC_NAMESERVERS").unwrap_or_else(|_| {
-        "ns1.my-dns.com.,ns2.my-dns.com.".to_string()
-    });
+    let env = std::env::var("PUBLIC_NAMESERVERS")
+        .unwrap_or_else(|_| "ns1.my-dns.com.,ns2.my-dns.com.".to_string());
 
     env.split(',')
         .filter_map(|s| {
@@ -270,10 +288,7 @@ pub fn validate_record(
 }
 
 /// Validate raw zone text using Hickory's zone file parser.
-pub fn validate_zone_text(
-    content: &str,
-    origin: Option<&Name>,
-) -> Result<(), ValidationError> {
+pub fn validate_zone_text(content: &str, origin: Option<&Name>) -> Result<(), ValidationError> {
     let origin = origin.cloned();
     let (_origin, records) = Parser::new(content.to_string(), None, origin)
         .parse()
@@ -316,30 +331,82 @@ mod tests {
 
     #[test]
     fn domain_is_normalised() {
-        assert_eq!(normalize_zone_domain("Example.COM.").unwrap(), "example.com");
-        assert_eq!(normalize_zone_domain("  a-b.example.co.uk ").unwrap(), "a-b.example.co.uk");
-        assert_eq!(normalize_zone_domain("xn--bcher-kva.example").unwrap(), "xn--bcher-kva.example");
+        assert_eq!(
+            normalize_zone_domain("Example.COM.").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            normalize_zone_domain("  a-b.example.co.uk ").unwrap(),
+            "a-b.example.co.uk"
+        );
+        assert_eq!(
+            normalize_zone_domain("xn--bcher-kva.example").unwrap(),
+            "xn--bcher-kva.example"
+        );
     }
 
     #[test]
     fn dangerous_or_degenerate_domains_are_rejected() {
         for bad in [
-            "", ".", "..", "com", "com.", "a..b", "-a.com", "a-.com", "a b.com", "a/b.com", "a\\b.com",
-            "a\"b.com", "a'b.com", "a\nb.com", "a_b.com", "ü.com", "../x.com", "a.com/../b", "%41.com",
+            "",
+            ".",
+            "..",
+            "com",
+            "com.",
+            "a..b",
+            "-a.com",
+            "a-.com",
+            "a b.com",
+            "a/b.com",
+            "a\\b.com",
+            "a\"b.com",
+            "a'b.com",
+            "a\nb.com",
+            "a_b.com",
+            "ü.com",
+            "../x.com",
+            "a.com/../b",
+            "%41.com",
         ] {
-            assert!(normalize_zone_domain(bad).is_err(), "{bad:?} must be rejected");
+            assert!(
+                normalize_zone_domain(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
         }
         assert!(normalize_zone_domain(&format!("{}.com", "a".repeat(64))).is_err());
-        assert!(normalize_zone_domain(&format!("{}.com", vec!["a".repeat(63); 4].join("."))).is_err());
+        assert!(
+            normalize_zone_domain(&format!("{}.com", vec!["a".repeat(63); 4].join("."))).is_err()
+        );
     }
 
     #[test]
     fn record_names_must_stay_inside_the_zone() {
-        for ok in ["@", "www", "a.b", "_sip._tcp", "*", "*.dev", "www.example.com.", "example.com.", "WWW"] {
+        for ok in [
+            "@",
+            "www",
+            "a.b",
+            "_sip._tcp",
+            "*",
+            "*.dev",
+            "www.example.com.",
+            "example.com.",
+            "WWW",
+        ] {
             assert!(validate_record_in_zone(ok, "example.com").is_ok(), "{ok}");
         }
-        for bad in ["www.other.org.", "example.com.evil.net.", "notexample.com.", ".", "a b", "a\"b", "a/b"] {
-            assert!(validate_record_in_zone(bad, "example.com").is_err(), "{bad}");
+        for bad in [
+            "www.other.org.",
+            "example.com.evil.net.",
+            "notexample.com.",
+            ".",
+            "a b",
+            "a\"b",
+            "a/b",
+        ] {
+            assert!(
+                validate_record_in_zone(bad, "example.com").is_err(),
+                "{bad}"
+            );
         }
     }
 }

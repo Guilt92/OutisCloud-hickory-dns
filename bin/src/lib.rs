@@ -31,16 +31,16 @@ use hickory_server::server::default_tls_server_config;
 use hickory_server::{
     server::Server,
     zone_handler::{
-        swap::{RateLimitConfig, SwapHandler},
         Catalog,
+        swap::{RateLimitConfig, SwapHandler},
     },
 };
 
 mod config;
 use config::Config;
-use std::sync::atomic::{AtomicBool, Ordering};
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::Arc as SyncArc;
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Config as NotifyConfig};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 
 #[cfg(feature = "__dnssec")]
@@ -364,7 +364,10 @@ impl DnsServer {
                     .unwrap_or(2),
             });
         if let Some(r) = &rate_limit {
-            info!("rate limiting: {} queries/s per source (burst {}, slip {})", r.queries_per_second, r.burst, r.slip);
+            info!(
+                "rate limiting: {} queries/s per source (burst {}, slip {})",
+                r.queries_per_second, r.burst, r.slip
+            );
         }
         let handler = SwapHandler::new(catalog, rate_limit);
         let mut server = Server::with_access(handler.clone(), deny_networks, allow_networks);
@@ -472,7 +475,10 @@ impl DnsServer {
         // keeps the validity window sliding so a quiet zone never serves expired
         // signatures (which would make it fail validation everywhere).
         {
-            let hours: f64 = std::env::var("RESIGN_INTERVAL_HOURS").ok().and_then(|v| v.parse().ok()).unwrap_or(168.0);
+            let hours: f64 = std::env::var("RESIGN_INTERVAL_HOURS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(168.0);
             let secs = (hours * 3600.0) as u64;
             if secs >= 1 {
                 let tx = reload_tx.clone();
@@ -494,24 +500,36 @@ impl DnsServer {
         let geoip_path = std::env::var_os("GEOIP_DB_PATH").map(PathBuf::from);
         std::thread::spawn(move || {
             let (tx, rx) = std::sync::mpsc::channel();
-            let mut watcher: RecommendedWatcher = match RecommendedWatcher::new(tx, NotifyConfig::default()) {
-                Ok(w) => w,
-                Err(e) => {
-                    tracing::error!("failed to create file watcher: {}", e);
-                    return;
-                }
-            };
+            let mut watcher: RecommendedWatcher =
+                match RecommendedWatcher::new(tx, NotifyConfig::default()) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::error!("failed to create file watcher: {}", e);
+                        return;
+                    }
+                };
             // A watch that cannot be installed means changes are never picked up (typically the
             // unprivileged user cannot traverse the directory): say so instead of staying silent.
-            for (path, mode) in [(&cfg_watch_path, RecursiveMode::NonRecursive), (&zone_watch_dir, RecursiveMode::Recursive)] {
+            for (path, mode) in [
+                (&cfg_watch_path, RecursiveMode::NonRecursive),
+                (&zone_watch_dir, RecursiveMode::Recursive),
+            ] {
                 if let Err(e) = watcher.watch(path, mode) {
-                    tracing::error!("hot reload disabled for {}: cannot watch it ({}). Check that the server user can read the path and all its parent directories", path.display(), e);
+                    tracing::error!(
+                        "hot reload disabled for {}: cannot watch it ({}). Check that the server user can read the path and all its parent directories",
+                        path.display(),
+                        e
+                    );
                 }
             }
             if let Some(g) = geoip_path.as_ref().and_then(|g| g.parent()) {
                 if !g.starts_with(&zone_watch_dir) {
                     if let Err(e) = watcher.watch(g, RecursiveMode::NonRecursive) {
-                        tracing::error!("GeoIP database changes will not be picked up: cannot watch {} ({})", g.display(), e);
+                        tracing::error!(
+                            "GeoIP database changes will not be picked up: cannot watch {} ({})",
+                            g.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -520,7 +538,9 @@ impl DnsServer {
                 // only real content changes; ignore access events and temp files
                 let interesting = matches!(
                     evt.kind,
-                    notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_)
+                    notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Remove(_)
                 ) && evt.paths.iter().any(|p| {
                     let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     !(n.ends_with(".tmp") || n.starts_with('.'))
@@ -540,7 +560,15 @@ impl DnsServer {
                     // debounce: a publication touches several files
                     tokio::time::sleep(StdDuration::from_millis(300)).await;
                     while reload_rx.try_recv().is_ok() {}
-                    reload_zones(&config_path, &zonedir_for_reload, &startup_fingerprint, &nsid_final, &handler, &|| token.cancel()).await;
+                    reload_zones(
+                        &config_path,
+                        &zonedir_for_reload,
+                        &startup_fingerprint,
+                        &nsid_final,
+                        &handler,
+                        &|| token.cancel(),
+                    )
+                    .await;
                 }
             });
         }
@@ -628,13 +656,18 @@ async fn reload_zones(
         match zone.load(&zone_dir).await {
             Ok(handlers) => catalog.upsert(zone_name.into(), handlers),
             Err(e) => {
-                error!("reload aborted, zone {zone_name} failed to load (still serving the previous data): {e}");
+                error!(
+                    "reload aborted, zone {zone_name} failed to load (still serving the previous data): {e}"
+                );
                 return;
             }
         }
     }
     handler.swap(catalog);
-    info!("reloaded {count} zone(s) without restarting (reload #{})", handler.reloads());
+    info!(
+        "reloaded {count} zone(s) without restarting (reload #{})",
+        handler.reloads()
+    );
 }
 
 struct ServerSetup<'a> {

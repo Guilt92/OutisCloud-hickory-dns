@@ -768,10 +768,16 @@ $INCLUDE <SUBSYS>ISI-MAILBOXES.TXT",
         for len in [4_094usize, 4_095, 4_096, 10_000, 70_000] {
             let long = "a".repeat(len);
             let mut lexer = Lexer::new(&long);
-            assert_eq!(next_token(&mut lexer).unwrap(), Token::CharData(long.clone()));
+            assert_eq!(
+                next_token(&mut lexer).unwrap(),
+                Token::CharData(long.clone())
+            );
             let quoted = format!("\"{}\"", "b".repeat(len));
             let mut lexer = Lexer::new(&quoted);
-            assert_eq!(next_token(&mut lexer).unwrap(), Token::CharData("b".repeat(len)));
+            assert_eq!(
+                next_token(&mut lexer).unwrap(),
+                Token::CharData("b".repeat(len))
+            );
         }
     }
 }

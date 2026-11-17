@@ -43,6 +43,36 @@ export function useFormValidation(initialValues, validateFn) {
   return { values, errors, bind, setFieldValue, validate, isValid: Object.keys(errors).length === 0, reset }
 }
 
+const isIPv4 = (value) => {
+  const parts = value.split('.')
+  return parts.length === 4 && parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) return false
+    return Number(part) <= 255
+  })
+}
+
+const isIPv6 = (value) => {
+  const address = value.split('%')[0]
+  if (!address.includes(':')) return false
+  const halves = address.split('::')
+  if (halves.length > 2) return false
+  const expand = (part) => {
+    if (!part) return []
+    const groups = part.split(':')
+    if (groups.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) {
+      const last = groups[groups.length - 1]
+      if (!last.includes('.') || !isIPv4(last)) return null
+      groups.splice(groups.length - 1, 1, '0', '0')
+    }
+    return groups
+  }
+  const head = expand(halves[0])
+  const tail = halves.length === 2 ? expand(halves[1]) : []
+  if (!head || !tail) return false
+  const count = head.length + tail.length
+  return halves.length === 2 ? count <= 7 : count === 8
+}
+
 /**
  * Form validators
  */
@@ -64,9 +94,7 @@ export const validators = {
   },
   ipAddress: (value) => {
     if (!value) return 'required'
-    const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/
-    const ipv6 = /^[0-9a-fA-F:]+$/
-    return ipv4.test(value) || ipv6.test(value) ? '' : 'invalid IP'
+    return isIPv4(value) || isIPv6(value) ? '' : 'invalid IP'
   },
 }
 

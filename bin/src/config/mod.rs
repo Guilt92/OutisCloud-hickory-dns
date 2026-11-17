@@ -313,7 +313,9 @@ impl ZoneConfig {
                             ProtoError::from(format!("GeoIP database {p} is invalid: {e}"))
                         })?),
                         Err(e) => {
-                            tracing::warn!("GeoIP database {p} cannot be read ({e}); country/continent rules will not match");
+                            tracing::warn!(
+                                "GeoIP database {p} cannot be read ({e}); country/continent rules will not match"
+                            );
                             None
                         }
                     },
@@ -330,7 +332,9 @@ impl ZoneConfig {
                 )
                 .with_ecs(geo_cfg.ecs);
                 // zone-wide rules must not invent names: learn the real ones
-                if let ZoneTypeConfig::Primary(sc) | ZoneTypeConfig::Secondary(sc) = &self.zone_type_config {
+                if let ZoneTypeConfig::Primary(sc) | ZoneTypeConfig::Secondary(sc) =
+                    &self.zone_type_config
+                {
                     if let Some(f) = sc.stores.iter().find_map(|st| match st {
                         ServerStoreConfig::File(c) => Some(zone_dir.join(&c.zone_path)),
                         _ => None,

@@ -676,6 +676,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tokio-test",
+ "toml",
  "tracing",
  "utoipa 2.4.2",
  "utoipa-actix-web",

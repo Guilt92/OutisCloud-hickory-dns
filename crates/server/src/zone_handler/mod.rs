@@ -34,9 +34,9 @@ use crate::server::{Request, RequestInfo};
 mod auth_lookup;
 mod catalog;
 pub mod geodns;
-pub mod swap;
 pub(crate) mod message_request;
 mod message_response;
+pub mod swap;
 
 pub use self::auth_lookup::{
     AuthLookup, AuthLookupIter, AxfrRecords, AxfrRecordsIter, LookupRecords, LookupRecordsIter,

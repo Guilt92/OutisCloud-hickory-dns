@@ -21,7 +21,15 @@ const ZONE_HEAD: &str = "example.com. 3600 IN SOA ns1.example.com. hostmaster.ex
 fn write_zone(path: &std::path::Path, serial: u32, extra: &str) {
     // atomic replace, exactly like the control API publisher does
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, format!("{}{}", ZONE_HEAD.replace("{SERIAL}", &serial.to_string()), extra)).unwrap();
+    std::fs::write(
+        &tmp,
+        format!(
+            "{}{}",
+            ZONE_HEAD.replace("{SERIAL}", &serial.to_string()),
+            extra
+        ),
+    )
+    .unwrap();
     std::fs::rename(&tmp, path).unwrap();
 }
 
@@ -33,7 +41,10 @@ impl Drop for Server {
     }
 }
 
-async fn a_records(client: &mut Client<TokioRuntimeProvider>, name: &str) -> (ResponseCode, Vec<A>) {
+async fn a_records(
+    client: &mut Client<TokioRuntimeProvider>,
+    name: &str,
+) -> (ResponseCode, Vec<A>) {
     let resp = client
         .query(Name::from_str(name).unwrap(), DNSClass::IN, RecordType::A)
         .await
@@ -49,7 +60,10 @@ async fn a_records(client: &mut Client<TokioRuntimeProvider>, name: &str) -> (Re
     (resp.response_code(), answers)
 }
 
-async fn eventually<F: FnMut() -> Fut, Fut: std::future::Future<Output = bool>>(what: &str, mut f: F) {
+async fn eventually<F: FnMut() -> Fut, Fut: std::future::Future<Output = bool>>(
+    what: &str,
+    mut f: F,
+) {
     let end = Instant::now() + Duration::from_secs(15);
     while Instant::now() < end {
         if f().await {
@@ -121,7 +135,10 @@ async fn reload_on_zonefile_change() {
 
     let (rc, a) = a_records(&mut client, "www.example.com.").await;
     assert_eq!((rc, a), (ResponseCode::NoError, vec![A::new(127, 0, 0, 1)]));
-    assert_eq!(a_records(&mut client, "foo.example.com.").await.0, ResponseCode::NXDomain);
+    assert_eq!(
+        a_records(&mut client, "foo.example.com.").await.0,
+        ResponseCode::NXDomain
+    );
 
     // add a record: picked up without a restart
     write_zone(&zone_path, 2, "foo.example.com. 300 IN A 5.6.7.8\n");
@@ -132,13 +149,20 @@ async fn reload_on_zonefile_change() {
     })
     .await;
     // old data stays
-    assert_eq!(a_records(&mut c2, "www.example.com.").await.1, vec![A::new(127, 0, 0, 1)]);
+    assert_eq!(
+        a_records(&mut c2, "www.example.com.").await.1,
+        vec![A::new(127, 0, 0, 1)]
+    );
 
     // a broken zone file is rejected; previous data keeps being served
     write_zone(&zone_path, 3, "this is not a valid record line\n");
     tokio::time::sleep(Duration::from_secs(2)).await;
     let (rc, a) = a_records(&mut c2, "foo.example.com.").await;
-    assert_eq!((rc, a), (ResponseCode::NoError, vec![A::new(5, 6, 7, 8)]), "bad zone must not replace good data");
+    assert_eq!(
+        (rc, a),
+        (ResponseCode::NoError, vec![A::new(5, 6, 7, 8)]),
+        "bad zone must not replace good data"
+    );
 
     // and a later good file is applied again
     write_zone(&zone_path, 4, "foo.example.com. 300 IN A 9.9.9.9\n");

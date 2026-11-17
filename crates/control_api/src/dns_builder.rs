@@ -4,19 +4,15 @@
 //! Hickory DNS types, eliminating all string-based DNS generation. All records are
 //! validated before persistence using Hickory DNS validation APIs.
 
-use anyhow::{anyhow, Context, Result};
-use hickory_proto::rr::{Name, Record, RData};
+use anyhow::{Context, Result, anyhow};
+use hickory_proto::rr::{Name, RData, Record};
+use log::{debug, warn};
 use std::fs;
 use std::path::Path;
-use log::{debug, warn};
 
 use crate::dns_validator::{
-    validate_record,
-    validate_zone_file,
-    validate_record_name_input,
-    validate_record_type,
-    validate_record_value,
-    validate_ttl,
+    validate_record, validate_record_name_input, validate_record_type, validate_record_value,
+    validate_ttl, validate_zone_file,
 };
 
 /// Represents a complete DNS record with all metadata.
@@ -69,7 +65,11 @@ impl DnsRecord {
 
     /// Like [`to_zone_string_with_origin`](Self::to_zone_string_with_origin) but
     /// overrides the serial when this record is an SOA.
-    pub fn to_zone_string_with_origin_and_serial(&self, origin: &Name, serial: Option<u32>) -> Result<String> {
+    pub fn to_zone_string_with_origin_and_serial(
+        &self,
+        origin: &Name,
+        serial: Option<u32>,
+    ) -> Result<String> {
         let mut record = self.to_hickory_record()?;
         let mut data = absolutize_rdata(record.data().clone(), origin);
         if let (Some(serial), RData::SOA(soa)) = (serial, &data) {
@@ -90,8 +90,14 @@ impl DnsRecord {
             // ("v=spf1 mx -all" would be served as "v=spf1" "mx" "-all").
             // Write each character-string quoted and escaped instead.
             RData::TXT(txt) => {
-                let strings: Vec<String> = txt.txt_data().iter().map(|s| quote_txt_string(s)).collect();
-                format!("{} {} IN TXT {}", record.name(), record.ttl(), strings.join(" "))
+                let strings: Vec<String> =
+                    txt.txt_data().iter().map(|s| quote_txt_string(s)).collect();
+                format!(
+                    "{} {} IN TXT {}",
+                    record.name(),
+                    record.ttl(),
+                    strings.join(" ")
+                )
             }
             _ => record.to_string(),
         };
@@ -106,16 +112,13 @@ impl DnsRecord {
     /// Uses Hickory DNS APIs for all validation (zero custom logic).
     pub fn validate(&self) -> Result<()> {
         // Validate name through Hickory
-        validate_record_name_input(&self.name)
-            .map_err(|err| anyhow!(err.to_string()))?;
+        validate_record_name_input(&self.name).map_err(|err| anyhow!(err.to_string()))?;
 
         // Validate record type through Hickory
-        validate_record_type(&self.record_type)
-            .map_err(|err| anyhow!(err.to_string()))?;
+        validate_record_type(&self.record_type).map_err(|err| anyhow!(err.to_string()))?;
 
         // Validate TTL (simple numeric check)
-        validate_ttl(self.ttl)
-            .map_err(|err| anyhow!(err.to_string()))?;
+        validate_ttl(self.ttl).map_err(|err| anyhow!(err.to_string()))?;
 
         // Validate record value through Hickory - KEY VALIDATION
         // This delegates to RData::try_from_str() which does all record-type-specific validation
@@ -226,7 +229,10 @@ fn verify_roundtrip(text: &str, origin: &Name, expected: &RData) -> Result<()> {
     if ok {
         Ok(())
     } else {
-        Err(anyhow!("serialized record would not round-trip unchanged through the zone file: {}", text))
+        Err(anyhow!(
+            "serialized record would not round-trip unchanged through the zone file: {}",
+            text
+        ))
     }
 }
 
@@ -261,7 +267,11 @@ impl DnsRecordBuilder {
         match record_type {
             "MX" => {
                 let mut tokens = trimmed.split_whitespace();
-                if priority > 0 && tokens.next().map_or(true, |first| first.parse::<u16>().is_err()) {
+                if priority > 0
+                    && tokens
+                        .next()
+                        .map_or(true, |first| first.parse::<u16>().is_err())
+                {
                     format!("{} {}", priority, trimmed)
                 } else {
                     trimmed.to_string()
@@ -329,15 +339,23 @@ impl SafeZoneFileWriter {
         // Validate zone file using Hickory's parser - delegates to Hickory.
         // The existing (last known-good) zone file is untouched until this passes.
         if let Err(e) = validate_zone_file(&tmp_path, content, origin) {
-            warn!("Zone file validation failed, removing temporary file: {:?}", tmp_path);
+            warn!(
+                "Zone file validation failed, removing temporary file: {:?}",
+                tmp_path
+            );
             let _ = fs::remove_file(&tmp_path);
-            return Err(e).with_context(|| format!("Zone file validation failed at {:?}", tmp_path));
+            return Err(e)
+                .with_context(|| format!("Zone file validation failed at {:?}", tmp_path));
         }
 
-        debug!("Zone file validation passed, moving to final location: {:?}", zone_path);
+        debug!(
+            "Zone file validation passed, moving to final location: {:?}",
+            zone_path
+        );
         if let Err(e) = fs::rename(&tmp_path, zone_path) {
             let _ = fs::remove_file(&tmp_path);
-            return Err(e).with_context(|| format!("Failed to rename temp zone file to {:?}", zone_path));
+            return Err(e)
+                .with_context(|| format!("Failed to rename temp zone file to {:?}", zone_path));
         }
         sync_parent_dir(zone_path);
 
@@ -373,7 +391,9 @@ pub fn toml_escape(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{:04X}", c as u32))
+            }
             c => out.push(c),
         }
     }
@@ -441,20 +461,33 @@ impl TomlConfigBuilder {
             let v = std::env::var(var).ok()?;
             let mut out = Vec::new();
             for item in v.split(',').map(str::trim).filter(|x| !x.is_empty()) {
-                if item.parse::<T>().is_ok() { out.push(item.to_string()); } else { warn!("ignoring invalid address {:?} in {}", item, var); }
+                if item.parse::<T>().is_ok() {
+                    out.push(item.to_string());
+                } else {
+                    warn!("ignoring invalid address {:?} in {}", item, var);
+                }
             }
             Some(out)
         }
         let mut b = Self::new();
-        if let Some(v4) = list::<std::net::Ipv4Addr>("LISTEN_ADDRS_IPV4") { if !v4.is_empty() { b.listen_ipv4 = v4; } }
-        if let Some(v6) = list::<std::net::Ipv6Addr>("LISTEN_ADDRS_IPV6") { b.listen_ipv6 = v6; }
+        if let Some(v4) = list::<std::net::Ipv4Addr>("LISTEN_ADDRS_IPV4") {
+            if !v4.is_empty() {
+                b.listen_ipv4 = v4;
+            }
+        }
+        if let Some(v6) = list::<std::net::Ipv6Addr>("LISTEN_ADDRS_IPV6") {
+            b.listen_ipv6 = v6;
+        }
         if let Ok(v) = std::env::var("PROMETHEUS_LISTEN_ADDR") {
             let v = v.trim();
             if v.is_empty() {
             } else if v.parse::<std::net::SocketAddr>().is_ok() {
                 b.prometheus_listen = Some(v.to_string());
             } else {
-                warn!("ignoring invalid PROMETHEUS_LISTEN_ADDR {:?} (expected ip:port)", v);
+                warn!(
+                    "ignoring invalid PROMETHEUS_LISTEN_ADDR {:?} (expected ip:port)",
+                    v
+                );
             }
         }
         b
@@ -466,21 +499,31 @@ impl TomlConfigBuilder {
         zone: String,
         zone_path: String,
         geodns_enabled: bool,
-        geo_rules: Vec<(String, String, String, i32, bool, Option<String>, Option<String>)>,
+        geo_rules: Vec<(
+            String,
+            String,
+            String,
+            i32,
+            bool,
+            Option<String>,
+            Option<String>,
+        )>,
     ) -> Result<()> {
         let rules = geo_rules
             .into_iter()
-            .map(|(match_type, match_value, target, priority, enabled, record_name, record_type)| {
-                TomlGeoRule {
-                    match_type,
-                    match_value,
-                    target,
-                    priority,
-                    enabled,
-                    record_name,
-                    record_type,
-                }
-            })
+            .map(
+                |(match_type, match_value, target, priority, enabled, record_name, record_type)| {
+                    TomlGeoRule {
+                        match_type,
+                        match_value,
+                        target,
+                        priority,
+                        enabled,
+                        record_name,
+                        record_type,
+                    }
+                },
+            )
             .collect();
 
         self.zones.push(TomlZone {
@@ -510,47 +553,66 @@ impl TomlConfigBuilder {
         }
     }
 
-
     /// Builds the final TOML string.
     pub fn build(&self) -> Result<String> {
         let mut result = String::new();
         if let Some(dir) = &self.directory {
             result.push_str(&format!("directory = \"{}\"\n", toml_escape(dir)));
         }
-        result.push_str("listen_addrs_ipv4 = ["); 
+        result.push_str("listen_addrs_ipv4 = [");
         for (i, addr) in self.listen_ipv4.iter().enumerate() {
             if i > 0 {
                 result.push_str(", ");
             }
             result.push('"');
-            result.push_str(&toml_escape(addr)); 
+            result.push_str(&toml_escape(addr));
             result.push('"');
         }
         result.push_str("]\n");
         if !self.listen_ipv6.is_empty() {
             result.push_str("listen_addrs_ipv6 = [");
             for (i, addr) in self.listen_ipv6.iter().enumerate() {
-                if i > 0 { result.push_str(", "); }
-                result.push('"'); result.push_str(&toml_escape(addr)); result.push('"');
+                if i > 0 {
+                    result.push_str(", ");
+                }
+                result.push('"');
+                result.push_str(&toml_escape(addr));
+                result.push('"');
             }
             result.push_str("]\n");
         }
         if let Some(p) = &self.prometheus_listen {
-            result.push_str(&format!("prometheus_listen_addr = \"{}\"\n", toml_escape(p)));
+            result.push_str(&format!(
+                "prometheus_listen_addr = \"{}\"\n",
+                toml_escape(p)
+            ));
         }
         result.push('\n');
 
         for zone in &self.zones {
             result.push_str("[[zones]]\n");
             result.push_str(&format!("zone = \"{}\"\n", toml_escape(&zone.zone)));
-            result.push_str(&format!("zone_type = \"{}\"\n", toml_escape(&zone.zone_type)));
+            result.push_str(&format!(
+                "zone_type = \"{}\"\n",
+                toml_escape(&zone.zone_type)
+            ));
 
             if zone.geodns_enabled {
-                result.push_str(if zone.ecs { "geodns = { enabled = true, ecs = true, rules = [\n" } else { "geodns = { enabled = true, rules = [\n" });
+                result.push_str(if zone.ecs {
+                    "geodns = { enabled = true, ecs = true, rules = [\n"
+                } else {
+                    "geodns = { enabled = true, rules = [\n"
+                });
                 for rule in &zone.geo_rules {
                     result.push_str("  { ");
-                    result.push_str(&format!("match_type = \"{}\", ", toml_escape(&rule.match_type)));
-                    result.push_str(&format!("match_value = \"{}\", ", toml_escape(&rule.match_value)));
+                    result.push_str(&format!(
+                        "match_type = \"{}\", ",
+                        toml_escape(&rule.match_type)
+                    ));
+                    result.push_str(&format!(
+                        "match_value = \"{}\", ",
+                        toml_escape(&rule.match_value)
+                    ));
                     result.push_str(&format!("target = \"{}\", ", toml_escape(&rule.target)));
                     result.push_str(&format!("priority = {}, ", rule.priority));
                     result.push_str(&format!("enabled = {}, ", rule.enabled));
@@ -568,14 +630,21 @@ impl TomlConfigBuilder {
             if !zone.keys.is_empty() {
                 result.push_str("nx_proof_kind = \"nsec\"\nkeys = [\n");
                 for (path, alg) in &zone.keys {
-                    result.push_str(&format!("  {{ key_path = \"{}\", algorithm = \"{}\" }},\n", toml_escape(path), toml_escape(alg)));
+                    result.push_str(&format!(
+                        "  {{ key_path = \"{}\", algorithm = \"{}\" }},\n",
+                        toml_escape(path),
+                        toml_escape(alg)
+                    ));
                 }
                 result.push_str("]\n\n");
             }
 
             result.push_str("[[zones.stores]]\n");
             result.push_str("type = \"file\"\n");
-            result.push_str(&format!("zone_path = \"{}\"\n\n", toml_escape(&zone.zone_path)));
+            result.push_str(&format!(
+                "zone_path = \"{}\"\n\n",
+                toml_escape(&zone.zone_path)
+            ));
         }
 
         Ok(result)
@@ -685,7 +754,10 @@ mod tests {
         )
         .unwrap();
         let text = record.to_zone_string_with_origin(&origin).unwrap();
-        assert!(text.contains("SOA ns1.example.com. hostmaster.example.com."), "was: {text}");
+        assert!(
+            text.contains("SOA ns1.example.com. hostmaster.example.com."),
+            "was: {text}"
+        );
         assert!(!text.contains(".example.com.example.com"));
     }
 
@@ -701,7 +773,10 @@ mod tests {
         )
         .unwrap();
         let text = record.to_zone_string_with_origin(&origin).unwrap();
-        assert!(text.contains("SOA ns1.example.com. hostmaster.example.com."), "was: {text}");
+        assert!(
+            text.contains("SOA ns1.example.com. hostmaster.example.com."),
+            "was: {text}"
+        );
     }
 
     #[test]
@@ -761,7 +836,10 @@ mod tests {
             "invalid-ipv6".to_string(),
             3600,
         );
-        assert!(record.validate().is_err(), "Hickory should reject invalid IPv6");
+        assert!(
+            record.validate().is_err(),
+            "Hickory should reject invalid IPv6"
+        );
     }
 
     #[test]
@@ -816,7 +894,10 @@ mod tests {
             "1.2.3.4".to_string(),
             3600,
         );
-        assert!(record.validate().is_err(), "Hickory should reject invalid record type");
+        assert!(
+            record.validate().is_err(),
+            "Hickory should reject invalid record type"
+        );
     }
 
     #[test]
@@ -838,7 +919,10 @@ mod tests {
             "1.2.3.4".to_string(),
             3600,
         );
-        assert!(record.validate().is_err(), "Invalid domain names should be rejected by Hickory");
+        assert!(
+            record.validate().is_err(),
+            "Invalid domain names should be rejected by Hickory"
+        );
     }
 
     #[test]
@@ -850,7 +934,10 @@ mod tests {
             3600,
             0,
         );
-        assert!(result.is_err(), "Builder should validate through Hickory and reject invalid IPv6");
+        assert!(
+            result.is_err(),
+            "Builder should validate through Hickory and reject invalid IPv6"
+        );
     }
 
     #[test]
@@ -862,7 +949,10 @@ mod tests {
             3600,
             25,
         );
-        assert!(result.is_ok(), "MX record with priority should validate through Hickory");
+        assert!(
+            result.is_ok(),
+            "MX record with priority should validate through Hickory"
+        );
     }
 
     #[test]
@@ -906,7 +996,10 @@ mod tests {
             "incomplete soa record".to_string(),
             3600,
         );
-        assert!(record.validate().is_err(), "Hickory should reject invalid SOA format");
+        assert!(
+            record.validate().is_err(),
+            "Hickory should reject invalid SOA format"
+        );
     }
 }
 
@@ -923,7 +1016,9 @@ mod roundtrip_tests {
 
     fn txt_strings(text: &str) -> Vec<Vec<u8>> {
         let origin = Name::from_utf8("example.com.").unwrap();
-        let (_, recs) = Parser::new(text.to_string(), None, Some(origin)).parse().unwrap();
+        let (_, recs) = Parser::new(text.to_string(), None, Some(origin))
+            .parse()
+            .unwrap();
         for rs in recs.values() {
             for r in rs.records_without_rrsigs() {
                 if let RData::TXT(t) = r.data() {
@@ -938,17 +1033,33 @@ mod roundtrip_tests {
     fn txt_with_spaces_is_one_string_not_split() {
         // used to be served as three strings "v=spf1" "mx" "-all"
         let text = render("t.example.com.", "TXT", "v=spf1 mx -all", 0).unwrap();
-        assert_eq!(txt_strings(&text), vec![b"v=spf1 mx -all".to_vec()], "{text}");
+        assert_eq!(
+            txt_strings(&text),
+            vec![b"v=spf1 mx -all".to_vec()],
+            "{text}"
+        );
         let text = render("t.example.com.", "TXT", "\"v=spf1 mx -all\"", 0).unwrap();
-        assert_eq!(txt_strings(&text), vec![b"v=spf1 mx -all".to_vec()], "{text}");
+        assert_eq!(
+            txt_strings(&text),
+            vec![b"v=spf1 mx -all".to_vec()],
+            "{text}"
+        );
     }
 
     #[test]
     fn txt_quotes_backslashes_semicolons_and_segments_survive() {
         let text = render("t.example.com.", "TXT", "\"say \\\"hi\\\" \\\\ ; ok\"", 0).unwrap();
-        assert_eq!(txt_strings(&text), vec![b"say \"hi\" \\ ; ok".to_vec()], "{text}");
+        assert_eq!(
+            txt_strings(&text),
+            vec![b"say \"hi\" \\ ; ok".to_vec()],
+            "{text}"
+        );
         let text = render("t.example.com.", "TXT", "\"seg one\" \"seg two\"", 0).unwrap();
-        assert_eq!(txt_strings(&text), vec![b"seg one".to_vec(), b"seg two".to_vec()], "{text}");
+        assert_eq!(
+            txt_strings(&text),
+            vec![b"seg one".to_vec(), b"seg two".to_vec()],
+            "{text}"
+        );
         let dkim = "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC";
         let text = render("sel._domainkey.example.com.", "TXT", dkim, 0).unwrap();
         assert_eq!(txt_strings(&text), vec![dkim.as_bytes().to_vec()], "{text}");
@@ -961,9 +1072,19 @@ mod roundtrip_tests {
             ("a.example.com.", "AAAA", "2001:db8::1", 0),
             ("example.com.", "MX", "mail.example.com.", 10),
             ("w.example.com.", "CNAME", "x.example.com.", 0),
-            ("_sip._tcp.example.com.", "SRV", "2 5060 sip.example.com.", 1),
+            (
+                "_sip._tcp.example.com.",
+                "SRV",
+                "2 5060 sip.example.com.",
+                1,
+            ),
             ("c.example.com.", "CAA", "0 issue \"letsencrypt.org\"", 0),
-            ("tl.example.com.", "TLSA", "3 1 1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 0),
+            (
+                "tl.example.com.",
+                "TLSA",
+                "3 1 1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                0,
+            ),
         ] {
             render(n, t, v, p).unwrap_or_else(|e| panic!("{t} {v}: {e:#}"));
         }
@@ -979,8 +1100,17 @@ mod roundtrip_tests {
             "evil.com".into(),
             "/z/zone.evil.com".into(),
             true,
-            vec![("country".into(), "US\"\n[[zones]]\nzone=\"pwn\"".into(), "1.1.1.1".into(), 0, true, None, None)],
-        ).unwrap();
+            vec![(
+                "country".into(),
+                "US\"\n[[zones]]\nzone=\"pwn\"".into(),
+                "1.1.1.1".into(),
+                0,
+                true,
+                None,
+                None,
+            )],
+        )
+        .unwrap();
         let out = b.build().unwrap();
         assert_eq!(out.matches("[[zones]]\n").count(), 1, "{out}");
         assert!(!out.contains("\nzone=\"pwn\""), "{out}");

@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS collector_state (
 /// Count one event in `bucket`'s current `window_secs` window. `Ok(None)` = allowed,
 /// `Ok(Some(retry_after_secs))` = over `limit`.
 pub async fn hit(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     bucket: &str,
     limit: u32,
     window_secs: i64,
@@ -54,7 +54,7 @@ pub async fn hit(
 }
 
 /// Delete expired windows (cheap, idempotent; every replica may run it).
-pub async fn purge_rate_limits(db: &tokio_postgres::Client) -> Result<u64, tokio_postgres::Error> {
+pub async fn purge_rate_limits(db: &Pool) -> Result<u64, tokio_postgres::Error> {
     db.execute(
         "DELETE FROM shared_rate_limits WHERE window_start < now() - interval '15 minutes'",
         &[],
@@ -62,9 +62,24 @@ pub async fn purge_rate_limits(db: &tokio_postgres::Client) -> Result<u64, tokio
     .await
 }
 
+/// Housekeeping independent of the analytics collector: expired rate-limit
+/// windows must be removed even when sampling is disabled on every replica.
+pub fn spawn_rate_limit_cleanup(db: Arc<Pool>) {
+    tokio::spawn(async move {
+        loop {
+            match purge_rate_limits(&db).await {
+                Ok(n) if n > 0 => log::debug!("rate-limit cleanup removed {} expired windows", n),
+                Ok(_) => {}
+                Err(e) => warn!("rate-limit cleanup: {}", full_error_string(&e)),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5 * 60)).await;
+        }
+    });
+}
+
 /// Acquire or renew the lease `name` for `holder`. Atomic; an expired lease is taken over by the first caller.
 pub async fn try_lease(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     name: &str,
     holder: &str,
     ttl_secs: f64,
@@ -79,7 +94,7 @@ pub async fn try_lease(
 
 /// Shared-budget check with local fallback. `Some(wait)` = refuse.
 pub async fn limited(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     bucket: &str,
     limit: u32,
     window_secs: i64,

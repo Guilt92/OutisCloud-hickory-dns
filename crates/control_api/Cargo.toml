@@ -43,6 +43,7 @@ async-trait = "0.1"
 
 # Time
 time = "0.3"
+toml = { workspace = true }
 
 # Local workspace crates (integrate DNS core)
 hickory-proto = { path = "../proto", default-features = false, features = ["std", "dnssec-ring"] }

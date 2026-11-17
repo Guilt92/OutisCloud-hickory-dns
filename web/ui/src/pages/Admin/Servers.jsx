@@ -4,6 +4,7 @@ import api from '../../api/client'
 import { Server, MapPin, Plus, Trash2, RefreshCw, Shield, Clock, FileText, Settings, X, Check, AlertTriangle } from 'lucide-react'
 import { useConfirm } from '../../components/ui'
 import Notifications from '../../components/Notifications'
+import { validators } from '../../hooks/useFormValidation'
 
 export default function Servers(){
   const askConfirm = useConfirm()
@@ -61,15 +62,35 @@ export default function Servers(){
   }
 
   const save = async () => {
-    if (!form.name || !form.address) return
-    try { 
+    if (!form.name.trim() || !form.address.trim()) {
+      notify?.error('Name and IP address are required')
+      return
+    }
+    if (validators.ipAddress(form.address)) {
+      notify?.error('Enter a valid IPv4 or IPv6 address')
+      return
+    }
+    if (!Number.isInteger(form.port) || form.port < 1 || form.port > 65535) {
+      notify?.error('Port must be between 1 and 65535')
+      return
+    }
+    if (form.min_cache_ttl > form.max_cache_ttl) {
+      notify?.error('Minimum cache TTL cannot exceed maximum cache TTL')
+      return
+    }
+    try {
       if (editingServer) {
-        // Update - for now just recreate
+        await api.put(`/api/v1/servers/${editingServer.id}`, form)
+        notify?.success('Server updated')
+      } else {
+        await api.post('/api/v1/servers', form)
+        notify?.success('Server created')
       }
-      await api.post('/api/v1/servers', form)
       setShowModal(false)
-      load() 
-    } catch (e) { notify?.error('Error saving server') }
+      load()
+    } catch (e) {
+      notify?.error(e.response?.data?.error || e.message || 'Error saving server')
+    }
   }
 
   const remove = async (id) => {

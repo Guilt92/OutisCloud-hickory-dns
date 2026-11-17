@@ -4,6 +4,7 @@ import api from '../../api/client'
 import Notifications from '../../components/Notifications'
 import { Globe, Plus, Trash2, RefreshCw, X, Check, Network, Edit3 } from 'lucide-react'
 import { EmptyState, PageHeader, useConfirm } from '../../components/ui'
+import { validators } from '../../hooks/useFormValidation'
 
 export default function Nameservers(){
   const askConfirm = useConfirm()
@@ -74,6 +75,14 @@ export default function Nameservers(){
   const save = async () => {
     if (!form.hostname || !form.ip_address) {
       notify?.error('Hostname and IP address are required')
+      return
+    }
+    if (validators.ipAddress(form.ip_address)) {
+      notify?.error('Enter a valid IPv4 or IPv6 address')
+      return
+    }
+    if (form.glue_ip && validators.ipAddress(form.glue_ip)) {
+      notify?.error('Enter a valid glue IPv4 or IPv6 address')
       return
     }
     try { 

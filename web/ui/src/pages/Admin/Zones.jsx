@@ -41,20 +41,18 @@ export default function Zones(){
 
   const load = paged.reload
 
-  // nameservers are fetched only for the zones on the current page
+  // All zones use the same enabled authoritative nameservers; fetch once.
   React.useEffect(() => {
     let cancelled = false
-    ;(async () => {
-      const map = {}
-      for (const zone of zones) {
-        try {
-          const zoneRes = await api.get(`/api/v1/zones/${zone.id}`)
-          const ns = zoneRes.data?.nameservers ?? zoneRes.data?.data?.nameservers
-          if (ns) map[zone.id] = ns
-        } catch (e) { console.error('Error loading nameservers for zone', zone.id, e) }
-      }
-      if (!cancelled) setZoneNameservers(map)
-    })()
+    api.get('/api/v1/nameservers')
+      .then((res) => {
+        if (cancelled) return
+        const names = (res.data || []).filter((ns) => ns.enabled !== false).map((ns) => ns.hostname)
+        const map = {}
+        for (const zone of zones) map[zone.id] = names
+        setZoneNameservers(map)
+      })
+      .catch((e) => { if (!cancelled) console.error('Error loading nameservers', e) })
     return () => { cancelled = true }
   }, [zones])
   React.useEffect(() => { if (paged.error) notifyRef.current?.error(paged.error.response?.data?.error || paged.error.message || 'Failed to load zones') }, [paged.error])

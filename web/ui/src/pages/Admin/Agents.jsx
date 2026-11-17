@@ -10,6 +10,7 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  Globe,
   X
 } from 'lucide-react';
 import api from '../../api/client';
@@ -32,7 +33,7 @@ const StatusBadge = ({ status, label }) => {
   );
 };
 
-const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, delay = 0 }) => {
+const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, onManageZones, delay = 0 }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -86,6 +87,11 @@ const AgentCard = ({ agent, onDelete, onToggle, onRotate, onSync, delay = 0 }) =
           {agent.last_error && <p className="text-xs text-danger-600 mt-1">Last error: {agent.last_error}</p>}
           {agent.sync_requested && <p className="text-xs text-muted mt-1">Sync requested — applied on the next heartbeat</p>}
         </div>
+
+        <button onClick={() => onManageZones(agent)} className="btn-secondary btn-sm justify-center w-full mb-2">
+          <Globe className="w-3.5 h-3.5" />
+          Manage zones
+        </button>
 
         <div className="grid grid-cols-2 gap-2">
           <button onClick={() => onSync(agent.id)} disabled={!agent.enabled} className="btn-secondary btn-sm justify-center">
@@ -203,6 +209,118 @@ const CreateAgentModal = ({ isOpen, onClose, onCreate }) => {
   );
 };
 
+const AgentZonesModal = ({ agent, isOpen, onClose, onSaved }) => {
+  const [zones, setZones] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!isOpen || !agent) return undefined;
+    let active = true;
+    setLoading(true);
+    setError('');
+    Promise.all([
+      api.get('/api/v1/zones'),
+      api.get(`/api/v1/agents/${agent.id}/zones`),
+    ])
+      .then(([allResponse, assignedResponse]) => {
+        if (!active) return;
+        const all = allResponse.data?.data || allResponse.data || [];
+        setZones(Array.isArray(all) ? all : []);
+        setSelected((assignedResponse.data?.zones || []).map(zone => zone.id));
+      })
+      .catch((e) => {
+        if (active) setError(e.response?.data?.error || e.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [isOpen, agent]);
+
+  const toggle = (id) => {
+    setSelected(previous => previous.includes(id) ? previous.filter(value => value !== id) : [...previous, id]);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      await api.put(`/api/v1/agents/${agent.id}/zones`, { zone_ids: selected });
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!isOpen || !agent) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45 backdrop-blur-sm" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Manage zones for ${agent.name}`}
+        className="card shadow-pop w-full max-w-lg max-h-[80vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-5 border-b border-line">
+          <div>
+            <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">Manage zones</h3>
+            <p className="text-sm text-muted mt-1">{agent.name} · {agent.addr}</p>
+          </div>
+          <button onClick={onClose} className="btn-icon" aria-label="Close dialog">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-6 overflow-y-auto space-y-3">
+          <p className="text-sm text-muted">
+            An agent only receives the zones selected here. An agent with no zones receives no configuration.
+          </p>
+          {error && <div className="text-sm text-danger-600">{error}</div>}
+          {loading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map(i => <div key={i} className="h-11 rounded-[14px] bg-surface-2 animate-pulse" />)}
+            </div>
+          ) : zones.length === 0 ? (
+            <p className="text-sm text-muted">No zones exist yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {zones.map(zone => (
+                <label key={zone.id} className="flex items-center gap-3 rounded-[14px] border border-line bg-surface-2 px-4 py-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(zone.id)}
+                    onChange={() => toggle(zone.id)}
+                    className="checkbox"
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-medium text-ink truncate">{zone.domain}</span>
+                    <span className="block text-xs text-muted font-mono truncate">{zone.id}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 px-6 py-4 border-t border-line">
+          <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
+          <button type="button" onClick={save} disabled={loading || saving} className="btn-primary flex-1">
+            {saving ? 'Saving…' : `Save ${selected.length} zone${selected.length === 1 ? '' : 's'}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function Agents() {
   const askConfirm = useConfirm()
   const notify = React.useContext(Notifications)
@@ -210,6 +328,7 @@ export default function Agents() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [zoneAgent, setZoneAgent] = useState(null);
   
   const loadAgents = async () => {
     setLoading(true);
@@ -281,6 +400,8 @@ export default function Agents() {
     }
   };
   
+  const handleManageZones = (agent) => setZoneAgent(agent);
+
   const filteredAgents = agents.filter(agent => 
     agent.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     agent.addr?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -341,6 +462,7 @@ export default function Agents() {
               onToggle={handleToggle}
               onSync={handleSync}
               onRotate={handleRotateToken}
+              onManageZones={handleManageZones}
               delay={0.1 + index * 0.05}
             />
           ))}
@@ -364,6 +486,12 @@ AGENT_SIGNING_KEY=${credentials.signing_key}`}</pre>
         isOpen={modalOpen} 
         onClose={() => setModalOpen(false)} 
         onCreate={handleCreate}
+      />
+      <AgentZonesModal
+        agent={zoneAgent}
+        isOpen={!!zoneAgent}
+        onClose={() => setZoneAgent(null)}
+        onSaved={() => notify?.success('Agent zones updated')}
       />
     </div>
   );

@@ -68,7 +68,9 @@ impl SwapHandler {
         let limiter = limit.and_then(|l| {
             let qps = NonZeroU32::new(l.queries_per_second)?;
             let burst = NonZeroU32::new(l.burst.max(l.queries_per_second))?;
-            Some(RateLimiter::keyed(Quota::per_second(qps).allow_burst(burst)))
+            Some(RateLimiter::keyed(
+                Quota::per_second(qps).allow_burst(burst),
+            ))
         });
         Self {
             shared: Arc::new(Shared {
@@ -85,7 +87,11 @@ impl SwapHandler {
     /// Atomically replace the catalog. Requests already being served finish on
     /// the catalog they started with.
     pub fn swap(&self, catalog: Catalog) {
-        *self.shared.catalog.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(catalog);
+        *self
+            .shared
+            .catalog
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Arc::new(catalog);
         self.shared.reloads.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -105,7 +111,11 @@ impl SwapHandler {
     }
 
     fn current(&self) -> Arc<Catalog> {
-        self.shared.catalog.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.shared
+            .catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Bound the limiter's memory (called opportunistically).
@@ -140,7 +150,8 @@ impl RequestHandler for SwapHandler {
             if slip > 0 && request.protocol() == Protocol::Udp && n % u64::from(slip) == 0 {
                 self.shared.slipped.fetch_add(1, Ordering::Relaxed);
                 header.set_truncated(true);
-                let response = MessageResponseBuilder::new(request.raw_queries(), None).build_no_records(header);
+                let response = MessageResponseBuilder::new(request.raw_queries(), None)
+                    .build_no_records(header);
                 let mut response_handle = response_handle;
                 return match response_handle.send_response(response).await {
                     Ok(info) => info,
@@ -150,7 +161,9 @@ impl RequestHandler for SwapHandler {
             header.set_response_code(ResponseCode::Refused);
             return ResponseInfo::from(header);
         }
-        self.current().handle_request::<R, T>(request, response_handle).await
+        self.current()
+            .handle_request::<R, T>(request, response_handle)
+            .await
     }
 }
 
@@ -165,16 +178,29 @@ mod tests {
         let c = limiter_key("2001:db8:1:3::1".parse().unwrap());
         assert_eq!(a, b);
         assert_ne!(a, c);
-        assert_eq!(limiter_key("::ffff:192.0.2.1".parse().unwrap()), "192.0.2.1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            limiter_key("::ffff:192.0.2.1".parse().unwrap()),
+            "192.0.2.1".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]
     fn limiter_enforces_burst_then_blocks_per_source() {
-        let h = SwapHandler::new(Catalog::new(), Some(RateLimitConfig { queries_per_second: 1, burst: 5, slip: 0 }));
+        let h = SwapHandler::new(
+            Catalog::new(),
+            Some(RateLimitConfig {
+                queries_per_second: 1,
+                burst: 5,
+                slip: 0,
+            }),
+        );
         let a: IpAddr = "192.0.2.1".parse().unwrap();
         let b: IpAddr = "192.0.2.2".parse().unwrap();
         let allowed = (0..20).filter(|_| h.allow(a)).count();
-        assert!((5..=6).contains(&allowed), "burst of 5 (+ at most one refill): {allowed}");
+        assert!(
+            (5..=6).contains(&allowed),
+            "burst of 5 (+ at most one refill): {allowed}"
+        );
         assert!(h.allow(b), "other sources are unaffected");
         let off = SwapHandler::new(Catalog::new(), None);
         assert!((0..1000).all(|_| off.allow(a)), "no limiter configured");

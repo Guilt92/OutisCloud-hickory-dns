@@ -430,7 +430,8 @@ impl Catalog {
             && !request_info.query.name().is_root()
             && self.handlers.contains_key(request_info.query.name())
         {
-            self.find(&request_info.query.name().base_name()).or(handlers)
+            self.find(&request_info.query.name().base_name())
+                .or(handlers)
         } else {
             handlers
         };
@@ -485,7 +486,10 @@ impl Catalog {
                 Some(EdnsOption::Subnet(cs)) if cs.source_prefix() > 0 => cs.addr(),
                 _ => request.src().ip(),
             };
-            Some((breakdown::qtype_label(request_info.query.query_type()), client))
+            Some((
+                breakdown::qtype_label(request_info.query.query_type()),
+                client,
+            ))
         } else {
             None
         };
@@ -1426,7 +1430,9 @@ fn zone_query_metrics_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         matches!(
-            std::env::var("DNS_ZONE_QUERY_METRICS").map(|v| v.to_ascii_lowercase()).as_deref(),
+            std::env::var("DNS_ZONE_QUERY_METRICS")
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
             Ok("1") | Ok("true") | Ok("yes")
         )
     })
@@ -1450,58 +1456,127 @@ mod breakdown {
 
     pub(super) fn enabled() -> bool {
         static ON: OnceLock<bool> = OnceLock::new();
-        *ON.get_or_init(|| matches!(std::env::var("DNS_ZONE_BREAKDOWN").map(|v| v.to_ascii_lowercase()).as_deref(), Ok("1") | Ok("true") | Ok("yes")))
+        *ON.get_or_init(|| {
+            matches!(
+                std::env::var("DNS_ZONE_BREAKDOWN")
+                    .map(|v| v.to_ascii_lowercase())
+                    .as_deref(),
+                Ok("1") | Ok("true") | Ok("yes")
+            )
+        })
     }
 
     pub(super) fn qtype_label(t: RecordType) -> &'static str {
         match t {
-            RecordType::A => "A", RecordType::AAAA => "AAAA", RecordType::MX => "MX", RecordType::TXT => "TXT",
-            RecordType::NS => "NS", RecordType::CNAME => "CNAME", RecordType::SOA => "SOA", RecordType::SRV => "SRV",
-            RecordType::PTR => "PTR", RecordType::DNSKEY => "DNSKEY", RecordType::DS => "DS", RecordType::CAA => "CAA",
-            RecordType::ANY => "ANY", RecordType::AXFR => "AXFR", _ => "OTHER",
+            RecordType::A => "A",
+            RecordType::AAAA => "AAAA",
+            RecordType::MX => "MX",
+            RecordType::TXT => "TXT",
+            RecordType::NS => "NS",
+            RecordType::CNAME => "CNAME",
+            RecordType::SOA => "SOA",
+            RecordType::SRV => "SRV",
+            RecordType::PTR => "PTR",
+            RecordType::DNSKEY => "DNSKEY",
+            RecordType::DS => "DS",
+            RecordType::CAA => "CAA",
+            RecordType::ANY => "ANY",
+            RecordType::AXFR => "AXFR",
+            _ => "OTHER",
         }
     }
 
-    struct GeoState { db: Option<Arc<geodns::GeoDB>>, mtime: Option<SystemTime>, checked: Instant }
+    struct GeoState {
+        db: Option<Arc<geodns::GeoDB>>,
+        mtime: Option<SystemTime>,
+        checked: Instant,
+    }
     fn geo() -> Option<Arc<geodns::GeoDB>> {
         static GEO: OnceLock<RwLock<GeoState>> = OnceLock::new();
-        let lock = GEO.get_or_init(|| RwLock::new(GeoState { db: None, mtime: None, checked: Instant::now() - Duration::from_secs(3600) }));
+        let lock = GEO.get_or_init(|| {
+            RwLock::new(GeoState {
+                db: None,
+                mtime: None,
+                checked: Instant::now() - Duration::from_secs(3600),
+            })
+        });
         {
             let g = lock.read().unwrap();
-            if g.checked.elapsed() < Duration::from_secs(60) { return g.db.clone(); }
+            if g.checked.elapsed() < Duration::from_secs(60) {
+                return g.db.clone();
+            }
         }
         let mut g = lock.write().unwrap();
         g.checked = Instant::now();
-        let Some(path) = std::env::var_os("GEOIP_DB_PATH") else { g.db = None; return None };
+        let Some(path) = std::env::var_os("GEOIP_DB_PATH") else {
+            g.db = None;
+            return None;
+        };
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        if mtime.is_some() && mtime == g.mtime && g.db.is_some() { return g.db.clone(); }
-        match std::fs::read(&path).ok().and_then(|b| geodns::GeoDB::open_from_bytes(b).ok()) {
+        if mtime.is_some() && mtime == g.mtime && g.db.is_some() {
+            return g.db.clone();
+        }
+        match std::fs::read(&path)
+            .ok()
+            .and_then(|b| geodns::GeoDB::open_from_bytes(b).ok())
+        {
             Some(db) => {
-                let age_days = (SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(db.build_epoch())) / 86400;
-                let max: u64 = std::env::var("GEOIP_MAX_AGE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(180);
+                let age_days = (SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+                    .saturating_sub(db.build_epoch()))
+                    / 86400;
+                let max: u64 = std::env::var("GEOIP_MAX_AGE_DAYS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(180);
                 metrics::gauge!("hickory_geoip_build_epoch").set(db.build_epoch() as f64);
-                if age_days > max { tracing::warn!("GeoIP database is {age_days} days old (limit {max}); country statistics may be inaccurate"); }
-                g.db = Some(Arc::new(db)); g.mtime = mtime;
+                if age_days > max {
+                    tracing::warn!(
+                        "GeoIP database is {age_days} days old (limit {max}); country statistics may be inaccurate"
+                    );
+                }
+                g.db = Some(Arc::new(db));
+                g.mtime = mtime;
             }
-            None => { tracing::warn!("GeoIP database could not be read; country statistics are reported as ZZ-nodata"); g.db = None; }
+            None => {
+                tracing::warn!(
+                    "GeoIP database could not be read; country statistics are reported as ZZ-nodata"
+                );
+                g.db = None;
+            }
         }
         g.db.clone()
     }
 
     pub(super) fn country_label(zone: &str, ip: IpAddr) -> String {
         let raw = match geo() {
-            None => if geodns::is_reserved(ip) { "ZZ-private".to_string() } else { "ZZ-nodata".to_string() },
+            None => {
+                if geodns::is_reserved(ip) {
+                    "ZZ-private".to_string()
+                } else {
+                    "ZZ-nodata".to_string()
+                }
+            }
             Some(db) => match db.classify(ip) {
                 geodns::GeoClass::Reserved => "ZZ-private".to_string(),
                 geodns::GeoClass::Unknown => "ZZ-unknown".to_string(),
                 geodns::GeoClass::Country(c) => c,
             },
         };
-        if raw.starts_with("ZZ-") { return raw; }
+        if raw.starts_with("ZZ-") {
+            return raw;
+        }
         static SEEN: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
         let mut m = SEEN.get_or_init(Default::default).lock().unwrap();
         let set = m.entry(zone.to_string()).or_default();
-        if set.contains(&raw) || set.len() < MAX_COUNTRIES_PER_ZONE { set.insert(raw.clone()); raw } else { "ZZ-other".to_string() }
+        if set.contains(&raw) || set.len() < MAX_COUNTRIES_PER_ZONE {
+            set.insert(raw.clone());
+            raw
+        } else {
+            "ZZ-other".to_string()
+        }
     }
 
     #[cfg(test)]
@@ -1515,13 +1590,18 @@ mod breakdown {
         }
         #[test]
         fn private_addresses_are_never_attributed() {
-            assert_eq!(country_label("z.", "10.1.1.1".parse().unwrap()), "ZZ-private");
+            assert_eq!(
+                country_label("z.", "10.1.1.1".parse().unwrap()),
+                "ZZ-private"
+            );
             assert_eq!(country_label("z.", "::1".parse().unwrap()), "ZZ-private");
         }
         #[test]
         fn without_a_database_public_addresses_are_nodata_not_unknown() {
             // GEOIP_DB_PATH is not set in unit tests
-            if std::env::var_os("GEOIP_DB_PATH").is_none() { assert_eq!(country_label("z.", "8.8.8.8".parse().unwrap()), "ZZ-nodata"); }
+            if std::env::var_os("GEOIP_DB_PATH").is_none() {
+                assert_eq!(country_label("z.", "8.8.8.8".parse().unwrap()), "ZZ-nodata");
+            }
         }
     }
 }

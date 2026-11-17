@@ -4,9 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::proto::rr::rdata::opt::{EdnsCode, EdnsOption};
-use crate::proto::rr::{Name, LowerName, RData, RecordSet, RecordType, TSigResponseContext};
-use crate::zone_handler::{AuthLookup, LookupControlFlow, LookupOptions, ZoneHandler, ZoneType, AxfrPolicy};
+use crate::proto::rr::{LowerName, Name, RData, RecordSet, RecordType, TSigResponseContext};
 use crate::server::RequestInfo;
+use crate::zone_handler::{
+    AuthLookup, AxfrPolicy, LookupControlFlow, LookupOptions, ZoneHandler, ZoneType,
+};
 
 /// Zone handler that applies GeoDNS rules before falling through to other handlers.
 ///
@@ -45,7 +47,13 @@ impl GeoZoneHandler {
     pub fn with_zone_file(mut self, path: &Path) -> Self {
         let origin: Name = self.origin.clone().into();
         match std::fs::read_to_string(path) {
-            Ok(text) => match crate::proto::serialize::txt::Parser::new(text, Some(path.to_owned()), Some(origin)).parse() {
+            Ok(text) => match crate::proto::serialize::txt::Parser::new(
+                text,
+                Some(path.to_owned()),
+                Some(origin),
+            )
+            .parse()
+            {
                 Ok((_, records)) => {
                     let names = records
                         .iter()
@@ -80,10 +88,13 @@ impl GeoZoneHandler {
         // Rule `record_name`s are stored relative to the zone (`www`, `@`);
         // resolve them against the zone apex before comparing with the
         // fully-qualified query name.
-        if let Some(target) = self
-            .engine
-            .evaluate_in_zone_checked(client_ip, &name_str, type_str, &origin_str, exists)
-        {
+        if let Some(target) = self.engine.evaluate_in_zone_checked(
+            client_ip,
+            &name_str,
+            type_str,
+            &origin_str,
+            exists,
+        ) {
             // Only IP targets are supported; anything else falls through to the zone data.
             if let Ok(addr) = target.parse::<IpAddr>() {
                 // The target's address family must match the question: an
@@ -96,7 +107,8 @@ impl GeoZoneHandler {
                 let mut rrset = RecordSet::with_ttl(Name::from(name.clone()), rtype, 300);
                 rrset.add_rdata(rdata);
                 let arc = Arc::new(rrset);
-                let lookup = crate::zone_handler::auth_lookup::LookupRecords::new(lookup_options, arc);
+                let lookup =
+                    crate::zone_handler::auth_lookup::LookupRecords::new(lookup_options, arc);
                 return LookupControlFlow::Break(Ok(AuthLookup::from(lookup)));
             }
         }
@@ -136,7 +148,9 @@ impl ZoneHandler for GeoZoneHandler {
         if self.ecs {
             // A usable ECS option (non-zero source prefix) describes the real
             // client; the catalog echoes it back with the scope we used.
-            if let Some(EdnsOption::Subnet(cs)) = request.edns().and_then(|e| e.option(EdnsCode::Subnet)) {
+            if let Some(EdnsOption::Subnet(cs)) =
+                request.edns().and_then(|e| e.option(EdnsCode::Subnet))
+            {
                 if cs.source_prefix() > 0 {
                     client_ip = cs.addr();
                 }
@@ -144,7 +158,10 @@ impl ZoneHandler for GeoZoneHandler {
         }
         let name = request_info.query.name();
         let rtype = request_info.query.query_type();
-        (self.lookup_for_ip(client_ip, name, rtype, lookup_options), None)
+        (
+            self.lookup_for_ip(client_ip, name, rtype, lookup_options),
+            None,
+        )
     }
 
     async fn nsec_records(
@@ -204,7 +221,13 @@ mod tests {
         futures_executor::block_on(f)
     }
 
-    fn rule(kind: &str, value: &str, target: &str, name: Option<&str>, rtype: Option<&str>) -> geodns::GeoRule {
+    fn rule(
+        kind: &str,
+        value: &str,
+        target: &str,
+        name: Option<&str>,
+        rtype: Option<&str>,
+    ) -> geodns::GeoRule {
         geodns::GeoRule {
             id: "r".into(),
             match_type: kind.into(),
@@ -229,12 +252,21 @@ mod tests {
         let handler = GeoZoneHandler::new(Name::from_str("example.com.").unwrap(), engine);
         let header = Header::new(0, MessageType::Query, OpCode::Query);
         let query = LowerQuery::from(Query::query(Name::from_str(qname).unwrap(), qtype));
-        let info = RequestInfo::new(SocketAddr::new(client.parse().unwrap(), 12345), Protocol::Udp, &header, &query);
+        let info = RequestInfo::new(
+            SocketAddr::new(client.parse().unwrap(), 12345),
+            Protocol::Udp,
+            &header,
+            &query,
+        );
         let name = LowerName::new(&Name::from_str(qname).unwrap());
         run(handler.lookup(&name, qtype, Some(&info), LookupOptions::default()))
     }
 
-    fn lookup_for(r: geodns::GeoRule, qname: &str, qtype: RecordType) -> LookupControlFlow<AuthLookup> {
+    fn lookup_for(
+        r: geodns::GeoRule,
+        qname: &str,
+        qtype: RecordType,
+    ) -> LookupControlFlow<AuthLookup> {
         lookup_with(None, vec![r], "10.0.0.1", qname, qtype)
     }
 
@@ -253,39 +285,83 @@ mod tests {
     #[test]
     fn non_address_queries_fall_through() {
         let r = rule("default", "", "192.0.2.1", None, None);
-        assert!(matches!(lookup_for(r, "www.example.com.", RecordType::NS), LookupControlFlow::Skip));
+        assert!(matches!(
+            lookup_for(r, "www.example.com.", RecordType::NS),
+            LookupControlFlow::Skip
+        ));
     }
 
     #[test]
     fn country_rule_without_database_does_not_match() {
         let r = rule("country", "US", "192.0.2.1", None, None);
-        assert!(matches!(lookup_for(r, "www.example.com.", RecordType::A), LookupControlFlow::Skip));
+        assert!(matches!(
+            lookup_for(r, "www.example.com.", RecordType::A),
+            LookupControlFlow::Skip
+        ));
     }
 
     #[test]
     fn default_rule_answers_with_the_target() {
-        let flow = lookup_for(rule("default", "", "5.6.7.8", None, None), "www.example.com.", RecordType::A);
-        assert_eq!(answer_rdata(flow), vec![RData::A("5.6.7.8".parse::<std::net::Ipv4Addr>().unwrap().into())]);
+        let flow = lookup_for(
+            rule("default", "", "5.6.7.8", None, None),
+            "www.example.com.",
+            RecordType::A,
+        );
+        assert_eq!(
+            answer_rdata(flow),
+            vec![RData::A(
+                "5.6.7.8".parse::<std::net::Ipv4Addr>().unwrap().into()
+            )]
+        );
     }
 
     #[test]
     fn real_geoip_data_selects_the_target_per_client() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/dns/GeoLite2-Country.mmdb");
-        let db = || geodns::GeoDB::open_from_bytes(std::fs::read(path).expect("GeoLite2 dataset")).unwrap();
-        let rules = || vec![
-            rule("country", "US", "192.0.2.77", None, None),
-            rule("continent", "EU", "192.0.2.88", None, None),
-        ];
-        let a = |client: &str| {
-            match lookup_with(Some(db()), rules(), client, "www.example.com.", RecordType::A) {
-                LookupControlFlow::Skip => None,
-                f => Some(answer_rdata(f)),
-            }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/dns/GeoLite2-Country.mmdb"
+        );
+        let db = || {
+            geodns::GeoDB::open_from_bytes(std::fs::read(path).expect("GeoLite2 dataset")).unwrap()
         };
-        assert_eq!(a("8.8.8.8").unwrap(), vec![RData::A("192.0.2.77".parse::<std::net::Ipv4Addr>().unwrap().into())]);
-        assert_eq!(a("5.9.0.1").unwrap(), vec![RData::A("192.0.2.88".parse::<std::net::Ipv4Addr>().unwrap().into())]);
-        assert_eq!(a("2001:4860:4860::8888").unwrap(), vec![RData::A("192.0.2.77".parse::<std::net::Ipv4Addr>().unwrap().into())]);
-        assert!(a("41.0.0.1").is_none(), "unmatched client falls through to the zone data");
+        let rules = || {
+            vec![
+                rule("country", "US", "192.0.2.77", None, None),
+                rule("continent", "EU", "192.0.2.88", None, None),
+            ]
+        };
+        let a = |client: &str| match lookup_with(
+            Some(db()),
+            rules(),
+            client,
+            "www.example.com.",
+            RecordType::A,
+        ) {
+            LookupControlFlow::Skip => None,
+            f => Some(answer_rdata(f)),
+        };
+        assert_eq!(
+            a("8.8.8.8").unwrap(),
+            vec![RData::A(
+                "192.0.2.77".parse::<std::net::Ipv4Addr>().unwrap().into()
+            )]
+        );
+        assert_eq!(
+            a("5.9.0.1").unwrap(),
+            vec![RData::A(
+                "192.0.2.88".parse::<std::net::Ipv4Addr>().unwrap().into()
+            )]
+        );
+        assert_eq!(
+            a("2001:4860:4860::8888").unwrap(),
+            vec![RData::A(
+                "192.0.2.77".parse::<std::net::Ipv4Addr>().unwrap().into()
+            )]
+        );
+        assert!(
+            a("41.0.0.1").is_none(),
+            "unmatched client falls through to the zone data"
+        );
         assert!(a("10.1.2.3").is_none(), "private client has no location");
     }
 
@@ -293,7 +369,10 @@ mod tests {
     fn relative_record_name_matches_fully_qualified_query() {
         // rules are stored as "www" / "@"; the query name is always fully qualified
         let hit = |n: Option<&str>, t: Option<&str>, q: &str| {
-            matches!(lookup_for(rule("default", "", "192.0.2.1", n, t), q, RecordType::A), LookupControlFlow::Break(Ok(_)))
+            matches!(
+                lookup_for(rule("default", "", "192.0.2.1", n, t), q, RecordType::A),
+                LookupControlFlow::Break(Ok(_))
+            )
         };
         assert!(hit(Some("www"), None, "www.example.com."));
         assert!(!hit(Some("www"), None, "mail.example.com."));
@@ -304,9 +383,27 @@ mod tests {
     #[test]
     fn answer_family_must_match_question() {
         // an IPv4 target must never be returned inside an AAAA RRset (or vice versa)
-        assert!(matches!(lookup_for(rule("default", "", "192.0.2.1", None, None), "www.example.com.", RecordType::AAAA), LookupControlFlow::Skip));
-        assert!(matches!(lookup_for(rule("default", "", "2001:db8::1", None, None), "www.example.com.", RecordType::A), LookupControlFlow::Skip));
-        let v6 = answer_rdata(lookup_for(rule("default", "", "2001:db8::1", None, None), "www.example.com.", RecordType::AAAA));
+        assert!(matches!(
+            lookup_for(
+                rule("default", "", "192.0.2.1", None, None),
+                "www.example.com.",
+                RecordType::AAAA
+            ),
+            LookupControlFlow::Skip
+        ));
+        assert!(matches!(
+            lookup_for(
+                rule("default", "", "2001:db8::1", None, None),
+                "www.example.com.",
+                RecordType::A
+            ),
+            LookupControlFlow::Skip
+        ));
+        let v6 = answer_rdata(lookup_for(
+            rule("default", "", "2001:db8::1", None, None),
+            "www.example.com.",
+            RecordType::AAAA,
+        ));
         assert!(matches!(v6[0], RData::AAAA(_)));
     }
 }

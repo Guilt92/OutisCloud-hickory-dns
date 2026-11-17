@@ -1,10 +1,10 @@
+use crate::db_pool::Pool;
+use crate::zone_file_generator::{self, PublishReport};
 /// DNS Manager - Handles automatic zone file generation and DNS server reload
 /// This is the core of the Option B architecture: control-api manages the database
 /// and generates zone files, the DNS server watches those files and reloads automatically
 use std::path::Path;
 use std::sync::Arc;
-use crate::db_pool::Pool;
-use crate::zone_file_generator::{self, PublishReport};
 
 #[derive(Debug)]
 pub enum DnsManagerError {
@@ -47,7 +47,11 @@ impl std::fmt::Display for DnsManagerError {
 
 impl DnsManager {
     pub fn new(config_dir: String) -> Self {
-        Self { config_dir, last: std::sync::Mutex::new(None), publish_lock: tokio::sync::Mutex::new(()) }
+        Self {
+            config_dir,
+            last: std::sync::Mutex::new(None),
+            publish_lock: tokio::sync::Mutex::new(()),
+        }
     }
 
     /// Regenerate all zone files - called after any zone or record mutation.
@@ -58,20 +62,44 @@ impl DnsManager {
         let _guard = self.publish_lock.lock().await;
         // other API instances sharing the database/zone directory take turns (best effort: if the
         // lock cannot be taken the local lock still serialises this instance)
-        let _cluster = match tokio::time::timeout(std::time::Duration::from_secs(30), db.advisory_lock(PUBLISH_LOCK_KEY)).await {
+        let _cluster = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            db.advisory_lock(PUBLISH_LOCK_KEY),
+        )
+        .await
+        {
             Ok(Ok(l)) => Some(l),
-            Ok(Err(e)) => { log::warn!("cluster publish lock unavailable: {}", e); None }
-            Err(_) => { log::warn!("cluster publish lock not acquired within 30s; publishing anyway"); None }
+            Ok(Err(e)) => {
+                log::warn!("cluster publish lock unavailable: {}", e);
+                None
+            }
+            Err(_) => {
+                log::warn!("cluster publish lock not acquired within 30s; publishing anyway");
+                None
+            }
         };
         self.ensure_config_dir_exists()?;
-        let res = zone_file_generator::generate_all(&self.config_dir, db).await
+        let res = zone_file_generator::generate_all(&self.config_dir, db)
+            .await
             .map_err(|e| DnsManagerError::GenerationFailed(format!("{:#}", e)));
         let entry = match &res {
-            Ok(r) => LastPublish { at: chrono::Utc::now(), published: r.published.len(), failed: r.failed.clone(), error: None },
-            Err(e) => LastPublish { at: chrono::Utc::now(), published: 0, failed: vec![], error: Some(e.to_string()) },
+            Ok(r) => LastPublish {
+                at: chrono::Utc::now(),
+                published: r.published.len(),
+                failed: r.failed.clone(),
+                error: None,
+            },
+            Err(e) => LastPublish {
+                at: chrono::Utc::now(),
+                published: 0,
+                failed: vec![],
+                error: Some(e.to_string()),
+            },
         };
         crate::metrics::record_publish(&entry);
-        if let Ok(mut l) = self.last.lock() { *l = Some(entry); }
+        if let Ok(mut l) = self.last.lock() {
+            *l = Some(entry);
+        }
         res
     }
 

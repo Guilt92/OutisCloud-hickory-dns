@@ -114,7 +114,7 @@ fn env_quota(name: &str) -> Option<i32> {
 /// The tenant a (non-admin) user acts in; a personal tenant is created on first use.
 /// `requested` selects one of several memberships.
 pub async fn tenant_for_user(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     user_id: &str,
     requested: Option<&str>,
     need_write: bool,
@@ -178,10 +178,7 @@ pub struct Usage {
     pub max_records: Option<i32>,
 }
 
-pub async fn usage(
-    db: &tokio_postgres::Client,
-    tenant_id: &str,
-) -> Result<Option<Usage>, tokio_postgres::Error> {
+pub async fn usage(db: &Pool, tenant_id: &str) -> Result<Option<Usage>, tokio_postgres::Error> {
     let row = db.query_opt(
         "SELECT t.max_zones, t.max_records, \
                 (SELECT count(*) FROM zones z WHERE z.tenant_id = t.id), \
@@ -204,7 +201,7 @@ fn quota_exceeded(what: &str, limit: i32, used: i64, adding: i64) -> HttpRespons
 
 /// Refuse when adding `adding_zones` / `adding_records` would exceed the tenant's quota.
 pub async fn check_quota(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     tenant_id: &str,
     adding_zones: i64,
     adding_records: i64,
@@ -228,7 +225,7 @@ pub async fn check_quota(
 
 /// Quota check for a change inside a zone (no-op for platform-owned zones without tenant).
 pub async fn check_zone_records_quota(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     zone_id: &str,
     adding: i64,
     tok: &TokenData<Claims>,
@@ -353,7 +350,7 @@ fn valid_tenant_name(n: &str) -> bool {
 }
 
 async fn tenant_role(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     tenant_id: &str,
     tok: &TokenData<Claims>,
 ) -> Result<Option<String>, HttpResponse> {
@@ -375,7 +372,7 @@ pub async fn list_tenants(data: web::Data<AppState>, req: HttpRequest) -> impl R
         // make sure a customer who never created a zone still sees (and has) their tenant
         let _ = tenant_for_user(&data.db, &tok.claims.sub, None, false).await;
     }
-    let rows = (&*data.db).query(
+    let rows = data.db.query(
         "SELECT CAST(t.id AS varchar), t.name, t.max_zones, t.max_records, t.created_at::text, \
                 (SELECT count(*) FROM zones z WHERE z.tenant_id = t.id), \
                 (SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE z.tenant_id = t.id), \
@@ -412,7 +409,7 @@ pub async fn create_tenant(
             .json(serde_json::json!({"error": "invalid name or quota"}));
     }
     let id = Uuid::new_v4().to_string();
-    match (&*data.db).execute("INSERT INTO tenants (id, name, max_zones, max_records) VALUES ($1::text::uuid, $2, $3, $4)", &[&id, &body.name.trim(), &body.max_zones, &body.max_records]).await {
+    match data.db.execute("INSERT INTO tenants (id, name, max_zones, max_records) VALUES ($1::text::uuid, $2, $3, $4)", &[&id, &body.name.trim(), &body.max_zones, &body.max_records]).await {
         Ok(_) => {
             audit(&data.db, Some(&tok.claims.sub), "tenant.create", "tenant", Some(id.clone()), &req, serde_json::json!({"name": body.name})).await;
             HttpResponse::Created().json(serde_json::json!({"id": id, "name": body.name.trim(), "max_zones": body.max_zones, "max_records": body.max_records}))
@@ -445,7 +442,7 @@ pub async fn update_tenant(
             .json(serde_json::json!({"error": "invalid name or quota"}));
     }
     let id = path.into_inner();
-    match (&*data.db).execute("UPDATE tenants SET name = $2, max_zones = $3, max_records = $4 WHERE CAST(id AS varchar) = $1", &[&id, &body.name.trim(), &body.max_zones, &body.max_records]).await {
+    match data.db.execute("UPDATE tenants SET name = $2, max_zones = $3, max_records = $4 WHERE CAST(id AS varchar) = $1", &[&id, &body.name.trim(), &body.max_zones, &body.max_records]).await {
         Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "tenant not found"})),
         Ok(_) => {
             audit(&data.db, Some(&tok.claims.sub), "tenant.update", "tenant", Some(id), &req, serde_json::json!({"name": body.name, "max_zones": body.max_zones, "max_records": body.max_records})).await;
@@ -470,7 +467,8 @@ pub async fn delete_tenant(
         return forbidden("admin role required");
     }
     let id = path.into_inner();
-    let n: i64 = match (&*data.db)
+    let n: i64 = match data
+        .db
         .query_one(
             "SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar) = $1",
             &[&id],
@@ -484,19 +482,22 @@ pub async fn delete_tenant(
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "tenant still owns zones", "zones": n}));
     }
-    let _ = (&*data.db)
+    let _ = data
+        .db
         .execute(
             "DELETE FROM zone_query_samples WHERE CAST(tenant_id AS varchar) = $1",
             &[&id],
         )
         .await;
-    let _ = (&*data.db)
+    let _ = data
+        .db
         .execute(
             "DELETE FROM tenant_usage_samples WHERE CAST(tenant_id AS varchar) = $1",
             &[&id],
         )
         .await;
-    match (&*data.db)
+    match data
+        .db
         .execute("DELETE FROM tenants WHERE CAST(id AS varchar) = $1", &[&id])
         .await
     {
@@ -535,7 +536,7 @@ pub async fn list_tenant_members(
         }
         Err(r) => return r,
     }
-    match (&*data.db).query("SELECT CAST(u.id AS varchar), u.username, m.role FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 ORDER BY u.username", &[&id]).await {
+    match data.db.query("SELECT CAST(u.id AS varchar), u.username, m.role FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 ORDER BY u.username", &[&id]).await {
         Ok(rows) => HttpResponse::Ok().json(rows.iter().map(|r| serde_json::json!({"user_id": r.get::<_, String>(0), "username": r.get::<_, String>(1), "role": r.get::<_, String>(2)})).collect::<Vec<_>>()),
         Err(e) => db_error("list_tenant_members", &e),
     }
@@ -574,7 +575,8 @@ pub async fn put_tenant_member(
     let uid: Option<String> = if let Some(u) = &body.user_id {
         Some(u.clone())
     } else if let Some(n) = &body.username {
-        match (&*data.db)
+        match data
+            .db
             .query_opt(
                 "SELECT CAST(id AS varchar) FROM users WHERE username = $1",
                 &[&n.trim()],
@@ -595,14 +597,17 @@ pub async fn put_tenant_member(
     }
     // admins are platform operators, not tenant members; a downgrade must keep one owner
     if body.role != "owner" {
-        let owners: i64 = match (&*data.db).query_one("SELECT count(*) FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) <> $2", &[&id, &uid]).await { Ok(r) => r.get(0), Err(e) => return db_error("put_tenant_member", &e) };
-        let was_owner = (&*data.db).query_opt("SELECT 1 FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) = $2", &[&id, &uid]).await.ok().flatten().is_some();
+        let owners: i64 = match data.db.query_one("SELECT count(*) FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) <> $2", &[&id, &uid]).await { Ok(r) => r.get(0), Err(e) => return db_error("put_tenant_member", &e) };
+        let was_owner = match data.db.query_opt("SELECT 1 FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) = $2", &[&id, &uid]).await {
+            Ok(row) => row.is_some(),
+            Err(e) => return db_error("put_tenant_member", &e),
+        };
         if was_owner && owners == 0 {
             return HttpResponse::Conflict()
                 .json(serde_json::json!({"error": "a tenant needs at least one owner"}));
         }
     }
-    match (&*data.db).execute("INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1::text::uuid, $2::text::uuid, $3) ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role", &[&id, &uid, &body.role]).await {
+    match data.db.execute("INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1::text::uuid, $2::text::uuid, $3) ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role", &[&id, &uid, &body.role]).await {
         Ok(_) => { audit(&data.db, Some(&tok.claims.sub), "tenant.member.set", "tenant", Some(id), &req, serde_json::json!({"user": uid, "role": body.role})).await; HttpResponse::Ok().json(serde_json::json!({"success": true})) }
         Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION) => HttpResponse::NotFound().json(serde_json::json!({"error": "user not found"})),
         Err(e) => db_error("put_tenant_member", &e),
@@ -627,13 +632,16 @@ pub async fn delete_tenant_member(
         }
         Err(r) => return r,
     }
-    let others: i64 = match (&*data.db).query_one("SELECT count(*) FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) <> $2", &[&id, &uid]).await { Ok(r) => r.get(0), Err(e) => return db_error("delete_tenant_member", &e) };
-    let is_owner = (&*data.db).query_opt("SELECT 1 FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) = $2", &[&id, &uid]).await.ok().flatten().is_some();
+    let others: i64 = match data.db.query_one("SELECT count(*) FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) <> $2", &[&id, &uid]).await { Ok(r) => r.get(0), Err(e) => return db_error("delete_tenant_member", &e) };
+    let is_owner = match data.db.query_opt("SELECT 1 FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' AND CAST(user_id AS varchar) = $2", &[&id, &uid]).await {
+        Ok(row) => row.is_some(),
+        Err(e) => return db_error("delete_tenant_member", &e),
+    };
     if is_owner && others == 0 {
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "a tenant needs at least one owner"}));
     }
-    match (&*data.db).execute("DELETE FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND CAST(user_id AS varchar) = $2", &[&id, &uid]).await {
+    match data.db.execute("DELETE FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND CAST(user_id AS varchar) = $2", &[&id, &uid]).await {
         Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "member not found"})),
         Ok(_) => { audit(&data.db, Some(&tok.claims.sub), "tenant.member.remove", "tenant", Some(id), &req, serde_json::json!({"user": uid})).await; HttpResponse::Ok().json(serde_json::json!({"success": true})) }
         Err(e) => db_error("delete_tenant_member", &e),
@@ -685,7 +693,7 @@ pub async fn move_zone(
         Ok(t) => t,
         Err(e) => return db_error("move_zone", &e),
     };
-    let c = tx.client;
+    let c = tx.client();
     if let Err(e) = c.batch_execute("BEGIN").await {
         return db_error("move_zone", &e);
     }
@@ -739,22 +747,35 @@ pub async fn move_zone(
                 bail!(quota_exceeded("records", l, used.1, nrec));
             }
         }
-        let owner_is_member = match &owner { Some(o) => c.query_opt("SELECT 1 FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND CAST(user_id AS varchar) = $2", &[d, o]).await.ok().flatten().is_some(), None => false };
+        let owner_is_member = match &owner {
+            Some(o) => match c.query_opt("SELECT 1 FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND CAST(user_id AS varchar) = $2", &[d, o]).await {
+                Ok(row) => row.is_some(),
+                Err(e) => { let _ = c.batch_execute("ROLLBACK").await; return db_error("move_zone", &e); }
+            },
+            None => false,
+        };
         if !owner_is_member {
-            new_owner = c.query_opt("SELECT CAST(user_id AS varchar) FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' ORDER BY created_at LIMIT 1", &[d]).await.ok().flatten().map(|r| r.get(0));
+            new_owner = match c.query_opt("SELECT CAST(user_id AS varchar) FROM tenant_members WHERE CAST(tenant_id AS varchar) = $1 AND role = 'owner' ORDER BY created_at LIMIT 1", &[d]).await {
+                Ok(row) => row.map(|r| r.get(0)),
+                Err(e) => { let _ = c.batch_execute("ROLLBACK").await; return db_error("move_zone", &e); }
+            };
         }
     } else {
         // detaching: the platform keeps the zone, nobody from the old tenant keeps ownership
         if let (Some(o), Some(_)) = (&owner, &src) {
-            let admin_owner = c
+            let admin_owner = match c
                 .query_opt(
                     "SELECT 1 FROM users WHERE CAST(id AS varchar) = $1 AND role = 'admin'",
                     &[o],
                 )
                 .await
-                .ok()
-                .flatten()
-                .is_some();
+            {
+                Ok(row) => row.is_some(),
+                Err(e) => {
+                    let _ = c.batch_execute("ROLLBACK").await;
+                    return db_error("move_zone", &e);
+                }
+            };
             if !admin_owner {
                 new_owner = Some(tok.claims.sub.clone());
             }
@@ -826,7 +847,7 @@ pub async fn overview(
          WHERE {} ORDER BY z.domain",
         ZONE_VISIBLE
     );
-    let rows = match (&*data.db).query(&sql, &[&is_admin, &tok.claims.sub]).await {
+    let rows = match data.db.query(&sql, &[&is_admin, &tok.claims.sub]).await {
         Ok(r) => r,
         Err(e) => return db_error("overview", &e),
     };
@@ -844,7 +865,7 @@ pub async fn overview(
     let tenants = if is_admin {
         vec![]
     } else {
-        match (&*data.db).query(
+        match data.db.query(
             "SELECT CAST(t.id AS varchar), t.name, t.max_zones, t.max_records, m.role, \
                     (SELECT count(*) FROM zones z WHERE z.tenant_id = t.id), \
                     (SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE z.tenant_id = t.id) \
@@ -1032,10 +1053,7 @@ pub async fn ingest(
 }
 
 /// Hourly snapshot of zones/records per tenant (the "usage" series).
-pub async fn snapshot_usage(
-    db: &tokio_postgres::Client,
-    now: i64,
-) -> Result<u64, tokio_postgres::Error> {
+pub async fn snapshot_usage(db: &Pool, now: i64) -> Result<u64, tokio_postgres::Error> {
     let hour = now - now.rem_euclid(3600);
     db.execute(
         "INSERT INTO tenant_usage_samples (ts, tenant_id, zones, records) \
@@ -1044,10 +1062,7 @@ pub async fn snapshot_usage(
          ON CONFLICT (tenant_id, ts) DO UPDATE SET zones = EXCLUDED.zones, records = EXCLUDED.records", &[&hour]).await
 }
 
-pub async fn purge_analytics(
-    db: &tokio_postgres::Client,
-    days: i64,
-) -> Result<u64, tokio_postgres::Error> {
+pub async fn purge_analytics(db: &Pool, days: i64) -> Result<u64, tokio_postgres::Error> {
     let mut n = 0;
     for t in [
         "analytics_samples",
@@ -1079,7 +1094,7 @@ pub async fn ingest_persistent(
     now: i64,
 ) -> Result<(i64, usize), tokio_postgres::Error> {
     let tx = db.begin().await?;
-    let c = tx.client;
+    let c = tx.client();
     c.batch_execute("BEGIN").await?;
     let r = async {
         c.execute("SELECT pg_advisory_xact_lock(7331001)", &[]).await?;
@@ -1100,7 +1115,7 @@ pub async fn ingest_persistent(
 /// Background collector, safe to run in every API replica: a database lease (`collector_lease`) makes exactly one
 /// replica the writer; the others stay idle and take over when the lease expires (leader crash, restart, network
 /// loss). `ANALYTICS_SAMPLE_SECS` (default 60, 0 = off for this replica), `ANALYTICS_LEASE_SECS` (default
-/// max(3 x interval, 15)). Housekeeping (usage snapshots, retention, rate-limit windows) is leader-only.
+/// max(3 x interval, 15)). Housekeeping (usage snapshots, retention, rollups) is leader-only.
 pub fn spawn_collector(db: Arc<Pool>, metrics_url: Option<String>) {
     let secs: u64 = std::env::var("ANALYTICS_SAMPLE_SECS")
         .ok()
@@ -1192,7 +1207,6 @@ pub fn spawn_collector(db: Arc<Pool>, metrics_url: Option<String>) {
                     Err(e) => warn!("analytics rollup: {}", full_error_string(&e)),
                 }
             }
-            let _ = shared::purge_rate_limits(&db).await;
         }
     });
 }
@@ -1200,7 +1214,7 @@ pub fn spawn_collector(db: Arc<Pool>, metrics_url: Option<String>) {
 /// Keep 5-minute (or whatever the sampling interval is) detail for 48 hours, hourly sums beyond that. Sums are
 /// preserved exactly; only the time resolution of old data drops, which bounds table growth by ~12x. Idempotent,
 /// safe to run from any replica (statements are atomic; the leader runs it).
-pub async fn rollup_analytics(db: &tokio_postgres::Client) -> Result<u64, tokio_postgres::Error> {
+pub async fn rollup_analytics(db: &Pool) -> Result<u64, tokio_postgres::Error> {
     let specs: [(&str, &str, &str); 4] = [
         ("analytics_samples", "", "requests"),
         ("zone_query_samples", "domain", "queries, failed"),
@@ -1323,7 +1337,7 @@ fn country_info(code: &str) -> (&'static str, &'static str) {
 
 /// Record-type and country breakdowns for the selected scope; every number comes from the stored samples.
 async fn breakdowns(
-    db: &tokio_postgres::Client,
+    db: &Pool,
     win: i64,
     tenant: &Option<String>,
     zone: &Option<String>,
@@ -1377,7 +1391,7 @@ pub async fn global_analytics(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let db = &*data.db;
+    let db = &data.db;
     let (wf, bf) = (win as f64, bucket as f64);
     let series_f = async {
         db.query(
@@ -1444,7 +1458,7 @@ pub async fn tenant_analytics(
         .zone
         .as_ref()
         .map(|z| z.trim().trim_end_matches('.').to_ascii_lowercase());
-    let db = &*data.db;
+    let db = &data.db;
     let (wf, bf) = (win as f64, bucket as f64);
     let series_f = async {
         db.query(

@@ -7,7 +7,7 @@
 //! return, they do **not** exercise anything.
 
 use super::*;
-use actix_web::{dev::Service, test, App};
+use actix_web::{App, dev::Service, test};
 
 struct Env {
     state: AppState,
@@ -27,13 +27,19 @@ async fn setup() -> Option<Env> {
     };
     let schema = format!("t_{}", Uuid::new_v4().simple());
     {
-        let (c, conn) = tokio_postgres::connect(&url, NoTls).await.expect("connect test db");
-        tokio::spawn(async move { let _ = conn.await; });
-        c.batch_execute(&format!("CREATE SCHEMA {}", schema)).await.unwrap();
+        let (c, conn) = tokio_postgres::connect(&url, NoTls)
+            .await
+            .expect("connect test db");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        c.batch_execute(&format!("CREATE SCHEMA {}", schema))
+            .await
+            .unwrap();
     }
     // every pooled connection uses the isolated schema
     let client = Pool::connect(&url, 4, Some(&schema)).await.expect("pool");
-    migrate_db(&*client).await.expect("migrate");
+    migrate_db(&client).await.expect("migrate");
     let dir = tempfile::tempdir().unwrap();
     let state = AppState {
         db: client.clone(),
@@ -41,23 +47,36 @@ async fn setup() -> Option<Env> {
         dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
         verify_resolver: "127.0.0.1:9".parse().unwrap(),
         verify_domains: false,
-        dns_metrics_url: None, lookup_resolvers: vec![],
+        dns_metrics_url: None,
+        lookup_resolvers: vec![],
     };
-    let geo = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/dns/GeoLite2-Country.mmdb"))
-        .ok()
-        .and_then(|b| geodns::GeoDB::open_from_bytes(b).ok());
+    let geo = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../deploy/dns/GeoLite2-Country.mmdb"
+    ))
+    .ok()
+    .and_then(|b| geodns::GeoDB::open_from_bytes(b).ok());
     let full = FullState {
         inner: state.clone(),
         geo: Arc::new(tokio::sync::Mutex::new(GeoState { db: geo })),
         processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
     let admin = add_user(&state, "root", "root-password-1", "admin").await;
-    Some(Env { state, full, dir, schema, admin })
+    Some(Env {
+        state,
+        full,
+        dir,
+        schema,
+        admin,
+    })
 }
 
 async fn add_user(state: &AppState, name: &str, pw: &str, role: &str) -> String {
     let id = Uuid::new_v4().to_string();
-    let hash = Argon2::default().hash_password(pw.as_bytes(), &generate_salt()).unwrap().to_string();
+    let hash = Argon2::default()
+        .hash_password(pw.as_bytes(), &generate_salt())
+        .unwrap()
+        .to_string();
     state
         .db
         .execute(
@@ -71,13 +90,20 @@ async fn add_user(state: &AppState, name: &str, pw: &str, role: &str) -> String 
 
 impl Env {
     async fn cleanup(self) {
-        let _ = self.state.db.batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema)).await;
+        let _ = self
+            .state
+            .db
+            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.schema))
+            .await;
     }
     fn zone_file(&self, domain: &str) -> std::path::PathBuf {
         self.dir.path().join(format!("zone.{}", domain))
     }
     fn token(&self, id: &str, role: &str) -> String {
-        issue_access_token(id, role, &self.state.jwt_secret).unwrap()
+        self.token_with_version(id, role, 0)
+    }
+    fn token_with_version(&self, id: &str, role: &str, token_version: i64) -> String {
+        issue_access_token(id, role, token_version, &self.state.jwt_secret).unwrap()
     }
 }
 
@@ -108,7 +134,8 @@ macro_rules! call {
         let resp = test::call_service(&$app, r.to_request()).await;
         let status = resp.status().as_u16();
         let bytes = test::read_body(resp).await;
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json, String::from_utf8_lossy(&bytes).to_string())
     }};
 }
@@ -117,10 +144,28 @@ fn j(v: serde_json::Value) -> Option<serde_json::Value> {
     Some(v)
 }
 
-async fn make_zone(env: &Env, app: &impl Service<actix_http::Request, Response = ServiceResponse<actix_web::body::BoxBody>, Error = actix_web::Error>, tok: &str, domain: &str) -> String {
-    let (st, body, raw) = call!(app, post, "/api/v1/zones", Some(tok), j(serde_json::json!({"domain": domain})));
+async fn make_zone(
+    env: &Env,
+    app: &impl Service<
+        actix_http::Request,
+        Response = ServiceResponse<actix_web::body::BoxBody>,
+        Error = actix_web::Error,
+    >,
+    tok: &str,
+    domain: &str,
+) -> String {
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(tok),
+        j(serde_json::json!({"domain": domain}))
+    );
     assert_eq!(st, 201, "create zone {domain}: {raw}");
-    assert!(env.zone_file(domain).is_file(), "zone file must exist after creation");
+    assert!(
+        env.zone_file(domain).is_file(),
+        "zone file must exist after creation"
+    );
     body["id"].as_str().unwrap().to_string()
 }
 
@@ -137,23 +182,47 @@ async fn session_lifecycle_and_no_default_credentials() {
     let app = app!(env);
 
     // there is no built-in admin/admin123 account
-    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"admin","password":"admin123"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"admin","password":"admin123"}))
+    );
     assert_eq!(st, 401);
 
-    let (st, body, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"root","password":"root-password-1"})));
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"root","password":"root-password-1"}))
+    );
     assert_eq!(st, 200);
     let access = body["token"].as_str().unwrap().to_string();
     let refresh = body["refresh_token"].as_str().unwrap().to_string();
 
     // refresh yields a working access token
-    let (st, body, _) = call!(app, post, "/api/v1/auth/refresh", None::<&str>, j(serde_json::json!({"refresh_token": refresh})));
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": refresh}))
+    );
     assert_eq!(st, 200, "refresh must work: {body}");
     let access2 = body["token"].as_str().unwrap().to_string();
     let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&access2), None);
     assert_eq!(st, 200);
 
     // bogus refresh token
-    let (st, _, _) = call!(app, post, "/api/v1/auth/refresh", None::<&str>, j(serde_json::json!({"refresh_token": "nope"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": "nope"}))
+    );
     assert_eq!(st, 401);
 
     // logout revokes the access token and the refresh token
@@ -161,13 +230,209 @@ async fn session_lifecycle_and_no_default_credentials() {
     assert_eq!(st, 200);
     let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&access), None);
     assert_eq!(st, 401, "revoked access token must be rejected");
-    let (st, _, _) = call!(app, post, "/api/v1/auth/refresh", None::<&str>, j(serde_json::json!({"refresh_token": refresh})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": refresh}))
+    );
     assert_eq!(st, 401, "refresh token must die with the session");
 
     // wrong password / unknown user are indistinguishable
-    let (s1, b1, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"root","password":"bad"})));
-    let (s2, b2, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username":"ghost","password":"bad"})));
+    let (s1, b1, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"root","password":"bad"}))
+    );
+    let (s2, b2, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"ghost","password":"bad"}))
+    );
     assert_eq!((s1, &b1), (s2, &b2));
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn refresh_rotation_replay_revokes_the_whole_session() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"root","password":"root-password-1"}))
+    );
+    assert_eq!(st, 200);
+    let access = body["token"].as_str().unwrap().to_string();
+    let refresh = body["refresh_token"].as_str().unwrap().to_string();
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": refresh}))
+    );
+    assert_eq!(st, 200, "first refresh: {raw}");
+    let rotated_access = body["token"].as_str().unwrap().to_string();
+    let rotated_refresh = body["refresh_token"].as_str().unwrap().to_string();
+    assert_ne!(rotated_refresh, refresh, "refresh token must rotate");
+
+    // Replaying the old token is detected and ends the session.
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": refresh}))
+    );
+    assert_eq!(st, 401, "rotated refresh token must not be reusable");
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&rotated_access), None);
+    assert_eq!(st, 401, "replay detection must invalidate access tokens");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": rotated_refresh}))
+    );
+    assert_eq!(
+        st, 401,
+        "replay detection must invalidate the live refresh token too"
+    );
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&access), None);
+    assert_eq!(st, 401);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn password_change_and_admin_reset_revoke_access_and_refresh_tokens() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let uid = add_user(&env.state, "pwuser", "old-password-1", "user").await;
+
+    let login = |pw: &str| j(serde_json::json!({"username":"pwuser","password":pw}));
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        login("old-password-1")
+    );
+    assert_eq!(st, 200);
+    let old_access = body["token"].as_str().unwrap().to_string();
+    let old_refresh = body["refresh_token"].as_str().unwrap().to_string();
+
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/auth/change-password",
+        Some(&old_access),
+        j(serde_json::json!({"current_password":"old-password-1","new_password":"new-password-1"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&old_access), None);
+    assert_eq!(
+        st, 401,
+        "password change must invalidate existing access tokens"
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": old_refresh}))
+    );
+    assert_eq!(st, 401, "password change must invalidate refresh tokens");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        login("old-password-1")
+    );
+    assert_eq!(st, 401);
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        login("new-password-1")
+    );
+    assert_eq!(st, 200);
+    let reset_access = body["token"].as_str().unwrap().to_string();
+    let reset_refresh = body["refresh_token"].as_str().unwrap().to_string();
+
+    let admin = env.token(&env.admin, "admin");
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/auth/admin-reset-password",
+        Some(&admin),
+        j(serde_json::json!({"user_id": uid, "new_password":"admin-set-password-1"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&reset_access), None);
+    assert_eq!(
+        st, 401,
+        "admin reset must invalidate existing access tokens"
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": reset_refresh}))
+    );
+    assert_eq!(st, 401, "admin reset must invalidate refresh tokens");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        login("admin-set-password-1")
+    );
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn logout_invalidates_every_session_for_the_user() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let login = j(serde_json::json!({"username":"root","password":"root-password-1"}));
+
+    let (_, first, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login.clone());
+    let first_access = first["token"].as_str().unwrap().to_string();
+    let (_, second, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login);
+    let second_access = second["token"].as_str().unwrap().to_string();
+    let second_refresh = second["refresh_token"].as_str().unwrap().to_string();
+
+    let (st, _, _) = call!(app, post, "/api/v1/auth/logout", Some(&second_access), None);
+    assert_eq!(st, 200);
+    for token in [&first_access, &second_access] {
+        let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(token), None);
+        assert_eq!(
+            st, 401,
+            "logout must invalidate every access token for the account"
+        );
+    }
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/refresh",
+        None::<&str>,
+        j(serde_json::json!({"refresh_token": second_refresh}))
+    );
+    assert_eq!(st, 401);
     env.cleanup().await;
 }
 
@@ -181,11 +446,19 @@ async fn deleted_user_and_demoted_admin_lose_access_immediately() {
     assert_eq!(st, 200);
 
     // demote in the database: the (still valid) JWT claims "admin" but must not be honoured
-    env.state.db.execute("UPDATE users SET role='user' WHERE username='mallory'", &[]).await.unwrap();
+    env.state
+        .db
+        .execute("UPDATE users SET role='user' WHERE username='mallory'", &[])
+        .await
+        .unwrap();
     let (st, _, _) = call!(app, get, "/api/v1/users", Some(&tok), None);
     assert_eq!(st, 403, "role must come from the database, not the token");
 
-    env.state.db.execute("DELETE FROM users WHERE username='mallory'", &[]).await.unwrap();
+    env.state
+        .db
+        .execute("DELETE FROM users WHERE username='mallory'", &[])
+        .await
+        .unwrap();
     let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&tok), None);
     assert_eq!(st, 401, "tokens of deleted users must stop working");
     env.cleanup().await;
@@ -200,9 +473,17 @@ async fn login_is_rate_limited_per_username() {
     // The budget refills continuously (1 token per 60/N s) and a debug-build login takes a while
     // under parallel test load, so keep trying until the limiter trips instead of assuming a speed.
     for _ in 0..(LOGIN_ATTEMPTS_PER_MINUTE * 6) {
-        let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username": name, "password":"x"})));
+        let (st, _, _) = call!(
+            app,
+            post,
+            "/api/v1/auth/login",
+            None::<&str>,
+            j(serde_json::json!({"username": name, "password":"x"}))
+        );
         last = st;
-        if st == 429 { break; }
+        if st == 429 {
+            break;
+        }
     }
     assert_eq!(last, 429);
     env.cleanup().await;
@@ -214,15 +495,31 @@ async fn tenants_cannot_touch_each_others_zones() {
     let app = app!(env);
     let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
     let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
-    let (ta, tb, tadmin) = (env.token(&alice, "user"), env.token(&bob, "user"), env.token(&env.admin, "admin"));
+    let (ta, tb, tadmin) = (
+        env.token(&alice, "user"),
+        env.token(&bob, "user"),
+        env.token(&env.admin, "admin"),
+    );
 
     let zid = make_zone(&env, &app, &ta, "alice.example").await;
-    let (st, rec, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&ta),
-        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.10","ttl":300})));
+    let (st, rec, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&ta),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.10","ttl":300}))
+    );
     assert_eq!(st, 201);
     let rid = rec["id"].as_str().unwrap().to_string();
-    let (st, gr, _) = call!(app, post, "/api/v1/georules", Some(&ta),
-        j(serde_json::json!({"zone_id": zid, "match_type":"country","match_value":"US","target":"192.0.2.77"})));
+    let (st, gr, _) = call!(
+        app,
+        post,
+        "/api/v1/georules",
+        Some(&ta),
+        j(
+            serde_json::json!({"zone_id": zid, "match_type":"country","match_value":"US","target":"192.0.2.77"})
+        )
+    );
     assert_eq!(st, 201);
     let gid = gr["id"].as_str().unwrap().to_string();
 
@@ -231,16 +528,46 @@ async fn tenants_cannot_touch_each_others_zones() {
         ("get", format!("/api/v1/zones/{zid}"), None),
         ("get", format!("/api/v1/zones/{zid}/records"), None),
         ("get", format!("/api/v1/zones/{zid}/export"), None),
-        ("post", format!("/api/v1/zones/{zid}/records"), j(serde_json::json!({"name":"evil","record_type":"A","value":"6.6.6.6","ttl":60}))),
-        ("post", format!("/api/v1/zones/{zid}/import"), j(serde_json::json!({"records":[{"name":"evil","record_type":"A","value":"6.6.6.6"}]}))),
-        ("put", format!("/api/v1/zones/{zid}/records/{rid}"), j(serde_json::json!({"value":"6.6.6.6"}))),
+        (
+            "post",
+            format!("/api/v1/zones/{zid}/records"),
+            j(serde_json::json!({"name":"evil","record_type":"A","value":"6.6.6.6","ttl":60})),
+        ),
+        (
+            "post",
+            format!("/api/v1/zones/{zid}/import"),
+            j(serde_json::json!({"records":[{"name":"evil","record_type":"A","value":"6.6.6.6"}]})),
+        ),
+        (
+            "put",
+            format!("/api/v1/zones/{zid}/records/{rid}"),
+            j(serde_json::json!({"value":"6.6.6.6"})),
+        ),
         ("delete", format!("/api/v1/zones/{zid}/records/{rid}"), None),
-        ("put", format!("/api/v1/zones/{zid}"), j(serde_json::json!({"geodns_enabled": false}))),
+        (
+            "put",
+            format!("/api/v1/zones/{zid}"),
+            j(serde_json::json!({"geodns_enabled": false})),
+        ),
         ("delete", format!("/api/v1/zones/{zid}"), None),
-        ("put", format!("/api/v1/georules/{gid}"), j(serde_json::json!({"target":"6.6.6.6"}))),
+        (
+            "put",
+            format!("/api/v1/georules/{gid}"),
+            j(serde_json::json!({"target":"6.6.6.6"})),
+        ),
         ("delete", format!("/api/v1/georules/{gid}"), None),
-        ("post", "/api/v1/georules".to_string(), j(serde_json::json!({"zone_id": zid,"match_type":"default","match_value":"","target":"6.6.6.6"}))),
-        ("post", "/api/v1/georules/resolve".to_string(), j(serde_json::json!({"zone_id": zid,"client_ip":"8.8.8.8"}))),
+        (
+            "post",
+            "/api/v1/georules".to_string(),
+            j(
+                serde_json::json!({"zone_id": zid,"match_type":"default","match_value":"","target":"6.6.6.6"}),
+            ),
+        ),
+        (
+            "post",
+            "/api/v1/georules/resolve".to_string(),
+            j(serde_json::json!({"zone_id": zid,"client_ip":"8.8.8.8"})),
+        ),
     ] {
         let (st, _, raw) = match m {
             "get" => call!(app, get, &uri, Some(&tb), body),
@@ -251,16 +578,32 @@ async fn tenants_cannot_touch_each_others_zones() {
         assert_eq!(st, 403, "bob {m} {uri} must be forbidden, got {st}: {raw}");
     }
     let (_, list, _) = call!(app, get, "/api/v1/georules", Some(&tb), None);
-    assert_eq!(list.as_array().unwrap().len(), 0, "bob must not see alice's geo rules");
+    assert_eq!(
+        list.as_array().unwrap().len(),
+        0,
+        "bob must not see alice's geo rules"
+    );
     let (_, zl, _) = call!(app, get, "/api/v1/zones", Some(&tb), None);
     assert_eq!(zl["data"].as_array().unwrap().len(), 0);
     // bob may not read alice's profile either
     let (st, _, _) = call!(app, get, &format!("/api/v1/users/{alice}"), Some(&tb), None);
     assert_eq!(st, 403);
     // ...nor create a zone inside her namespace
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tb), j(serde_json::json!({"domain":"shop.alice.example"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tb),
+        j(serde_json::json!({"domain":"shop.alice.example"}))
+    );
     assert_eq!(st, 409);
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tb), j(serde_json::json!({"domain":"example"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tb),
+        j(serde_json::json!({"domain":"example"}))
+    );
     assert_eq!(st, 400);
 
     // nothing of bob's attempts reached the zone
@@ -268,17 +611,50 @@ async fn tenants_cannot_touch_each_others_zones() {
     assert!(!text.contains("6.6.6.6"), "{text}");
 
     // alice (owner) and the admin can do everything
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&ta), j(serde_json::json!({"ttl": 600})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/records/{rid}"),
+        Some(&ta),
+        j(serde_json::json!({"ttl": 600}))
+    );
     assert_eq!(st, 200, "owner must be able to update own record");
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&ta), j(serde_json::json!({"geodns_enabled": false})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}"),
+        Some(&ta),
+        j(serde_json::json!({"geodns_enabled": false}))
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/export"), Some(&tadmin), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/export"),
+        Some(&tadmin),
+        None
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&ta), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{zid}/records/{rid}"),
+        Some(&ta),
+        None
+    );
     assert_eq!(st, 200, "owner must be able to delete own record");
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}"), Some(&ta), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{zid}"),
+        Some(&ta),
+        None
+    );
     assert_eq!(st, 200);
-    assert!(!env.zone_file("alice.example").exists(), "deleted zone must stop being served");
+    assert!(
+        !env.zone_file("alice.example").exists(),
+        "deleted zone must stop being served"
+    );
     env.cleanup().await;
 }
 
@@ -287,14 +663,46 @@ async fn zone_domain_validation() {
     let Some(env) = setup().await else { return };
     let app = app!(env);
     let tadmin = env.token(&env.admin, "admin");
-    for bad in [".", "", "com", "a/b.com", "q\"x.com", "a b.com", "-a.com", "a..com", "ü.com", "../../etc/x.com"] {
-        let (st, _, raw) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain": bad})));
+    for bad in [
+        ".",
+        "",
+        "com",
+        "a/b.com",
+        "q\"x.com",
+        "a b.com",
+        "-a.com",
+        "a..com",
+        "ü.com",
+        "../../etc/x.com",
+    ] {
+        let (st, _, raw) = call!(
+            app,
+            post,
+            "/api/v1/zones",
+            Some(&tadmin),
+            j(serde_json::json!({"domain": bad}))
+        );
         assert_eq!(st, 400, "{bad:?} must be rejected: {raw}");
     }
-    let (st, body, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain": "Mixed.Example."})));
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tadmin),
+        j(serde_json::json!({"domain": "Mixed.Example."}))
+    );
     assert_eq!(st, 201);
-    assert_eq!(body["domain"], "mixed.example", "domains are stored lower-case without trailing dot");
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain": "MIXED.example"})));
+    assert_eq!(
+        body["domain"], "mixed.example",
+        "domains are stored lower-case without trailing dot"
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tadmin),
+        j(serde_json::json!({"domain": "MIXED.example"}))
+    );
     assert_eq!(st, 409, "case variants are the same zone");
     env.cleanup().await;
 }
@@ -305,7 +713,9 @@ async fn record_validation_rrsets_and_atomic_update() {
     let app = app!(env);
     let t = env.token(&env.admin, "admin");
     let zid = make_zone(&env, &app, &t, "rr.example").await;
-    let rec = |name: &str, ty: &str, val: &str, ttl: u64| j(serde_json::json!({"name":name,"record_type":ty,"value":val,"ttl":ttl}));
+    let rec = |name: &str, ty: &str, val: &str, ttl: u64| {
+        j(serde_json::json!({"name":name,"record_type":ty,"value":val,"ttl":ttl}))
+    };
     let url = format!("/api/v1/zones/{zid}/records");
 
     // out of range TTLs used to be stored as negative numbers and broke every zone
@@ -314,7 +724,13 @@ async fn record_validation_rrsets_and_atomic_update() {
         assert_eq!(st, 400, "ttl {ttl}");
     }
     // names outside the zone
-    let (st, _, _) = call!(app, post, &url, Some(&t), rec("www.victim.org.", "A", "192.0.2.1", 300));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        rec("www.victim.org.", "A", "192.0.2.1", 300)
+    );
     assert_eq!(st, 400);
     // a round-robin RRset is legal
     for ip in ["192.0.2.1", "192.0.2.2", "192.0.2.3"] {
@@ -324,7 +740,15 @@ async fn record_validation_rrsets_and_atomic_update() {
     let (st, _, _) = call!(app, post, &url, Some(&t), rec("www", "A", "192.0.2.1", 300));
     assert_eq!(st, 409, "exact duplicate");
     for (pri, mx) in [(10, "mx1.rr.example."), (20, "mx2.rr.example.")] {
-        let (st, _, raw) = call!(app, post, &url, Some(&t), j(serde_json::json!({"name":"@","record_type":"MX","value":mx,"ttl":300,"priority":pri})));
+        let (st, _, raw) = call!(
+            app,
+            post,
+            &url,
+            Some(&t),
+            j(
+                serde_json::json!({"name":"@","record_type":"MX","value":mx,"ttl":300,"priority":pri})
+            )
+        );
         assert_eq!(st, 201, "{raw}");
     }
     let zone = std::fs::read_to_string(env.zone_file("rr.example")).unwrap();
@@ -332,35 +756,116 @@ async fn record_validation_rrsets_and_atomic_update() {
     assert_eq!(zone.matches(" MX ").count(), 2, "{zone}");
 
     // CNAME may not share a name with other data, nor sit at the apex
-    let (st, _, _) = call!(app, post, &url, Some(&t), rec("www", "CNAME", "other.rr.example.", 300));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        rec("www", "CNAME", "other.rr.example.", 300)
+    );
     assert_eq!(st, 400, "CNAME + A");
-    let (st, _, _) = call!(app, post, &url, Some(&t), rec("@", "CNAME", "other.rr.example.", 300));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        rec("@", "CNAME", "other.rr.example.", 300)
+    );
     assert_eq!(st, 400, "apex CNAME");
-    let (st, _, _) = call!(app, post, &url, Some(&t), rec("alias", "CNAME", "www.rr.example.", 300));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        rec("alias", "CNAME", "www.rr.example.", 300)
+    );
     assert_eq!(st, 201);
-    let (st, _, _) = call!(app, post, &url, Some(&t), rec("alias", "A", "192.0.2.9", 300));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        rec("alias", "A", "192.0.2.9", 300)
+    );
     assert_eq!(st, 400, "A next to CNAME");
     // failed requests left the stored zone untouched and valid
-    assert!(!std::fs::read_to_string(env.zone_file("rr.example")).unwrap().contains("192.0.2.9"));
+    assert!(
+        !std::fs::read_to_string(env.zone_file("rr.example"))
+            .unwrap()
+            .contains("192.0.2.9")
+    );
 
     // a second SOA is refused
-    let (st, _, _) = call!(app, post, &url, Some(&t), rec("@", "SOA", "ns1.rr.example. h.rr.example. 1 3600 3600 604800 3600", 300));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        rec(
+            "@",
+            "SOA",
+            "ns1.rr.example. h.rr.example. 1 3600 3600 604800 3600",
+            300
+        )
+    );
     assert_eq!(st, 409);
 
     // updates are validated as a whole and applied atomically
     let (_, list, _) = call!(app, get, &url, Some(&t), None);
-    let a_id = list.as_array().unwrap().iter().find(|r| r["value"] == "192.0.2.3").unwrap()["id"].as_str().unwrap().to_string();
-    let (st, _, _) = call!(app, put, &format!("{url}/{a_id}"), Some(&t), j(serde_json::json!({"value":"192.0.2.33","ttl":120})));
+    let a_id = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["value"] == "192.0.2.3")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("{url}/{a_id}"),
+        Some(&t),
+        j(serde_json::json!({"value":"192.0.2.33","ttl":120}))
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, put, &format!("{url}/{a_id}"), Some(&t), j(serde_json::json!({"value":"not-an-ip","ttl":999})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("{url}/{a_id}"),
+        Some(&t),
+        j(serde_json::json!({"value":"not-an-ip","ttl":999}))
+    );
     assert_eq!(st, 400);
     let (_, list, _) = call!(app, get, &url, Some(&t), None);
-    let r = list.as_array().unwrap().iter().find(|r| r["id"] == a_id.as_str()).unwrap().clone();
-    assert_eq!((r["value"].as_str().unwrap(), r["ttl"].as_u64().unwrap()), ("192.0.2.33", 120), "rejected update must change nothing");
-    let (st, _, _) = call!(app, put, &format!("{url}/{}", Uuid::new_v4()), Some(&t), j(serde_json::json!({"ttl": 10})));
+    let r = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == a_id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (r["value"].as_str().unwrap(), r["ttl"].as_u64().unwrap()),
+        ("192.0.2.33", 120),
+        "rejected update must change nothing"
+    );
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("{url}/{}", Uuid::new_v4()),
+        Some(&t),
+        j(serde_json::json!({"ttl": 10}))
+    );
     assert_eq!(st, 404);
     // changing the type to something the value does not fit is refused
-    let (st, _, _) = call!(app, put, &format!("{url}/{a_id}"), Some(&t), j(serde_json::json!({"record_type":"AAAA"})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("{url}/{a_id}"),
+        Some(&t),
+        j(serde_json::json!({"record_type":"AAAA"}))
+    );
     assert_eq!(st, 400);
     env.cleanup().await;
 }
@@ -374,23 +879,50 @@ async fn import_is_all_or_nothing_and_never_partial() {
     let url = format!("/api/v1/zones/{zid}/import");
     let before = std::fs::read_to_string(env.zone_file("imp.example")).unwrap();
 
-    let (st, _, _) = call!(app, post, &url, Some(&t), j(serde_json::json!({"records":[
+    let (st, _, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        j(serde_json::json!({"records":[
         {"name":"a","record_type":"A","value":"192.0.2.1"},
-        {"name":"b","record_type":"A","value":"999.0.2.1"}]})));
+        {"name":"b","record_type":"A","value":"999.0.2.1"}]}))
+    );
     assert_eq!(st, 400);
-    let (_, list, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&t), None);
-    assert!(list.as_array().unwrap().iter().all(|r| r["name"] != "a"), "first record of a failed import must not remain");
-    assert_eq!(std::fs::read_to_string(env.zone_file("imp.example")).unwrap(), before);
+    let (_, list, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        None
+    );
+    assert!(
+        list.as_array().unwrap().iter().all(|r| r["name"] != "a"),
+        "first record of a failed import must not remain"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.zone_file("imp.example")).unwrap(),
+        before
+    );
 
-    let (st, body, raw) = call!(app, post, &url, Some(&t), j(serde_json::json!({"records":[
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        j(serde_json::json!({"records":[
         {"name":"a","record_type":"A","value":"192.0.2.1"},
         {"name":"a","record_type":"A","value":"192.0.2.1"},
-        {"name":"b","record_type":"TXT","value":"v=spf1 -all","ttl":300}]})));
+        {"name":"b","record_type":"TXT","value":"v=spf1 -all","ttl":300}]}))
+    );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["imported"], 2);
     assert_eq!(body["skipped"], 1);
     let zone = std::fs::read_to_string(env.zone_file("imp.example")).unwrap();
-    assert!(zone.contains("192.0.2.1") && zone.contains("spf1"), "{zone}");
+    assert!(
+        zone.contains("192.0.2.1") && zone.contains("spf1"),
+        "{zone}"
+    );
     env.cleanup().await;
 }
 
@@ -400,17 +932,33 @@ async fn georule_update_and_input_validation() {
     let app = app!(env);
     let t = env.token(&env.admin, "admin");
     let zid = make_zone(&env, &app, &t, "geo.example").await;
-    let (st, gr, raw) = call!(app, post, "/api/v1/georules", Some(&t),
-        j(serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"192.0.2.77","priority":5})));
+    let (st, gr, raw) = call!(
+        app,
+        post,
+        "/api/v1/georules",
+        Some(&t),
+        j(
+            serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"192.0.2.77","priority":5})
+        )
+    );
     assert_eq!(st, 201, "{raw}");
     let gid = gr["id"].as_str().unwrap().to_string();
 
     // used to answer 500: priority/enabled were bound as text
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/georules/{gid}"), Some(&t), j(serde_json::json!({"priority": 9, "enabled": false})));
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/georules/{gid}"),
+        Some(&t),
+        j(serde_json::json!({"priority": 9, "enabled": false}))
+    );
     assert_eq!(st, 200, "{raw}");
     let (_, list, _) = call!(app, get, "/api/v1/georules", Some(&t), None);
     let r = &list.as_array().unwrap()[0];
-    assert_eq!((r["priority"].as_i64(), r["enabled"].as_bool()), (Some(9), Some(false)));
+    assert_eq!(
+        (r["priority"].as_i64(), r["enabled"].as_bool()),
+        (Some(9), Some(false))
+    );
 
     // injection attempts and nonsense are refused, nothing reaches named.toml
     for body in [
@@ -429,10 +977,28 @@ async fn georule_update_and_input_validation() {
     assert_eq!(named.matches("[[zones]]").count(), 1, "{named}");
 
     // resolve uses the real GeoIP data
-    call!(app, put, &format!("/api/v1/georules/{gid}"), Some(&t), j(serde_json::json!({"enabled": true})));
-    let (_, us, _) = call!(app, post, "/api/v1/georules/resolve", Some(&t), j(serde_json::json!({"zone_id": zid,"client_ip":"8.8.8.8"})));
+    call!(
+        app,
+        put,
+        &format!("/api/v1/georules/{gid}"),
+        Some(&t),
+        j(serde_json::json!({"enabled": true}))
+    );
+    let (_, us, _) = call!(
+        app,
+        post,
+        "/api/v1/georules/resolve",
+        Some(&t),
+        j(serde_json::json!({"zone_id": zid,"client_ip":"8.8.8.8"}))
+    );
     assert_eq!(us["target"], "192.0.2.77");
-    let (_, de, _) = call!(app, post, "/api/v1/georules/resolve", Some(&t), j(serde_json::json!({"zone_id": zid,"client_ip":"5.9.0.1"})));
+    let (_, de, _) = call!(
+        app,
+        post,
+        "/api/v1/georules/resolve",
+        Some(&t),
+        j(serde_json::json!({"zone_id": zid,"client_ip":"5.9.0.1"}))
+    );
     assert!(de["target"].is_null());
     env.cleanup().await;
 }
@@ -451,17 +1017,44 @@ async fn nameserver_input_is_validated_and_applied() {
         let (st, _, raw) = call!(app, post, "/api/v1/nameservers", Some(&t), j(body.clone()));
         assert_eq!(st, 400, "{body}: {raw}");
     }
-    let (st, ns, raw) = call!(app, post, "/api/v1/nameservers", Some(&t), j(serde_json::json!({"hostname":"ns1.glue.example","ip_address":"192.0.2.53"})));
+    let (st, ns, raw) = call!(
+        app,
+        post,
+        "/api/v1/nameservers",
+        Some(&t),
+        j(serde_json::json!({"hostname":"ns1.glue.example","ip_address":"192.0.2.53"}))
+    );
     assert_eq!(st, 201, "{raw}");
-    let (st, _, _) = call!(app, post, "/api/v1/nameservers", Some(&t), j(serde_json::json!({"hostname":"NS1.glue.example.","ip_address":"192.0.2.54"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/nameservers",
+        Some(&t),
+        j(serde_json::json!({"hostname":"NS1.glue.example.","ip_address":"192.0.2.54"}))
+    );
     assert_eq!(st, 409);
     make_zone(&env, &app, &t, "glue.example").await;
     let zone = std::fs::read_to_string(env.zone_file("glue.example")).unwrap();
     assert!(zone.contains("IN NS ns1.glue.example."), "{zone}");
-    assert!(zone.contains("ns1.glue.example. 3600 IN A 192.0.2.53"), "glue A: {zone}");
-    let (st, _, _) = call!(app, put, &format!("/api/v1/nameservers/{}", Uuid::new_v4()), Some(&t), j(serde_json::json!({"hostname":"ns9.glue.example","ip_address":"192.0.2.9"})));
+    assert!(
+        zone.contains("ns1.glue.example. 3600 IN A 192.0.2.53"),
+        "glue A: {zone}"
+    );
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/nameservers/{}", Uuid::new_v4()),
+        Some(&t),
+        j(serde_json::json!({"hostname":"ns9.glue.example","ip_address":"192.0.2.9"}))
+    );
     assert_eq!(st, 404);
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/nameservers/{}", ns["id"].as_str().unwrap()), Some(&t), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/nameservers/{}", ns["id"].as_str().unwrap()),
+        Some(&t),
+        None
+    );
     assert_eq!(st, 200);
     env.cleanup().await;
 }
@@ -477,14 +1070,29 @@ async fn soa_serial_increases_only_when_content_changes() {
 
     // regenerating identical data neither changes the serial nor rewrites the file
     let mtime0 = std::fs::metadata(&path).unwrap().modified().unwrap();
-    env.state.dns_manager.regenerate_zones(env.state.db.clone()).await.unwrap();
+    env.state
+        .dns_manager
+        .regenerate_zones(env.state.db.clone())
+        .await
+        .unwrap();
     assert_eq!(soa_serial(&path), s0);
-    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime0, "unchanged zone must not be rewritten");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        mtime0,
+        "unchanged zone must not be rewritten"
+    );
 
     let mut prev = s0;
     for i in 0..5 {
-        let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t),
-            j(serde_json::json!({"name": format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})));
+        let (st, _, _) = call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/records"),
+            Some(&t),
+            j(
+                serde_json::json!({"name": format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})
+            )
+        );
         assert_eq!(st, 201);
         let s = soa_serial(&path);
         assert!(s > prev, "serial must grow on every change ({prev} -> {s})");
@@ -513,7 +1121,11 @@ async fn concurrent_writes_all_end_up_published() {
     }
     let zone = std::fs::read_to_string(env.zone_file("race.example")).unwrap();
     for i in 0..16 {
-        assert!(zone.contains(&format!("192.0.2.{} ", i + 1)) || zone.contains(&format!("192.0.2.{}\n", i + 1)), "record {i} missing (stale zone): {zone}");
+        assert!(
+            zone.contains(&format!("192.0.2.{} ", i + 1))
+                || zone.contains(&format!("192.0.2.{}\n", i + 1)),
+            "record {i} missing (stale zone): {zone}"
+        );
     }
     assert!(!env.dir.path().join("zone.race.example.tmp").exists());
     env.cleanup().await;
@@ -534,18 +1146,78 @@ async fn one_broken_zone_never_blocks_or_replaces_others() {
         &[&Uuid::new_v4().to_string(), &bad]).await.unwrap();
 
     // the healthy zone is still published and the broken zone keeps its last known-good file
-    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{good}/records"), Some(&t),
-        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.55","ttl":300})));
-    assert_eq!(st, 201, "healthy zone must not be blocked by another zone's bad data: {raw}");
-    assert!(std::fs::read_to_string(env.zone_file("good.example")).unwrap().contains("192.0.2.55"));
-    assert_eq!(std::fs::read_to_string(env.zone_file("bad.example")).unwrap(), bad_before);
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{good}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.55","ttl":300}))
+    );
+    assert_eq!(
+        st, 201,
+        "healthy zone must not be blocked by another zone's bad data: {raw}"
+    );
+    assert!(
+        std::fs::read_to_string(env.zone_file("good.example"))
+            .unwrap()
+            .contains("192.0.2.55")
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.zone_file("bad.example")).unwrap(),
+        bad_before
+    );
     let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
-    assert!(named.contains("bad.example"), "last known-good zone must stay configured");
+    assert!(
+        named.contains("bad.example"),
+        "last known-good zone must stay configured"
+    );
 
     // and a change to the broken zone is reported honestly, not as success
-    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{bad}/records"), Some(&t),
-        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.66","ttl":300})));
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{bad}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.66","ttl":300}))
+    );
     assert_eq!(st, 400, "{raw}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn generate_all_uses_bounded_database_queries() {
+    let Some(env) = setup().await else { return };
+    for i in 0..25 {
+        let zid = Uuid::new_v4().to_string();
+        env.state
+            .db
+            .execute(
+                "INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, $2, $3::text::uuid)",
+                &[&zid, &format!("bulk{i}.example"), &env.admin],
+            )
+            .await
+            .unwrap();
+        env.state.db.execute(
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, 'www', 'A', '192.0.2.10', 300)",
+            &[&Uuid::new_v4().to_string(), &zid],
+        ).await.unwrap();
+        env.state.db.execute(
+            "INSERT INTO georules (id, zone_id, match_type, match_value, target, priority, enabled) VALUES ($1::text::uuid, $2::text::uuid, 'country', 'US', '192.0.2.11', 1, true)",
+            &[&Uuid::new_v4().to_string(), &zid],
+        ).await.unwrap();
+    }
+    let before = env.state.db.query_count();
+    let report =
+        zone_file_generator::generate_all(env.dir.path().to_str().unwrap(), env.state.db.clone())
+            .await
+            .unwrap();
+    let queries = env.state.db.query_count() - before;
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(report.published.len(), 25);
+    assert!(
+        queries <= 8,
+        "generate_all must not issue per-zone queries; used {queries} for 25 zones"
+    );
     env.cleanup().await;
 }
 
@@ -559,12 +1231,33 @@ async fn database_failure_never_wipes_published_zones() {
     let named_before = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
 
     // make one of the generator's queries fail
-    env.state.db.batch_execute("ALTER TABLE georules RENAME TO georules_gone").await.unwrap();
-    let res = env.state.dns_manager.regenerate_zones(env.state.db.clone()).await;
-    assert!(res.is_err(), "a failing database read must abort publication");
-    assert_eq!(std::fs::read_to_string(env.zone_file("keep.example")).unwrap(), before);
-    assert_eq!(std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap(), named_before);
-    env.state.db.batch_execute("ALTER TABLE georules_gone RENAME TO georules").await.unwrap();
+    env.state
+        .db
+        .batch_execute("ALTER TABLE georules RENAME TO georules_gone")
+        .await
+        .unwrap();
+    let res = env
+        .state
+        .dns_manager
+        .regenerate_zones(env.state.db.clone())
+        .await;
+    assert!(
+        res.is_err(),
+        "a failing database read must abort publication"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.zone_file("keep.example")).unwrap(),
+        before
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap(),
+        named_before
+    );
+    env.state
+        .db
+        .batch_execute("ALTER TABLE georules_gone RENAME TO georules")
+        .await
+        .unwrap();
     env.cleanup().await;
 }
 
@@ -574,63 +1267,195 @@ async fn agent_lifecycle_register_heartbeat_bundle_ack_push_disable() {
     let app = app!(env);
     let t = env.token(&env.admin, "admin");
     make_zone(&env, &app, &t, "agent.example").await;
-    let (st, reg, _) = call!(app, post, "/api/v1/agents/register", Some(&t), j(serde_json::json!({"name":"a1","addr":"10.0.0.5:5353"})));
+    let (st, reg, _) = call!(
+        app,
+        post,
+        "/api/v1/agents/register",
+        Some(&t),
+        j(serde_json::json!({"name":"a1","addr":"10.0.0.5:5353"}))
+    );
     assert_eq!(st, 201);
-    let (id, tokn, key) = (reg["id"].as_str().unwrap().to_string(), reg["token"].as_str().unwrap().to_string(), reg["signing_key"].as_str().unwrap().to_string());
+    let (id, tokn, key) = (
+        reg["id"].as_str().unwrap().to_string(),
+        reg["token"].as_str().unwrap().to_string(),
+        reg["signing_key"].as_str().unwrap().to_string(),
+    );
+    let zid = env
+        .state
+        .db
+        .query_one(
+            "SELECT CAST(id AS varchar) FROM zones WHERE domain='agent.example'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0);
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/agents/{id}/zones"),
+        Some(&t),
+        j(serde_json::json!({"zone_ids":[zid]}))
+    );
+    assert_eq!(st, 200, "{raw}");
 
     // heartbeat needs the agent's own token and returns the desired version
     let hb = || serde_json::json!({"name":"a1","addr":"10.0.0.5:5353"});
     let (st, body, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
     assert_eq!(st, 200);
     assert!(body["desired_version"].as_i64().unwrap() >= 1);
-    let (st, _, _) = call!(app, post, "/api/v1/agents/heartbeat", Some("wrong"), j(hb()));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/agents/heartbeat",
+        Some("wrong"),
+        j(hb())
+    );
     assert_eq!(st, 401);
 
     // signed, versioned bundle; wrong token refused
-    let (st, _, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some("wrong"), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some("wrong"),
+        None
+    );
     assert_eq!(st, 401);
-    let (st, b1, raw) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    let (st, b1, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(&tokn),
+        None
+    );
     assert_eq!(st, 200, "{raw}");
-    let files: Vec<(String, String)> = b1["files"].as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().into(), f["content"].as_str().unwrap().into())).collect();
+    let files: Vec<(String, String)> = b1["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["name"].as_str().unwrap().into(),
+                f["content"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
     let v1 = b1["version"].as_i64().unwrap();
-    assert!(files.iter().any(|(n, c)| n == "named.toml" && c.contains("@ZONE_DIR@/zone.agent.example")), "paths are templated");
+    assert!(
+        files
+            .iter()
+            .any(|(n, c)| n == "named.toml" && c.contains("@ZONE_DIR@/zone.agent.example")),
+        "paths are templated"
+    );
     assert!(files.iter().any(|(n, _)| n == "zone.agent.example"));
     assert_eq!(b1["hash"], ext::bundle_hash(&files));
-    assert_eq!(b1["signature"], ext::sign_bundle(&key, v1, b1["hash"].as_str().unwrap(), &files), "agent can verify with its key");
+    assert_eq!(
+        b1["signature"],
+        ext::sign_bundle(&key, v1, b1["hash"].as_str().unwrap(), &files),
+        "agent can verify with its key"
+    );
 
     // a change publishes a new version; unchanged content keeps the version
-    let (_, b1b, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    let (_, b1b, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(&tokn),
+        None
+    );
     assert_eq!(b1b["version"], b1["version"]);
-    let zid = env.state.db.query_one("SELECT CAST(id AS varchar) FROM zones WHERE domain='agent.example'", &[]).await.unwrap().get::<_, String>(0);
-    call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t), j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60})));
-    let (_, b2, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60}))
+    );
+    let (_, b2, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(&tokn),
+        None
+    );
     assert!(b2["version"].as_i64().unwrap() > v1);
 
     // status before ack: behind; after ack: in sync; failed ack is visible
     let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
     assert_eq!(list[0]["in_sync"], false);
-    let (st, _, _) = call!(app, post, &format!("/api/v1/agents/{id}/ack"), Some(&tokn), j(serde_json::json!({"version": b2["version"], "ok": true})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/agents/{id}/ack"),
+        Some(&tokn),
+        j(serde_json::json!({"version": b2["version"], "ok": true}))
+    );
     assert_eq!(st, 200);
     let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
-    assert_eq!((list[0]["in_sync"].clone(), list[0]["applied_version"].clone()), (serde_json::json!(true), b2["version"].clone()));
-    call!(app, post, &format!("/api/v1/agents/{id}/ack"), Some(&tokn), j(serde_json::json!({"version": 99, "ok": false, "error": "disk full"})));
+    assert_eq!(
+        (
+            list[0]["in_sync"].clone(),
+            list[0]["applied_version"].clone()
+        ),
+        (serde_json::json!(true), b2["version"].clone())
+    );
+    call!(
+        app,
+        post,
+        &format!("/api/v1/agents/{id}/ack"),
+        Some(&tokn),
+        j(serde_json::json!({"version": 99, "ok": false, "error": "disk full"}))
+    );
     let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
     assert_eq!(list[0]["last_error"], "disk full");
-    assert_eq!(list[0]["applied_version"], b2["version"], "a failed apply never advances the applied version");
+    assert_eq!(
+        list[0]["applied_version"], b2["version"],
+        "a failed apply never advances the applied version"
+    );
 
     // push = sync request delivered through the next heartbeat, cleared by the ack
-    let (st, body, _) = call!(app, post, "/api/v1/config/push", Some(&t), j(serde_json::json!({"agent_id": id, "zone_id": "", "zone_config": {}})));
-    assert_eq!((st, body["success"].clone()), (202, serde_json::json!(true)));
+    let (st, body, _) = call!(
+        app,
+        post,
+        "/api/v1/config/push",
+        Some(&t),
+        j(serde_json::json!({"agent_id": id, "zone_id": "", "zone_config": {}}))
+    );
+    assert_eq!(
+        (st, body["success"].clone()),
+        (202, serde_json::json!(true))
+    );
     let (_, hbb, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
     assert_eq!(hbb["sync_requested"], true);
-    call!(app, post, &format!("/api/v1/agents/{id}/ack"), Some(&tokn), j(serde_json::json!({"version": b2["version"]})));
+    call!(
+        app,
+        post,
+        &format!("/api/v1/agents/{id}/ack"),
+        Some(&tokn),
+        j(serde_json::json!({"version": b2["version"]}))
+    );
     let (_, hbb, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
     assert_eq!(hbb["sync_requested"], false);
-    let (st, _, _) = call!(app, post, "/api/v1/config/push", Some(&t), j(serde_json::json!({"agent_id": Uuid::new_v4().to_string(), "zone_id": "", "zone_config": {}})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/config/push",
+        Some(&t),
+        j(
+            serde_json::json!({"agent_id": Uuid::new_v4().to_string(), "zone_id": "", "zone_config": {}})
+        )
+    );
     assert_eq!(st, 404);
 
     // disabling revokes access to heartbeat, bundle and ack; re-enabling restores it
-    let (st, _, _) = call!(app, put, &format!("/api/v1/agents/{id}"), Some(&t), j(serde_json::json!({"enabled": false})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/agents/{id}"),
+        Some(&t),
+        j(serde_json::json!({"enabled": false}))
+    );
     assert_eq!(st, 200);
     for uri in [format!("/api/v1/agents/{id}/bundle")] {
         let (st, _, _) = call!(app, get, &uri, Some(&tokn), None);
@@ -639,13 +1464,34 @@ async fn agent_lifecycle_register_heartbeat_bundle_ack_push_disable() {
     let (st, _, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&tokn), j(hb()));
     assert_eq!(st, 404);
     let (_, list, _) = call!(app, get, "/api/v1/agents", Some(&t), None);
-    assert_eq!((list[0]["enabled"].clone(), list[0]["online"].clone()), (serde_json::json!(false), serde_json::json!(false)));
-    call!(app, put, &format!("/api/v1/agents/{id}"), Some(&t), j(serde_json::json!({"enabled": true})));
-    let (st, _, _) = call!(app, get, &format!("/api/v1/agents/{id}/bundle"), Some(&tokn), None);
+    assert_eq!(
+        (list[0]["enabled"].clone(), list[0]["online"].clone()),
+        (serde_json::json!(false), serde_json::json!(false))
+    );
+    call!(
+        app,
+        put,
+        &format!("/api/v1/agents/{id}"),
+        Some(&t),
+        j(serde_json::json!({"enabled": true}))
+    );
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(&tokn),
+        None
+    );
     assert_eq!(st, 200);
     // a non-admin cannot toggle agents
     let u = add_user(&env.state, "plain", "plain-pass-12", "user").await;
-    let (st, _, _) = call!(app, put, &format!("/api/v1/agents/{id}"), Some(&env.token(&u, "user")), j(serde_json::json!({"enabled": false})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/agents/{id}"),
+        Some(&env.token(&u, "user")),
+        j(serde_json::json!({"enabled": false}))
+    );
     assert_eq!(st, 403);
     env.cleanup().await;
 }
@@ -658,8 +1504,35 @@ async fn audit_trail_records_mutations() {
     make_zone(&env, &app, &t, "audit.example").await;
     let (st, body, _) = call!(app, get, "/api/v1/audit/logs", Some(&t), None);
     assert_eq!(st, 200);
-    let actions: Vec<String> = body["data"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap().to_string()).collect();
+    let actions: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap().to_string())
+        .collect();
     assert!(actions.contains(&"create_zone".to_string()), "{actions:?}");
+    let entry = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "create_zone")
+        .unwrap();
+    // The audit UI reads camelCase fields; keep the JSON contract aligned.
+    for field in [
+        "id",
+        "userId",
+        "resourceType",
+        "resourceId",
+        "details",
+        "ipAddress",
+        "createdAt",
+    ] {
+        assert!(
+            entry.get(field).is_some(),
+            "audit entry is missing {field}: {entry}"
+        );
+    }
+    assert_eq!(entry["resourceType"], "zone");
     env.cleanup().await;
 }
 
@@ -670,27 +1543,120 @@ async fn roles_viewer_is_read_only_and_create_user_honours_role() {
     let tadmin = env.token(&env.admin, "admin");
 
     // roles offered by the dashboard are accepted on create; junk is not
-    let (st, body, raw) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"vera","password":"viewer-pass-1","role":"viewer"})));
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(
+            serde_json::json!({"username":"vera","password":"viewer-pass-1","role":"viewer","email":"vera@example.com"})
+        )
+    );
     assert_eq!(st, 201, "{raw}");
     assert_eq!(body["role"], "viewer");
-    let (st, _, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"zed","password":"zed-pass-1234","role":"superuser"})));
+    assert_eq!(body["email"], "vera@example.com");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(
+            serde_json::json!({"username":"bademail","password":"viewer-pass-1","email":"not-an-email"})
+        )
+    );
+    assert_eq!(st, 400, "invalid email must be rejected");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(
+            serde_json::json!({"username":"othermail","password":"viewer-pass-1","email":"VERA@example.com"})
+        )
+    );
+    assert_eq!(st, 409, "email uniqueness must ignore case");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(serde_json::json!({"username":"zed","password":"zed-pass-1234","role":"superuser"}))
+    );
     assert_eq!(st, 400);
-    let (st, _, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"ed","password":"editor-pass-1","role":"editor"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(serde_json::json!({"username":"ed","password":"editor-pass-1","role":"editor"}))
+    );
     assert_eq!(st, 400, "username too short");
-    let (st, _, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"edie","password":"editor-pass-1","role":"editor"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(serde_json::json!({"username":"edie","password":"editor-pass-1","role":"editor"}))
+    );
     assert_eq!(st, 201);
     // default role stays "user"
-    let (_, body, _) = call!(app, post, "/api/v1/users", Some(&tadmin), j(serde_json::json!({"username":"plain","password":"plain-pass-12"})));
+    let (_, body, _) = call!(
+        app,
+        post,
+        "/api/v1/users",
+        Some(&tadmin),
+        j(serde_json::json!({"username":"plain","password":"plain-pass-12"}))
+    );
     assert_eq!(body["role"], "user");
 
     // an admin may edit username and role in one request, but not demote themselves
     let (_, list, _) = call!(app, get, "/api/v1/users", Some(&tadmin), None);
-    let vera = list.as_array().unwrap().iter().find(|u| u["username"] == "vera").unwrap()["id"].as_str().unwrap().to_string();
-    let (st, _, _) = call!(app, put, &format!("/api/v1/users/{vera}"), Some(&tadmin), j(serde_json::json!({"username":"vera2","role":"viewer"})));
+    let vera = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "vera")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/users/{vera}"),
+        Some(&tadmin),
+        j(serde_json::json!({"username":"vera2","role":"viewer","email":"vera2@example.com"}))
+    );
     assert_eq!(st, 200);
-    let (_, me, _) = call!(app, get, &format!("/api/v1/users/{vera}"), Some(&tadmin), None);
+    let (_, me, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/users/{vera}"),
+        Some(&tadmin),
+        None
+    );
     assert_eq!(me["username"], "vera2");
-    let (st, _, _) = call!(app, put, &format!("/api/v1/users/{}", env.admin), Some(&tadmin), j(serde_json::json!({"role":"viewer"})));
+    assert_eq!(me["email"], "vera2@example.com");
+    let (_, list, _) = call!(app, get, "/api/v1/users", Some(&tadmin), None);
+    let listed = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "vera2")
+        .unwrap();
+    assert_eq!(listed["email"], "vera2@example.com");
+    assert!(
+        !listed["createdAt"].as_str().unwrap_or("").is_empty(),
+        "the Users page reads createdAt: {listed}"
+    );
+    assert!(listed.get("role").is_some() && listed.get("id").is_some());
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/users/{}", env.admin),
+        Some(&tadmin),
+        j(serde_json::json!({"role":"viewer"}))
+    );
     assert_eq!(st, 400);
 
     // viewer: reads fine, every write refused (even on a zone it owns)
@@ -699,13 +1665,37 @@ async fn roles_viewer_is_read_only_and_create_user_honours_role() {
     env.state.db.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'viewer.example', $2::text::uuid)", &[&owned, &vera]).await.unwrap();
     let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&tv), None);
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{owned}/records"), Some(&tv), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{owned}/records"),
+        Some(&tv),
+        None
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tv), j(serde_json::json!({"domain":"mine.example"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tv),
+        j(serde_json::json!({"domain":"mine.example"}))
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{owned}/records"), Some(&tv), j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{owned}/records"),
+        Some(&tv),
+        j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60}))
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{owned}"), Some(&tv), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{owned}"),
+        Some(&tv),
+        None
+    );
     assert_eq!(st, 403);
     // ...but it can still manage its own session
     let (st, _, _) = call!(app, post, "/api/v1/auth/logout", Some(&tv), None);
@@ -718,22 +1708,45 @@ async fn agents_can_be_deleted_and_import_accepts_priority() {
     let Some(env) = setup().await else { return };
     let app = app!(env);
     let t = env.token(&env.admin, "admin");
-    let (_, reg, _) = call!(app, post, "/api/v1/agents/register", Some(&t), j(serde_json::json!({"name":"a","addr":"10.0.0.9:1"})));
+    let (_, reg, _) = call!(
+        app,
+        post,
+        "/api/v1/agents/register",
+        Some(&t),
+        j(serde_json::json!({"name":"a","addr":"10.0.0.9:1"}))
+    );
     let id = reg["id"].as_str().unwrap().to_string();
     let (st, _, _) = call!(app, delete, &format!("/api/v1/agents/{id}"), Some(&t), None);
     assert_eq!(st, 200);
     let (st, _, _) = call!(app, delete, &format!("/api/v1/agents/{id}"), Some(&t), None);
     assert_eq!(st, 404);
     let token = reg["token"].as_str().unwrap().to_string();
-    let (st, _, _) = call!(app, post, "/api/v1/agents/heartbeat", Some(&token), j(serde_json::json!({"name":"a","addr":"10.0.0.9:1"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/agents/heartbeat",
+        Some(&token),
+        j(serde_json::json!({"name":"a","addr":"10.0.0.9:1"}))
+    );
     assert_eq!(st, 404, "a deleted agent can no longer check in");
 
     let zid = make_zone(&env, &app, &t, "prio.example").await;
-    let (st, body, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/import"), Some(&t),
-        j(serde_json::json!({"records":[{"name":"@","record_type":"MX","value":"mail.prio.example.","ttl":300,"priority":10}]})));
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/import"),
+        Some(&t),
+        j(
+            serde_json::json!({"records":[{"name":"@","record_type":"MX","value":"mail.prio.example.","ttl":300,"priority":10}]})
+        )
+    );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["imported"], 1);
-    assert!(std::fs::read_to_string(env.zone_file("prio.example")).unwrap().contains(" MX 10 mail.prio.example."));
+    assert!(
+        std::fs::read_to_string(env.zone_file("prio.example"))
+            .unwrap()
+            .contains(" MX 10 mail.prio.example.")
+    );
     env.cleanup().await;
 }
 
@@ -744,7 +1757,11 @@ async fn zone_sharing_levels() {
     let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
     let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
     let carol = add_user(&env.state, "carol", "carol-pass-1", "user").await;
-    let (ta, tb, tc) = (env.token(&alice, "user"), env.token(&bob, "user"), env.token(&carol, "user"));
+    let (ta, tb, tc) = (
+        env.token(&alice, "user"),
+        env.token(&bob, "user"),
+        env.token(&carol, "user"),
+    );
     let zid = make_zone(&env, &app, &ta, "shared.example").await;
     let rec = j(serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.1","ttl":60}));
 
@@ -753,58 +1770,181 @@ async fn zone_sharing_levels() {
     assert_eq!(st, 403);
     // owner shares: bob = editor, carol = viewer
     for (u, r) in [("bob", "editor"), ("carol", "viewer")] {
-        let (st, _, raw) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": u, "role": r})));
+        let (st, _, raw) = call!(
+            app,
+            put,
+            &format!("/api/v1/zones/{zid}/members"),
+            Some(&ta),
+            j(serde_json::json!({"username": u, "role": r}))
+        );
         assert_eq!(st, 200, "{raw}");
     }
     // sharing with the owner / bogus role / unknown user
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": "alice", "role": "editor"})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/members"),
+        Some(&ta),
+        j(serde_json::json!({"username": "alice", "role": "editor"}))
+    );
     assert_eq!(st, 400);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": "bob", "role": "owner"})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/members"),
+        Some(&ta),
+        j(serde_json::json!({"username": "bob", "role": "owner"}))
+    );
     assert_eq!(st, 400);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&ta), j(serde_json::json!({"username": "ghost", "role": "viewer"})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/members"),
+        Some(&ta),
+        j(serde_json::json!({"username": "ghost", "role": "viewer"}))
+    );
     assert_eq!(st, 404);
 
     // listing shows the shared zone with the caller's role
     let (_, zl, _) = call!(app, get, "/api/v1/zones", Some(&tb), None);
-    assert_eq!((zl["data"][0]["domain"].clone(), zl["data"][0]["access"].clone()), (serde_json::json!("shared.example"), serde_json::json!("editor")));
+    assert_eq!(
+        (
+            zl["data"][0]["domain"].clone(),
+            zl["data"][0]["access"].clone()
+        ),
+        (
+            serde_json::json!("shared.example"),
+            serde_json::json!("editor")
+        )
+    );
     let (_, zl, _) = call!(app, get, "/api/v1/zones", Some(&tc), None);
     assert_eq!(zl["data"][0]["access"], "viewer");
 
     // editor: read + write records and geo rules, but not rename/delete/share
-    let (st, r, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&tb), rec.clone());
+    let (st, r, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&tb),
+        rec.clone()
+    );
     assert_eq!(st, 201);
     let rid = r["id"].as_str().unwrap().to_string();
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&tb), j(serde_json::json!({"ttl": 120})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/records/{rid}"),
+        Some(&tb),
+        j(serde_json::json!({"ttl": 120}))
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&tb), j(serde_json::json!({"domain": "renamed.example"})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}"),
+        Some(&tb),
+        j(serde_json::json!({"domain": "renamed.example"}))
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}"), Some(&tb), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{zid}"),
+        Some(&tb),
+        None
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&tb), j(serde_json::json!({"username": "carol", "role": "editor"})));
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/members"),
+        Some(&tb),
+        j(serde_json::json!({"username": "carol", "role": "editor"}))
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, post, "/api/v1/georules", Some(&tb), j(serde_json::json!({"zone_id": zid,"match_type":"default","match_value":"","target":"192.0.2.9"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/georules",
+        Some(&tb),
+        j(
+            serde_json::json!({"zone_id": zid,"match_type":"default","match_value":"","target":"192.0.2.9"})
+        )
+    );
     assert_eq!(st, 201);
     let (_, gl, _) = call!(app, get, "/api/v1/georules", Some(&tb), None);
-    assert_eq!(gl.as_array().unwrap().len(), 1, "shared zone's rules are listed for members");
+    assert_eq!(
+        gl.as_array().unwrap().len(),
+        1,
+        "shared zone's rules are listed for members"
+    );
 
     // viewer: read only
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&tc), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&tc),
+        None
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/export"), Some(&tc), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/export"),
+        Some(&tc),
+        None
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&tc), rec.clone());
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&tc),
+        rec.clone()
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}/records/{rid}"), Some(&tc), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{zid}/records/{rid}"),
+        Some(&tc),
+        None
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/import"), Some(&tc), j(serde_json::json!({"records":[{"name":"x","record_type":"A","value":"192.0.2.3"}]})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/import"),
+        Some(&tc),
+        j(serde_json::json!({"records":[{"name":"x","record_type":"A","value":"192.0.2.3"}]}))
+    );
     assert_eq!(st, 403);
 
     // members list is visible to members; unshare takes effect immediately
-    let (_, ml, _) = call!(app, get, &format!("/api/v1/zones/{zid}/members"), Some(&tc), None);
+    let (_, ml, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/members"),
+        Some(&tc),
+        None
+    );
     assert_eq!(ml.as_array().unwrap().len(), 2);
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{zid}/members/{bob}"), Some(&ta), None);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{zid}/members/{bob}"),
+        Some(&ta),
+        None
+    );
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&tb), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&tb),
+        None
+    );
     assert_eq!(st, 403);
     env.cleanup().await;
 }
@@ -816,27 +1956,91 @@ async fn zone_history_and_rollback() {
     let t = env.token(&env.admin, "admin");
     let zid = make_zone(&env, &app, &t, "hist.example").await;
     let url = format!("/api/v1/zones/{zid}/records");
-    let (_, r1, _) = call!(app, post, &url, Some(&t), j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.1","ttl":60})));
-    let (_, revs, _) = call!(app, get, &format!("/api/v1/zones/{zid}/revisions"), Some(&t), None);
+    let (_, r1, _) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.1","ttl":60}))
+    );
+    let (_, revs, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/revisions"),
+        Some(&t),
+        None
+    );
     let good = revs[0]["id"].as_str().unwrap().to_string();
     assert_eq!(revs[0]["record_count"], 4, "2 NS + SOA + the new A");
     // a bad edit, then rollback
-    call!(app, delete, &format!("{url}/{}", r1["id"].as_str().unwrap()), Some(&t), None);
-    call!(app, post, &url, Some(&t), j(serde_json::json!({"name":"oops","record_type":"A","value":"192.0.2.66","ttl":60})));
-    assert!(std::fs::read_to_string(env.zone_file("hist.example")).unwrap().contains("192.0.2.66"));
-    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/revisions/{good}/restore"), Some(&t), None);
+    call!(
+        app,
+        delete,
+        &format!("{url}/{}", r1["id"].as_str().unwrap()),
+        Some(&t),
+        None
+    );
+    call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        j(serde_json::json!({"name":"oops","record_type":"A","value":"192.0.2.66","ttl":60}))
+    );
+    assert!(
+        std::fs::read_to_string(env.zone_file("hist.example"))
+            .unwrap()
+            .contains("192.0.2.66")
+    );
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/revisions/{good}/restore"),
+        Some(&t),
+        None
+    );
     assert_eq!(st, 200, "{raw}");
     let zone = std::fs::read_to_string(env.zone_file("hist.example")).unwrap();
-    assert!(zone.contains("192.0.2.1") && !zone.contains("192.0.2.66"), "{zone}");
-    let (_, revs2, _) = call!(app, get, &format!("/api/v1/zones/{zid}/revisions"), Some(&t), None);
-    assert!(revs2.as_array().unwrap().len() > revs.as_array().unwrap().len(), "restore is itself recorded (and undoable)");
+    assert!(
+        zone.contains("192.0.2.1") && !zone.contains("192.0.2.66"),
+        "{zone}"
+    );
+    let (_, revs2, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/revisions"),
+        Some(&t),
+        None
+    );
+    assert!(
+        revs2.as_array().unwrap().len() > revs.as_array().unwrap().len(),
+        "restore is itself recorded (and undoable)"
+    );
     // unknown revision, other tenant
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/revisions/{}/restore", Uuid::new_v4()), Some(&t), None);
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/revisions/{}/restore", Uuid::new_v4()),
+        Some(&t),
+        None
+    );
     assert_eq!(st, 404);
     let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/revisions/{good}/restore"), Some(&env.token(&bob, "user")), None);
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/revisions/{good}/restore"),
+        Some(&env.token(&bob, "user")),
+        None
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/revisions"), Some(&env.token(&bob, "user")), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/revisions"),
+        Some(&env.token(&bob, "user")),
+        None
+    );
     assert_eq!(st, 403);
     env.cleanup().await;
 }
@@ -844,17 +2048,27 @@ async fn zone_history_and_rollback() {
 /// Minimal UDP resolver that answers TXT queries with a fixed value.
 async fn fake_txt_resolver(txt: &'static str) -> std::net::SocketAddr {
     use hickory_proto::op::Message;
-    use hickory_proto::rr::{rdata::TXT, RData, Record};
+    use hickory_proto::rr::{RData, Record, rdata::TXT};
     let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr = sock.local_addr().unwrap();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 1500];
         loop {
-            let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
-            let Ok(q) = Message::from_vec(&buf[..n]) else { continue };
+            let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                return;
+            };
+            let Ok(q) = Message::from_vec(&buf[..n]) else {
+                continue;
+            };
             let mut r = Message::response(q.id(), q.op_code());
-            for qq in q.queries() { r.add_query(qq.clone());
-                r.add_answer(Record::from_rdata(qq.name().clone(), 60, RData::TXT(TXT::new(vec![txt.to_string()])))); }
+            for qq in q.queries() {
+                r.add_query(qq.clone());
+                r.add_answer(Record::from_rdata(
+                    qq.name().clone(),
+                    60,
+                    RData::TXT(TXT::new(vec![txt.to_string()])),
+                ));
+            }
             let _ = sock.send_to(&r.to_vec().unwrap(), from).await;
         }
     });
@@ -872,34 +2086,76 @@ async fn domain_verification_gates_publication() {
 
     // non-admin zones are pending: created, not served
     let app = app!(env);
-    let (st, z, raw) = call!(app, post, "/api/v1/zones", Some(&ta), j(serde_json::json!({"domain":"pending.example"})));
+    let (st, z, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&ta),
+        j(serde_json::json!({"domain":"pending.example"}))
+    );
     assert_eq!(st, 201, "{raw}");
     assert_eq!(z["status"], "pending");
     let token = z["verification"]["value"].as_str().unwrap().to_string();
-    assert_eq!(z["verification"]["name"], "_outis-challenge.pending.example");
-    assert!(!env.zone_file("pending.example").exists(), "unverified zone must not be served");
+    assert_eq!(
+        z["verification"]["name"],
+        "_outis-challenge.pending.example"
+    );
+    assert!(
+        !env.zone_file("pending.example").exists(),
+        "unverified zone must not be served"
+    );
     let zid = z["id"].as_str().unwrap().to_string();
     // admins are trusted
-    let (_, az, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain":"admin.example"})));
+    let (_, az, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tadmin),
+        j(serde_json::json!({"domain":"admin.example"}))
+    );
     assert_eq!(az["status"], "active");
     assert!(env.zone_file("admin.example").is_file());
 
     // wrong token published -> refused, still not served
     let resolver_bad = fake_txt_resolver("outis-verify=nope").await;
-    env.state.verify_resolver = resolver_bad; env.full.inner = env.state.clone();
+    env.state.verify_resolver = resolver_bad;
+    env.full.inner = env.state.clone();
     let app = app!(env);
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/verify"), Some(&ta), None);
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/verify"),
+        Some(&ta),
+        None
+    );
     assert_eq!(st, 422);
     assert!(!env.zone_file("pending.example").exists());
     // correct token -> activated and published; someone else cannot trigger it
     let leaked: &'static str = Box::leak(token.into_boxed_str());
-    env.state.verify_resolver = fake_txt_resolver(leaked).await; env.full.inner = env.state.clone();
+    env.state.verify_resolver = fake_txt_resolver(leaked).await;
+    env.full.inner = env.state.clone();
     let app = app!(env);
     let bob = add_user(&env.state, "bob", "bob-pass-123", "user").await;
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/verify"), Some(&env.token(&bob, "user")), None);
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/verify"),
+        Some(&env.token(&bob, "user")),
+        None
+    );
     assert_eq!(st, 403);
-    let (st, body, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/verify"), Some(&ta), None);
-    assert_eq!((st, body["status"].clone()), (200, serde_json::json!("active")), "{raw}");
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/verify"),
+        Some(&ta),
+        None
+    );
+    assert_eq!(
+        (st, body["status"].clone()),
+        (200, serde_json::json!("active")),
+        "{raw}"
+    );
     assert!(env.zone_file("pending.example").is_file());
     env.cleanup().await;
 }
@@ -913,7 +2169,9 @@ async fn mfa_enrol_login_and_disable() {
     let tok = env.token(&uid, "user");
     let login = |otp: Option<&str>| {
         let mut b = serde_json::json!({"username": name, "password": "mfa-password-1"});
-        if let Some(o) = otp { b["otp"] = serde_json::json!(o); }
+        if let Some(o) = otp {
+            b["otp"] = serde_json::json!(o);
+        }
         j(b)
     };
     let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
@@ -921,32 +2179,154 @@ async fn mfa_enrol_login_and_disable() {
 
     let (st, setup, _) = call!(app, post, "/api/v1/auth/mfa/setup", Some(&tok), None);
     assert_eq!(st, 200);
-    let secret = data_encoding::BASE32_NOPAD.decode(setup["secret"].as_str().unwrap().as_bytes()).unwrap();
-    assert!(setup["otpauth_url"].as_str().unwrap().starts_with("otpauth://totp/"));
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(setup["secret"].as_str().unwrap().as_bytes())
+        .unwrap();
+    assert!(
+        setup["otpauth_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/")
+    );
     // not active until a valid code proves the app works
     let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
     assert_eq!(st, 200);
-    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/enable", Some(&tok), j(serde_json::json!({"code": "000000"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/mfa/enable",
+        Some(&tok),
+        j(serde_json::json!({"code": "000000"}))
+    );
     assert_eq!(st, 400);
-    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/enable", Some(&tok), j(serde_json::json!({"code": ext::totp_now(&secret)})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/mfa/enable",
+        Some(&tok),
+        j(serde_json::json!({"code": ext::totp_now(&secret)}))
+    );
     assert_eq!(st, 200);
 
     // now a password alone is not enough
     let (st, b, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
-    assert_eq!((st, b["error"].clone()), (401, serde_json::json!("mfa_required")));
-    let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(Some("123456")));
+    assert_eq!(
+        (st, b["error"].clone()),
+        (401, serde_json::json!("mfa_required"))
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        login(Some("123456"))
+    );
     assert_eq!(st, 401);
-    let (st, b, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(Some(&ext::totp_now(&secret))));
+    let (st, b, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        login(Some(&ext::totp_now(&secret)))
+    );
     assert_eq!(st, 200);
     assert!(b["token"].is_string());
+    let tok_after_enable = b["token"].as_str().unwrap().to_string();
+
+    // enabling MFA invalidated the session that existed before it
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&tok), None);
+    assert_eq!(
+        st, 401,
+        "pre-MFA access token must not survive MFA enablement"
+    );
 
     // turning it off needs password AND code
-    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/disable", Some(&tok), j(serde_json::json!({"code": ext::totp_now(&secret), "password": "wrong"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/mfa/disable",
+        Some(&tok_after_enable),
+        j(serde_json::json!({"code": ext::totp_now(&secret), "password": "wrong"}))
+    );
     assert_eq!(st, 403);
-    let (st, _, _) = call!(app, post, "/api/v1/auth/mfa/disable", Some(&tok), j(serde_json::json!({"code": ext::totp_now(&secret), "password": "mfa-password-1"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/mfa/disable",
+        Some(&tok_after_enable),
+        j(serde_json::json!({"code": ext::totp_now(&secret), "password": "mfa-password-1"}))
+    );
     assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, "/api/v1/auth/me", Some(&tok_after_enable), None);
+    assert_eq!(
+        st, 401,
+        "disabling MFA must invalidate the pre-change session"
+    );
     let (st, _, _) = call!(app, post, "/api/v1/auth/login", None::<&str>, login(None));
     assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn database_errors_do_not_look_like_missing_zones_or_agents() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "db-error.example").await;
+    let (st, reg, raw) = call!(
+        app,
+        post,
+        "/api/v1/agents/register",
+        Some(&t),
+        j(serde_json::json!({"name":"db-error","addr":"10.0.0.44:5353"}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let (aid, atok) = (
+        reg["id"].as_str().unwrap().to_string(),
+        reg["token"].as_str().unwrap().to_string(),
+    );
+    let hb = || serde_json::json!({"id": aid, "addr": "10.0.0.44:5353"});
+
+    env.state
+        .db
+        .batch_execute("ALTER TABLE nameservers RENAME TO nameservers_gone")
+        .await
+        .unwrap();
+    let (st, _, raw) = call!(app, get, &format!("/api/v1/zones/{zid}"), Some(&t), None);
+    assert_eq!(
+        st, 500,
+        "a nameserver read failure is not a missing zone: {raw}"
+    );
+    env.state
+        .db
+        .batch_execute("ALTER TABLE nameservers_gone RENAME TO nameservers")
+        .await
+        .unwrap();
+
+    env.state
+        .db
+        .batch_execute("ALTER TABLE agents RENAME TO agents_gone")
+        .await
+        .unwrap();
+    let (st, _, raw) = call!(app, post, "/api/v1/agents/heartbeat", Some(&atok), j(hb()));
+    assert_eq!(
+        st, 500,
+        "an agent read failure is not an authentication failure: {raw}"
+    );
+    env.state
+        .db
+        .batch_execute("ALTER TABLE agents_gone RENAME TO agents")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        call!(app, get, &format!("/api/v1/zones/{zid}"), Some(&t), None).0,
+        200
+    );
+    assert_eq!(
+        call!(app, post, "/api/v1/agents/heartbeat", Some(&atok), j(hb())).0,
+        200
+    );
     env.cleanup().await;
 }
 
@@ -959,23 +2339,59 @@ async fn audit_pagination_filters_and_retention() {
         env.state.db.execute("INSERT INTO audit_logs (id, action, resource_type, created_at) VALUES ($1::text::uuid, $2, 'test', now() - ($3::int * interval '1 day'))",
             &[&Uuid::new_v4().to_string(), &if i % 2 == 0 { "even" } else { "odd" }, &(i * 100)]).await.unwrap();
     }
-    let page = |q: &str| { let uri = format!("/api/v1/audit/logs?{q}"); uri };
-    let (st, b, _) = call!(app, get, &page("limit=3&offset=0&resource_type=test"), Some(&t), None);
+    let page = |q: &str| {
+        let uri = format!("/api/v1/audit/logs?{q}");
+        uri
+    };
+    let (st, b, _) = call!(
+        app,
+        get,
+        &page("limit=3&offset=0&resource_type=test"),
+        Some(&t),
+        None
+    );
     assert_eq!(st, 200);
     assert_eq!(b["data"].as_array().unwrap().len(), 3);
-    let (_, b2, _) = call!(app, get, &page("limit=3&offset=3&resource_type=test"), Some(&t), None);
+    let (_, b2, _) = call!(
+        app,
+        get,
+        &page("limit=3&offset=3&resource_type=test"),
+        Some(&t),
+        None
+    );
     assert_ne!(b["data"][0]["id"], b2["data"][0]["id"], "pages differ");
-    let (_, even, _) = call!(app, get, &page("action=even&resource_type=test"), Some(&t), None);
+    let (_, even, _) = call!(
+        app,
+        get,
+        &page("action=even&resource_type=test"),
+        Some(&t),
+        None
+    );
     assert_eq!(even["data"].as_array().unwrap().len(), 4);
     // total count header
-    let r = test::TestRequest::get().uri(&page("limit=1&resource_type=test")).insert_header(("Authorization", format!("Bearer {t}"))).to_request();
+    let r = test::TestRequest::get()
+        .uri(&page("limit=1&resource_type=test"))
+        .insert_header(("Authorization", format!("Bearer {t}")))
+        .to_request();
     let resp = test::call_service(&app, r).await;
     assert_eq!(resp.headers().get("X-Total-Count").unwrap(), "7");
     // limit is clamped, non-admins refused
-    let (_, big, _) = call!(app, get, &page("limit=100000&resource_type=test"), Some(&t), None);
+    let (_, big, _) = call!(
+        app,
+        get,
+        &page("limit=100000&resource_type=test"),
+        Some(&t),
+        None
+    );
     assert_eq!(big["data"].as_array().unwrap().len(), 7);
     let u = add_user(&env.state, "plain", "plain-pass-12", "user").await;
-    let (st, _, _) = call!(app, get, "/api/v1/audit/logs", Some(&env.token(&u, "user")), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs",
+        Some(&env.token(&u, "user")),
+        None
+    );
     assert_eq!(st, 403);
     // retention removes only what is older than the window
     let removed = ext::purge_audit(&env.state.db, 250).await.unwrap();
@@ -989,15 +2405,445 @@ async fn zone_rename_rewrites_soa_and_ecs_flag() {
     let app = app!(env);
     let t = env.token(&env.admin, "admin");
     let zid = make_zone(&env, &app, &t, "old.example").await;
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"domain": "new.example", "ecs_enabled": true})));
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}"),
+        Some(&t),
+        j(serde_json::json!({"domain": "new.example", "ecs_enabled": true}))
+    );
     assert_eq!(st, 200, "{raw}");
-    let soa: String = env.state.db.query_one("SELECT value FROM records WHERE record_type='SOA'", &[]).await.unwrap().get(0);
-    assert!(!soa.contains("old.example") && soa.contains("hostmaster.new.example"), "{soa}");
+    let soa: String = env
+        .state
+        .db
+        .query_one("SELECT value FROM records WHERE record_type='SOA'", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        !soa.contains("old.example") && soa.contains("hostmaster.new.example"),
+        "{soa}"
+    );
     let zone = std::fs::read_to_string(env.zone_file("new.example")).unwrap();
-    assert!(zone.contains("hostmaster.new.example.") && !zone.contains("old.example"), "{zone}");
+    assert!(
+        zone.contains("hostmaster.new.example.") && !zone.contains("old.example"),
+        "{zone}"
+    );
     assert!(!env.zone_file("old.example").exists());
     let (_, g, _) = call!(app, get, &format!("/api/v1/zones/{zid}"), Some(&t), None);
     assert_eq!(g["data"]["ecs_enabled"], true);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn zone_creation_rolls_back_when_default_records_fail() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    env.state.db.batch_execute(
+        "CREATE FUNCTION reject_soa() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN IF NEW.record_type = 'SOA' THEN RAISE EXCEPTION 'simulated SOA insert failure'; END IF; RETURN NEW; END $$; \
+         CREATE TRIGGER reject_soa BEFORE INSERT ON records FOR EACH ROW EXECUTE FUNCTION reject_soa();",
+    ).await.unwrap();
+
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&t),
+        j(serde_json::json!({"domain":"rollback.example"}))
+    );
+    assert_eq!(st, 500, "{raw}");
+    let zones: i64 = env
+        .state
+        .db
+        .query_one("SELECT count(*) FROM zones", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let records: i64 = env
+        .state
+        .db
+        .query_one("SELECT count(*) FROM records", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        zones, 0,
+        "a failed default-record insert must not leave a zone behind"
+    );
+    assert_eq!(records, 0, "the NS insert must roll back with the zone");
+
+    env.state
+        .db
+        .batch_execute("DROP TRIGGER reject_soa ON records; DROP FUNCTION reject_soa();")
+        .await
+        .unwrap();
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&t),
+        j(serde_json::json!({"domain":"rollback.example"}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn failed_zone_delete_publication_restores_the_zone() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "keepme.example").await;
+
+    std::fs::remove_dir_all(env.dir.path()).unwrap();
+    std::fs::write(env.dir.path(), b"not a directory").unwrap();
+    let (st, body, raw) = call!(app, delete, &format!("/api/v1/zones/{zid}"), Some(&t), None);
+    assert_eq!(st, 500, "{raw}");
+    assert_eq!(body["error"], "publish_failed");
+    let status: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT status FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        status, "active",
+        "a failed delete must restore the previous status"
+    );
+
+    std::fs::remove_file(env.dir.path()).unwrap();
+    std::fs::create_dir_all(env.dir.path()).unwrap();
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn dnssec_publication_fails_closed_when_a_key_file_is_missing() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "failclosed.example").await;
+    let (st, key, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/enable"),
+        Some(&t),
+        j(serde_json::json!({}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let tag = key["keys"][0]["key_tag"].as_i64().unwrap();
+    let key_file = env
+        .dir
+        .path()
+        .join("dnssec-keys")
+        .join(format!("failclosed.example.{tag}.pem"));
+    assert!(key_file.is_file());
+    let named_before = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    let zone_before = std::fs::read_to_string(env.zone_file("failclosed.example")).unwrap();
+
+    std::fs::remove_file(&key_file).unwrap();
+    env.state.db.execute("UPDATE records SET value = '192.0.2.99' WHERE record_type = 'A' AND CAST(zone_id AS varchar) = $1", &[&zid]).await.unwrap();
+    let (st, _, raw) = call!(app, post, "/api/v1/dns/generate", Some(&t), None);
+    assert_eq!(
+        st, 500,
+        "publication must fail instead of serving the signed zone unsigned: {raw}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap(),
+        named_before
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.zone_file("failclosed.example")).unwrap(),
+        zone_before
+    );
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn agents_are_default_denied_and_only_receive_assigned_zones() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+    let z1 = make_zone(&env, &app, &admin, "agent-a.example").await;
+    let _z2 = make_zone(&env, &app, &admin, "agent-b.example").await;
+
+    let register = |name: &str, addr: &str| j(serde_json::json!({"name": name, "addr": addr}));
+    let (st, a, raw) = call!(
+        app,
+        post,
+        "/api/v1/agents/register",
+        Some(&admin),
+        register("edge-a", "10.0.0.1:53")
+    );
+    assert_eq!(st, 201, "{raw}");
+    let (st, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/agents/register",
+        Some(&admin),
+        register("edge-b", "10.0.0.2:53")
+    );
+    assert_eq!(st, 201, "{raw}");
+    let (aid, atok) = (a["id"].as_str().unwrap(), a["token"].as_str().unwrap());
+    let (bid, btok) = (b["id"].as_str().unwrap(), b["token"].as_str().unwrap());
+
+    let bundle = |id: &str, _token: &str| format!("/api/v1/agents/{id}/bundle");
+    let (st, _empty, raw) = call!(app, get, &bundle(aid, atok), Some(atok), None);
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        !raw.contains("agent-a.example") && !raw.contains("agent-b.example"),
+        "unassigned agent must not receive zones: {raw}"
+    );
+    let (st, cfg, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{aid}/config"),
+        Some(atok),
+        None
+    );
+    assert_eq!(st, 200);
+    assert_eq!(
+        cfg["zones"].as_array().unwrap().len(),
+        0,
+        "legacy config endpoint must also default-deny"
+    );
+
+    let (st, assigned, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/agents/{aid}/zones"),
+        Some(&admin),
+        j(serde_json::json!({"zone_ids":[z1]}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(assigned["zones"].as_array().unwrap().len(), 1);
+    let (st, one, raw) = call!(app, get, &bundle(aid, atok), Some(atok), None);
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        raw.contains("agent-a.example") && !raw.contains("agent-b.example"),
+        "agent got another agent's zone: {raw}"
+    );
+    let (st, cfg, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{aid}/config"),
+        Some(atok),
+        None
+    );
+    assert_eq!(st, 200);
+    assert_eq!(cfg["zones"].as_array().unwrap().len(), 1);
+    assert_eq!(cfg["zones"][0]["domain"], "agent-a.example");
+    assert!(
+        one["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "zone.agent-a.example")
+    );
+
+    let (st, empty, _) = call!(app, get, &bundle(bid, btok), Some(btok), None);
+    assert_eq!(st, 200);
+    assert!(
+        !empty["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"].as_str().unwrap_or("").starts_with("zone.")),
+        "unassigned agent received a zone file"
+    );
+    assert_eq!(
+        call!(
+            app,
+            get,
+            &format!("/api/v1/agents/{aid}/zones"),
+            Some(atok),
+            None
+        )
+        .0,
+        401,
+        "agents cannot administer assignments"
+    );
+
+    let (st, hb, raw) = call!(
+        app,
+        post,
+        "/api/v1/agents/heartbeat",
+        Some(atok),
+        j(serde_json::json!({"id": aid, "name": "edge-a", "addr": "10.0.0.1:53"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(hb["agent_id"], aid);
+    assert_eq!(
+        call!(
+            app,
+            post,
+            "/api/v1/agents/heartbeat",
+            Some(btok),
+            j(serde_json::json!({"id": aid, "addr": "10.0.0.1:53"}))
+        )
+        .0,
+        401
+    );
+    env.state
+        .db
+        .execute(
+            "UPDATE agents SET token_sha256 = NULL WHERE CAST(id AS varchar) = $1",
+            &[&aid],
+        )
+        .await
+        .unwrap();
+    let (st, hb, raw) = call!(
+        app,
+        post,
+        "/api/v1/agents/heartbeat",
+        Some(atok),
+        j(serde_json::json!({"name": "edge-a", "addr": "10.0.0.1:53"}))
+    );
+    assert_eq!(st, 200, "legacy heartbeat must keep working: {raw}");
+    assert_eq!(hb["agent_id"], aid);
+    let fp: Option<String> = env
+        .state
+        .db
+        .query_one(
+            "SELECT token_sha256 FROM agents WHERE CAST(id AS varchar) = $1",
+            &[&aid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        fp.is_some(),
+        "legacy authentication must upgrade to a token fingerprint"
+    );
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn legacy_heartbeat_argon2_work_is_bounded_and_rate_limited() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let addr = "198.51.100.10:53";
+    let wrong = Argon2::default()
+        .hash_password(b"wrong-legacy-token", &generate_salt())
+        .unwrap()
+        .to_string();
+    let right = Argon2::default()
+        .hash_password(b"right-legacy-token", &generate_salt())
+        .unwrap()
+        .to_string();
+    for i in 0..9 {
+        let hash = if i == 8 { &right } else { &wrong };
+        env.state.db.execute(
+            "INSERT INTO agents (id, name, addr, token_hash, created_at) VALUES ($1::text::uuid, $2, $3, $4, now() - ($5::int * interval '1 second'))",
+            &[&Uuid::new_v4().to_string(), &format!("legacy-{i}"), &addr, hash, &(8 - i)],
+        ).await.unwrap();
+    }
+    // Only the eight oldest legacy rows are checked: the ninth row's (correct)
+    // token must not be verified, otherwise a single request can force unbounded
+    // Argon2 work by creating many agents with the same address.
+    let req = test::TestRequest::post()
+        .uri("/api/v1/agents/heartbeat")
+        .peer_addr("198.51.100.77:5000".parse().unwrap())
+        .insert_header(("Authorization", "Bearer right-legacy-token"))
+        .set_json(serde_json::json!({"name": "legacy-8", "addr": addr}))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 401);
+
+    // Each address gets a fixed budget for legacy attempts, so even the bounded
+    // eight verifications per request cannot be repeated indefinitely.
+    let bucket = "agent-legacy:198.51.100.78";
+    for _ in 0..20 {
+        assert!(
+            shared::limited(&env.state.db, bucket, 20, 60, || true)
+                .await
+                .is_none()
+        );
+    }
+    let req = test::TestRequest::post()
+        .uri("/api/v1/agents/heartbeat")
+        .peer_addr("198.51.100.78:5000".parse().unwrap())
+        .insert_header(("Authorization", "Bearer wrong-legacy-token"))
+        .set_json(serde_json::json!({"name": "legacy-0", "addr": addr}))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 429);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn server_create_update_delete_are_audited_and_update_in_place() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let (st, created, raw) = call!(
+        app,
+        post,
+        "/api/v1/servers",
+        Some(&t),
+        j(serde_json::json!({
+            "name":"edge-one","address":"127.0.0.1","port":5353,"region":"eu","enabled":true,
+            "dnssec":false,"enable_logging":true,"max_cache_ttl":3600,"min_cache_ttl":60
+        }))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let (st, updated, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/servers/{id}"),
+        Some(&t),
+        j(serde_json::json!({
+            "name":"edge-one-renamed","address":"127.0.0.1","port":5354,"region":"us","enabled":false,
+            "dnssec":true,"enable_logging":false,"max_cache_ttl":7200,"min_cache_ttl":120
+        }))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(updated["id"], id);
+    let (_, list, _) = call!(app, get, "/api/v1/servers", Some(&t), None);
+    assert_eq!(
+        list.as_array().unwrap().len(),
+        1,
+        "editing must not create a duplicate server"
+    );
+    let row = list[0].as_object().unwrap();
+    assert_eq!(row["name"], "edge-one-renamed");
+    assert_eq!(row["port"], 5354);
+    assert_eq!(row["dnssec"], true);
+    assert_eq!(row["enabled"], false);
+    let (st, _, raw) = call!(
+        app,
+        delete,
+        &format!("/api/v1/servers/{id}"),
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    let (st, logs, _) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs?resource_type=server&limit=20",
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200);
+    let actions: Vec<String> = logs["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l["action"].as_str().map(str::to_string))
+        .collect();
+    for action in ["create_server", "update_server", "delete_server"] {
+        assert!(
+            actions.contains(&action.to_string()),
+            "missing {action}: {actions:?}"
+        );
+    }
     env.cleanup().await;
 }
 
@@ -1016,20 +2862,48 @@ async fn status_endpoints_and_server_health() {
     // server health is a real TCP probe: one listener, one dead port
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let live = l.local_addr().unwrap().port();
-    let dead = { let d = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); d.local_addr().unwrap().port() };
+    let dead = {
+        let d = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        d.local_addr().unwrap().port()
+    };
     for (n, port) in [("up", live), ("down", dead)] {
-        let (st, _, raw) = call!(app, post, "/api/v1/servers", Some(&t), j(serde_json::json!({"name": n, "address": "127.0.0.1", "port": port})));
+        let (st, _, raw) = call!(
+            app,
+            post,
+            "/api/v1/servers",
+            Some(&t),
+            j(serde_json::json!({"name": n, "address": "127.0.0.1", "port": port}))
+        );
         assert_eq!(st, 201, "{raw}");
     }
     let (_, list, _) = call!(app, get, "/api/v1/servers", Some(&t), None);
-    let status_of = |n: &str| list.as_array().unwrap().iter().find(|s| s["name"] == n).unwrap()["status"].clone();
+    let status_of = |n: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == n)
+            .unwrap()["status"]
+            .clone()
+    };
     assert_eq!(status_of("up"), "running");
     assert_eq!(status_of("down"), "unreachable");
     // non-admin cannot read publication status, nor the list of servers
     let u = add_user(&env.state, "plain", "plain-pass-12", "user").await;
-    let (st, _, _) = call!(app, get, "/api/v1/servers", Some(&env.token(&u, "user")), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/servers",
+        Some(&env.token(&u, "user")),
+        None
+    );
     assert_eq!(st, 403, "server addresses are admin-only");
-    let (st, _, _) = call!(app, get, "/api/v1/dns/status", Some(&env.token(&u, "user")), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/dns/status",
+        Some(&env.token(&u, "user")),
+        None
+    );
     assert_eq!(st, 403);
     // query metrics need DNS_METRICS_URL
     let (st, _, _) = call!(app, get, "/api/v1/metrics/queries", Some(&t), None);
@@ -1046,10 +2920,22 @@ async fn query_metrics_are_read_from_the_dns_server_exporter() {
     tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         loop {
-            let Ok((mut s, _)) = listener.accept().await else { return };
-            let mut b = [0u8; 512]; let _ = s.read(&mut b).await;
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
+            let mut b = [0u8; 512];
+            let _ = s.read(&mut b).await;
             let body = "# TYPE hickory_request_total counter\nhickory_request_total{protocol=\"udp\"} 40\nhickory_request_total{protocol=\"tcp\"} 2\nunrelated 9\n";
-            let _ = s.write_all(format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).as_bytes()).await;
+            let _ = s
+                .write_all(
+                    format!(
+                        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                )
+                .await;
         }
     });
     env.state.dns_metrics_url = Some(format!("http://127.0.0.1:{port}/metrics"));
@@ -1067,18 +2953,27 @@ async fn pool_replaces_dropped_connections() {
     let Some(env) = setup().await else { return };
     // a dedicated pool whose sessions can be told apart from other tests' sessions
     let url = std::env::var("TEST_DATABASE_URL").unwrap();
-    let marked = if url.contains('?') { format!("{url}&application_name=pooltest") } else { format!("{url}?application_name=pooltest") };
+    let marked = if url.contains('?') {
+        format!("{url}&application_name=pooltest")
+    } else {
+        format!("{url}?application_name=pooltest")
+    };
     let pool = Pool::connect(&marked, 3, None).await.expect("pool");
     assert_eq!(pool.healthy(), 3);
     let (c, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { let _ = conn.await; });
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
     let n = c.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'pooltest'", &[]).await.unwrap();
     assert_eq!(n, 4, "3 pooled + 1 reserved transaction connection");
     // within a few seconds the supervisors have reconnected and queries work again
     let mut ok = false;
     for _ in 0..40 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        if pool.healthy() == 3 && pool.query_one("SELECT 1", &[]).await.is_ok() { ok = true; break; }
+        if pool.healthy() == 3 && pool.query_one("SELECT 1", &[]).await.is_ok() {
+            ok = true;
+            break;
+        }
     }
     assert!(ok, "pool must recover after its connections were killed");
     env.cleanup().await;
@@ -1087,29 +2982,92 @@ async fn pool_replaces_dropped_connections() {
 #[::core::prelude::v1::test]
 fn startup_checks_reject_placeholders() {
     let good = "k8Vx0pZq3mT7wRn2Yb9LcHs5Df6GjA1e";
-    assert!(startup_problems(good, "postgres://u:s3cr3tX9@db/x", Some("a-long-unique-pw-1"), false).is_empty());
-    assert!(!startup_problems("CHANGE_ME_to_a_random_value_please_0000", "postgres://u:x@db/x", None, false).is_empty());
-    assert!(!startup_problems("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "postgres://u:x@db/x", None, false).is_empty());
-    assert!(!startup_problems(good, "postgres://postgres:CHANGE_ME_STRONG_PASSWORD@db/x", None, false).is_empty());
+    assert!(
+        startup_problems(
+            good,
+            "postgres://u:s3cr3tX9@db/x",
+            Some("a-long-unique-pw-1"),
+            false
+        )
+        .is_empty()
+    );
+    assert!(
+        !startup_problems(
+            "CHANGE_ME_to_a_random_value_please_0000",
+            "postgres://u:x@db/x",
+            None,
+            false
+        )
+        .is_empty()
+    );
+    assert!(
+        !startup_problems(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "postgres://u:x@db/x",
+            None,
+            false
+        )
+        .is_empty()
+    );
+    assert!(
+        !startup_problems(
+            good,
+            "postgres://postgres:CHANGE_ME_STRONG_PASSWORD@db/x",
+            None,
+            false
+        )
+        .is_empty()
+    );
     assert!(!startup_problems(good, "postgres://postgres:password@db/x", None, false).is_empty());
-    assert!(!startup_problems(good, "postgres://u:s3cr3t@db/x", Some("admin123"), false).is_empty());
+    assert!(
+        !startup_problems(good, "postgres://u:s3cr3t@db/x", Some("admin123"), false).is_empty()
+    );
     assert!(!startup_problems(good, "postgres://u:s3cr3t@db/x", Some("short"), false).is_empty());
-    assert!(!startup_problems(good, "postgres://u:s3cr3t@db/x", Some("a-long-unique-pw-1"), true).is_empty(), "FORCE_BOOTSTRAP is flagged");
+    assert!(
+        !startup_problems(
+            good,
+            "postgres://u:s3cr3t@db/x",
+            Some("a-long-unique-pw-1"),
+            true
+        )
+        .is_empty(),
+        "FORCE_BOOTSTRAP is flagged"
+    );
 }
 
 #[::core::prelude::v1::test]
 fn forwarded_for_is_only_trusted_from_trusted_proxies() {
     let trusted = ext::parse_trusted_proxies("10.0.0.0/8, 192.0.2.1, junk");
     assert_eq!(trusted.len(), 2);
-    let mk = |peer: &str, xff: &str| test::TestRequest::get().peer_addr(peer.parse().unwrap()).insert_header(("X-Forwarded-For", xff)).to_http_request();
+    let mk = |peer: &str, xff: &str| {
+        test::TestRequest::get()
+            .peer_addr(peer.parse().unwrap())
+            .insert_header(("X-Forwarded-For", xff))
+            .to_http_request()
+    };
     // untrusted peer: header ignored (cannot be spoofed)
-    assert_eq!(ext::client_ip(&mk("203.0.113.9:1", "1.2.3.4"), &trusted), Some("203.0.113.9".parse().unwrap()));
+    assert_eq!(
+        ext::client_ip(&mk("203.0.113.9:1", "1.2.3.4"), &trusted),
+        Some("203.0.113.9".parse().unwrap())
+    );
     // trusted proxy: the right-most non-proxy address wins, left-most entries are attacker controlled
-    assert_eq!(ext::client_ip(&mk("10.1.1.1:1", "6.6.6.6, 198.51.100.7, 10.2.2.2"), &trusted), Some("198.51.100.7".parse().unwrap()));
+    assert_eq!(
+        ext::client_ip(
+            &mk("10.1.1.1:1", "6.6.6.6, 198.51.100.7, 10.2.2.2"),
+            &trusted
+        ),
+        Some("198.51.100.7".parse().unwrap())
+    );
     // no proxies configured: never trust the header
-    assert_eq!(ext::client_ip(&mk("10.1.1.1:1", "1.2.3.4"), &[]), Some("10.1.1.1".parse().unwrap()));
+    assert_eq!(
+        ext::client_ip(&mk("10.1.1.1:1", "1.2.3.4"), &[]),
+        Some("10.1.1.1".parse().unwrap())
+    );
     // header absent or garbage from a trusted proxy: fall back to the peer
-    assert_eq!(ext::client_ip(&mk("10.1.1.1:1", "not-an-ip"), &trusted), Some("10.1.1.1".parse().unwrap()));
+    assert_eq!(
+        ext::client_ip(&mk("10.1.1.1:1", "not-an-ip"), &trusted),
+        Some("10.1.1.1".parse().unwrap())
+    );
 }
 
 #[::core::prelude::v1::test]
@@ -1117,13 +3075,17 @@ fn listen_addresses_come_from_the_environment() {
     std::env::set_var("LISTEN_ADDRS_IPV6", "::, nonsense");
     std::env::set_var("LISTEN_ADDRS_IPV4", "192.0.2.5");
     let out = dns_builder::TomlConfigBuilder::from_env().build().unwrap();
-    std::env::remove_var("LISTEN_ADDRS_IPV6"); std::env::remove_var("LISTEN_ADDRS_IPV4");
+    std::env::remove_var("LISTEN_ADDRS_IPV6");
+    std::env::remove_var("LISTEN_ADDRS_IPV4");
     assert!(out.contains("listen_addrs_ipv4 = [\"192.0.2.5\"]"), "{out}");
     assert!(out.contains("listen_addrs_ipv6 = [\"::\"]"), "{out}");
     assert!(!out.contains("nonsense"));
     // default stays IPv4-only
     let d = dns_builder::TomlConfigBuilder::from_env().build().unwrap();
-    assert!(d.contains("listen_addrs_ipv4 = [\"0.0.0.0\"]") && !d.contains("ipv6"), "{d}");
+    assert!(
+        d.contains("listen_addrs_ipv4 = [\"0.0.0.0\"]") && !d.contains("ipv6"),
+        "{d}"
+    );
 }
 
 #[actix_web::test]
@@ -1131,18 +3093,43 @@ async fn metrics_endpoint_can_require_a_token() {
     let app = test::init_service(
         App::new()
             .wrap(actix_web::middleware::from_fn(metrics_guard))
-            .route("/metrics", web::get().to(|| async { HttpResponse::Ok().body("m 1") }))
-            .route("/health", web::get().to(|| async { HttpResponse::Ok().finish() })),
-    ).await;
+            .route(
+                "/metrics",
+                web::get().to(|| async { HttpResponse::Ok().body("m 1") }),
+            )
+            .route(
+                "/health",
+                web::get().to(|| async { HttpResponse::Ok().finish() }),
+            ),
+    )
+    .await;
     std::env::remove_var("METRICS_TOKEN");
     let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
-    assert_eq!(r.status().as_u16(), 200, "open when no token is configured (previous behaviour)");
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "open when no token is configured (previous behaviour)"
+    );
     std::env::set_var("METRICS_TOKEN", "scrape-secret-123");
     let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
     assert_eq!(r.status().as_u16(), 401);
-    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").insert_header(("Authorization", "Bearer wrong")).to_request()).await;
+    let r = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/metrics")
+            .insert_header(("Authorization", "Bearer wrong"))
+            .to_request(),
+    )
+    .await;
     assert_eq!(r.status().as_u16(), 401);
-    let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").insert_header(("Authorization", "Bearer scrape-secret-123")).to_request()).await;
+    let r = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/metrics")
+            .insert_header(("Authorization", "Bearer scrape-secret-123"))
+            .to_request(),
+    )
+    .await;
     assert_eq!(r.status().as_u16(), 200);
     let r = test::call_service(&app, test::TestRequest::get().uri("/health").to_request()).await;
     assert_eq!(r.status().as_u16(), 200, "only /metrics is guarded");
@@ -1159,12 +3146,28 @@ async fn publication_gauges_are_exported_on_metrics() {
     // the gauges live in the registry shared with the HTTP metrics middleware
     let app = test::init_service(
         App::new()
-            .wrap(actix_web_prom::PrometheusMetricsBuilder::new("t").registry(prometheus::default_registry().clone()).endpoint("/metrics").build().unwrap())
-            .route("/x", web::get().to(|| async { HttpResponse::Ok().finish() })),
-    ).await;
+            .wrap(
+                actix_web_prom::PrometheusMetricsBuilder::new("t")
+                    .registry(prometheus::default_registry().clone())
+                    .endpoint("/metrics")
+                    .build()
+                    .unwrap(),
+            )
+            .route(
+                "/x",
+                web::get().to(|| async { HttpResponse::Ok().finish() }),
+            ),
+    )
+    .await;
     let r = test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
     let body = String::from_utf8(test::read_body(r).await.to_vec()).unwrap();
-    for g in ["outis_zones_published", "outis_zones_failed", "outis_last_publish_ok 1", "outis_last_publish_timestamp_seconds", "outis_bundle_version"] {
+    for g in [
+        "outis_zones_published",
+        "outis_zones_failed",
+        "outis_last_publish_ok 1",
+        "outis_last_publish_timestamp_seconds",
+        "outis_bundle_version",
+    ] {
         assert!(body.contains(g), "missing {g} in /metrics");
     }
     env.cleanup().await;
@@ -1184,9 +3187,15 @@ async fn zones_records_users_support_opt_in_pagination_and_search() {
     // helper: GET and return (body, X-Total-Count)
     macro_rules! get_total {
         ($uri:expr) => {{
-            let r = test::TestRequest::get().uri($uri).insert_header(("Authorization", format!("Bearer {t}"))).to_request();
+            let r = test::TestRequest::get()
+                .uri($uri)
+                .insert_header(("Authorization", format!("Bearer {t}")))
+                .to_request();
             let resp = test::call_service(&app, r).await;
-            let total = resp.headers().get("X-Total-Count").map(|v| v.to_str().unwrap().to_string());
+            let total = resp
+                .headers()
+                .get("X-Total-Count")
+                .map(|v| v.to_str().unwrap().to_string());
             let body: serde_json::Value = test::read_body_json(resp).await;
             (body, total)
         }};
@@ -1207,18 +3216,33 @@ async fn zones_records_users_support_opt_in_pagination_and_search() {
     // records
     let zid = make_zone(&env, &app, &t, "rec.test").await;
     for i in 0..7 {
-        let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t),
-            j(serde_json::json!({"name": format!("h{i}"), "record_type": "A", "value": format!("192.0.2.{}", i + 1), "ttl": 300})));
+        let (st, _, raw) = call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/records"),
+            Some(&t),
+            j(
+                serde_json::json!({"name": format!("h{i}"), "record_type": "A", "value": format!("192.0.2.{}", i + 1), "ttl": 300})
+            )
+        );
         assert_eq!(st, 201, "{raw}");
     }
     let (b, total) = get_total!(&format!("/api/v1/zones/{zid}/records?limit=3&offset=3"));
     assert_eq!(b.as_array().unwrap().len(), 3);
-    assert_eq!(total.as_deref(), Some("10"), "7 added + 3 default apex records");
+    assert_eq!(
+        total.as_deref(),
+        Some("10"),
+        "7 added + 3 default apex records"
+    );
     let (b, total) = get_total!(&format!("/api/v1/zones/{zid}/records?q=192.0.2.5"));
     assert_eq!(b.as_array().unwrap().len(), 1);
     assert_eq!(total.as_deref(), Some("1"));
     let (b, _) = get_total!(&format!("/api/v1/zones/{zid}/records"));
-    assert_eq!(b.as_array().unwrap().len(), 10, "no params = everything (backward compatible)");
+    assert_eq!(
+        b.as_array().unwrap().len(),
+        10,
+        "no params = everything (backward compatible)"
+    );
     // users
     let (b, total) = get_total!("/api/v1/users?limit=2&offset=2&q=pgu");
     assert_eq!(b.as_array().unwrap().len(), 2);
@@ -1231,7 +3255,10 @@ async fn zones_records_users_support_opt_in_pagination_and_search() {
     let tt = env.token(&u, "user");
     let (st, _, _) = call!(app, get, "/api/v1/users?limit=1", Some(&tt), None);
     assert_eq!(st, 403);
-    let r = test::TestRequest::get().uri("/api/v1/zones?limit=10").insert_header(("Authorization", format!("Bearer {tt}"))).to_request();
+    let r = test::TestRequest::get()
+        .uri("/api/v1/zones?limit=10")
+        .insert_header(("Authorization", format!("Bearer {tt}")))
+        .to_request();
     let resp = test::call_service(&app, r).await;
     assert_eq!(resp.headers().get("X-Total-Count").unwrap(), "0");
     env.cleanup().await;
@@ -1248,93 +3275,368 @@ async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
     assert!(!named().contains("keys = ["), "unsigned zones have no keys");
 
     // GeoDNS rules block enabling DNSSEC (their answers cannot be signed)
-    let (st, _, raw) = call!(app, post, "/api/v1/georules", Some(&t), j(serde_json::json!({"zone_id": zid, "match_type": "country", "match_value": "US", "target": "192.0.2.1"})));
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/georules",
+        Some(&t),
+        j(
+            serde_json::json!({"zone_id": zid, "match_type": "country", "match_value": "US", "target": "192.0.2.1"})
+        )
+    );
     assert_eq!(st, 201, "{raw}");
-    let (st, b, _) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({})));
-    assert_eq!((st, b["error"].as_str()), (409, Some("geodns_rules_present")));
+    let (st, b, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/enable"),
+        Some(&t),
+        j(serde_json::json!({}))
+    );
+    assert_eq!(
+        (st, b["error"].as_str()),
+        (409, Some("geodns_rules_present"))
+    );
     let rules = call!(app, get, "/api/v1/georules", Some(&t), None).1;
-    let rid = rules.as_array().or(rules["data"].as_array()).unwrap()[0]["id"].as_str().unwrap().to_string();
-    assert_eq!(call!(app, delete, &format!("/api/v1/georules/{rid}"), Some(&t), None).0, 200);
+    let rid = rules.as_array().or(rules["data"].as_array()).unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        call!(
+            app,
+            delete,
+            &format!("/api/v1/georules/{rid}"),
+            Some(&t),
+            None
+        )
+        .0,
+        200
+    );
 
     // bad algorithm; then enable with the default
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({"algorithm": "RSASHA1"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/enable"),
+        Some(&t),
+        j(serde_json::json!({"algorithm": "RSASHA1"}))
+    );
     assert_eq!(st, 400);
-    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({})));
+    let (st, b, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/enable"),
+        Some(&t),
+        j(serde_json::json!({}))
+    );
     assert_eq!(st, 201, "{raw}");
     assert_eq!(b["enabled"], true);
     let key = &b["keys"][0];
     assert_eq!(key["algorithm"], "ECDSAP256SHA256");
     assert_eq!(key["flags"], 257);
     assert_eq!(key["ds"].as_array().unwrap().len(), 2);
-    assert!(key["ds"][0]["text"].as_str().unwrap().starts_with("signed.test. IN DS "));
-    assert!(!raw.contains("PRIVATE KEY"), "private key material is never returned");
+    assert!(
+        key["ds"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("signed.test. IN DS ")
+    );
+    assert!(
+        !raw.contains("PRIVATE KEY"),
+        "private key material is never returned"
+    );
     // key file on disk with restricted mode; named.toml references it; geodns is off for the zone
     let tag = key["key_tag"].as_i64().unwrap();
-    let kf = env.dir.path().join("dnssec-keys").join(format!("signed.test.{tag}.pem"));
+    let kf = env
+        .dir
+        .path()
+        .join("dnssec-keys")
+        .join(format!("signed.test.{tag}.pem"));
     assert!(kf.is_file());
-    assert_eq!(std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777, 0o640);
-    assert!(std::fs::read_to_string(&kf).unwrap().starts_with("-----BEGIN PRIVATE KEY-----"));
+    assert_eq!(
+        std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert!(
+        std::fs::read_to_string(&kf)
+            .unwrap()
+            .starts_with("-----BEGIN PRIVATE KEY-----")
+    );
     let n = named();
-    assert!(n.contains(&format!("key_path = \"{}\"", kf.display())) && n.contains("algorithm = \"ECDSAP256SHA256\""), "{n}");
+    assert!(
+        n.contains(&format!("key_path = \"{}\"", kf.display()))
+            && n.contains("algorithm = \"ECDSAP256SHA256\""),
+        "{n}"
+    );
     // twice is refused
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/enable"), Some(&t), j(serde_json::json!({}))).0, 409);
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/enable"),
+            Some(&t),
+            j(serde_json::json!({}))
+        )
+        .0,
+        409
+    );
 
     // a signed zone refuses GeoDNS, renames
-    let (st, b, _) = call!(app, post, "/api/v1/georules", Some(&t), j(serde_json::json!({"zone_id": zid, "match_type": "country", "match_value": "US", "target": "192.0.2.1"})));
+    let (st, b, _) = call!(
+        app,
+        post,
+        "/api/v1/georules",
+        Some(&t),
+        j(
+            serde_json::json!({"zone_id": zid, "match_type": "country", "match_value": "US", "target": "192.0.2.1"})
+        )
+    );
     assert_eq!((st, b["error"].as_str()), (409, Some("dnssec_enabled")));
-    assert_eq!(call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"geodns_enabled": true}))).0, 409);
-    assert_eq!(call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"domain": "renamed.test"}))).0, 409);
+    assert_eq!(
+        call!(
+            app,
+            put,
+            &format!("/api/v1/zones/{zid}"),
+            Some(&t),
+            j(serde_json::json!({"geodns_enabled": true}))
+        )
+        .0,
+        409
+    );
+    assert_eq!(
+        call!(
+            app,
+            put,
+            &format!("/api/v1/zones/{zid}"),
+            Some(&t),
+            j(serde_json::json!({"domain": "renamed.test"}))
+        )
+        .0,
+        409
+    );
     // records can still change; the zone stays signed
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t), j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.9","ttl":300}))).0, 201);
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/records"),
+            Some(&t),
+            j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.9","ttl":300}))
+        )
+        .0,
+        201
+    );
     assert!(named().contains("keys = ["));
 
     // authorization: other tenants cannot see or change it, viewers can read but not change
     let other = add_user(&env.state, "other", "other-pass-123", "user").await;
     let ot = env.token(&other, "user");
-    assert_eq!(call!(app, get, &format!("/api/v1/zones/{zid}/dnssec"), Some(&ot), None).0, 403);
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&ot), j(serde_json::json!({}))).0, 403);
-    assert_eq!(call!(app, get, &format!("/api/v1/zones/{zid}/dnssec"), None::<&str>, None).0, 401);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{zid}/members"), Some(&t), j(serde_json::json!({"username": "other", "role": "viewer"})));
+    assert_eq!(
+        call!(
+            app,
+            get,
+            &format!("/api/v1/zones/{zid}/dnssec"),
+            Some(&ot),
+            None
+        )
+        .0,
+        403
+    );
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/rollover"),
+            Some(&ot),
+            j(serde_json::json!({}))
+        )
+        .0,
+        403
+    );
+    assert_eq!(
+        call!(
+            app,
+            get,
+            &format!("/api/v1/zones/{zid}/dnssec"),
+            None::<&str>,
+            None
+        )
+        .0,
+        401
+    );
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/members"),
+        Some(&t),
+        j(serde_json::json!({"username": "other", "role": "viewer"}))
+    );
     assert_eq!(st, 200, "share");
-    assert_eq!(call!(app, get, &format!("/api/v1/zones/{zid}/dnssec"), Some(&ot), None).0, 200);
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&ot), j(serde_json::json!({}))).0, 403);
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/disable"), Some(&ot), j(serde_json::json!({"confirm_ds_removed": true}))).0, 403);
+    assert_eq!(
+        call!(
+            app,
+            get,
+            &format!("/api/v1/zones/{zid}/dnssec"),
+            Some(&ot),
+            None
+        )
+        .0,
+        200
+    );
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/rollover"),
+            Some(&ot),
+            j(serde_json::json!({}))
+        )
+        .0,
+        403
+    );
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/disable"),
+            Some(&ot),
+            j(serde_json::json!({"confirm_ds_removed": true}))
+        )
+        .0,
+        403
+    );
 
     // rollover: second key joins, both are referenced; a second rollover is refused
-    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&t), j(serde_json::json!({"algorithm": "ED25519"})));
+    let (st, b, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/rollover"),
+        Some(&t),
+        j(serde_json::json!({"algorithm": "ED25519"}))
+    );
     assert_eq!(st, 201, "{raw}");
     assert_eq!(b["keys"].as_array().unwrap().len(), 2);
     assert_eq!(b["keys"][1]["status"], "new");
     assert_eq!(b["keys"][1]["algorithm"], "ED25519");
     assert_eq!(named().matches("key_path").count(), 2);
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover"), Some(&t), j(serde_json::json!({}))).0, 409);
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/rollover"),
+            Some(&t),
+            j(serde_json::json!({}))
+        )
+        .0,
+        409
+    );
     // completing retires the named key, keeps the other, and archives (not deletes) the private key
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"), Some(&t), j(serde_json::json!({"retire_key_tag": 1}))).0, 404);
-    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"), Some(&t), j(serde_json::json!({"retire_key_tag": tag})));
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"),
+            Some(&t),
+            j(serde_json::json!({"retire_key_tag": 1}))
+        )
+        .0,
+        404
+    );
+    let (st, b, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"),
+        Some(&t),
+        j(serde_json::json!({"retire_key_tag": tag}))
+    );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(b["keys"].as_array().unwrap().len(), 1);
     assert_eq!(b["keys"][0]["algorithm"], "ED25519");
     assert_eq!(b["keys"][0]["status"], "active");
     assert_eq!(named().matches("key_path").count(), 1);
-    assert!(!kf.exists() && env.dir.path().join("dnssec-keys/retired").join(format!("signed.test.{tag}.pem")).is_file());
+    assert!(
+        !kf.exists()
+            && env
+                .dir
+                .path()
+                .join("dnssec-keys/retired")
+                .join(format!("signed.test.{tag}.pem"))
+                .is_file()
+    );
     // the last key cannot be "completed" away
     let last = b["keys"][0]["key_tag"].as_i64().unwrap();
-    assert_eq!(call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"), Some(&t), j(serde_json::json!({"retire_key_tag": last}))).0, 409);
+    assert_eq!(
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"),
+            Some(&t),
+            j(serde_json::json!({"retire_key_tag": last}))
+        )
+        .0,
+        409
+    );
 
     // disabling needs confirmation that the DS is gone
-    let (st, b, _) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/disable"), Some(&t), j(serde_json::json!({})));
+    let (st, b, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/disable"),
+        Some(&t),
+        j(serde_json::json!({}))
+    );
     assert_eq!((st, b["error"].as_str()), (409, Some("ds_not_confirmed")));
-    assert!(named().contains("keys = ["), "nothing changed without confirmation");
-    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/dnssec/disable"), Some(&t), j(serde_json::json!({"confirm_ds_removed": true})));
+    assert!(
+        named().contains("keys = ["),
+        "nothing changed without confirmation"
+    );
+    let (st, b, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/disable"),
+        Some(&t),
+        j(serde_json::json!({"confirm_ds_removed": true}))
+    );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(b["enabled"], false);
     assert!(!named().contains("keys = ["));
     // after disabling, rename/GeoDNS work again
-    assert_eq!(call!(app, put, &format!("/api/v1/zones/{zid}"), Some(&t), j(serde_json::json!({"geodns_enabled": true}))).0, 200);
+    assert_eq!(
+        call!(
+            app,
+            put,
+            &format!("/api/v1/zones/{zid}"),
+            Some(&t),
+            j(serde_json::json!({"geodns_enabled": true}))
+        )
+        .0,
+        200
+    );
     // audit trail
-    let (_, logs, _) = call!(app, get, "/api/v1/audit/logs?resource_type=zone&limit=100", Some(&t), None);
-    let actions: Vec<String> = logs["data"].as_array().unwrap().iter().map(|l| l["action"].as_str().unwrap().to_string()).collect();
-    for a in ["dnssec_enable", "dnssec_rollover", "dnssec_rollover_complete", "dnssec_disable"] { assert!(actions.contains(&a.to_string()), "missing audit action {a}: {actions:?}"); }
+    let (_, logs, _) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs?resource_type=zone&limit=100",
+        Some(&t),
+        None
+    );
+    let actions: Vec<String> = logs["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["action"].as_str().unwrap().to_string())
+        .collect();
+    for a in [
+        "dnssec_enable",
+        "dnssec_rollover",
+        "dnssec_rollover_complete",
+        "dnssec_disable",
+    ] {
+        assert!(
+            actions.contains(&a.to_string()),
+            "missing audit action {a}: {actions:?}"
+        );
+    }
     env.cleanup().await;
 }
 
@@ -1342,19 +3644,39 @@ async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
 /// release) must upgrade in place: data kept, new columns/tables added, running twice is a no-op.
 #[actix_web::test]
 async fn legacy_schema_upgrades_in_place_keeping_data() {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else { eprintln!("SKIPPED: TEST_DATABASE_URL not set"); return };
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("SKIPPED: TEST_DATABASE_URL not set");
+        return;
+    };
     let schema = format!("t_{}", Uuid::new_v4().simple());
     let (c, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
-    tokio::spawn(async move { let _ = conn.await; });
-    c.batch_execute(&format!("CREATE SCHEMA {schema}; SET search_path TO {schema}")).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    c.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+    ))
+    .await
+    .unwrap();
     drop(c);
     let pool = Pool::connect(&url, 2, Some(&schema)).await.unwrap();
-    for f in ["legacy_001_initial_schema.sql", "legacy_002_add_nameservers.sql", "legacy_002_add_release_channels.sql"] {
-        let sql = std::fs::read_to_string(format!("{}/tests/fixtures/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
-        pool.batch_execute(&sql).await.unwrap_or_else(|e| panic!("legacy fixture {f}: {}", full_error_string(&e)));
+    for f in [
+        "legacy_001_initial_schema.sql",
+        "legacy_002_add_nameservers.sql",
+        "legacy_002_add_release_channels.sql",
+    ] {
+        let sql =
+            std::fs::read_to_string(format!("{}/tests/fixtures/{f}", env!("CARGO_MANIFEST_DIR")))
+                .unwrap();
+        pool.batch_execute(&sql)
+            .await
+            .unwrap_or_else(|e| panic!("legacy fixture {f}: {}", full_error_string(&e)));
     }
     // data written by the old release
-    let hash = Argon2::default().hash_password(b"old-admin-pass-1", &generate_salt()).unwrap().to_string();
+    let hash = Argon2::default()
+        .hash_password(b"old-admin-pass-1", &generate_salt())
+        .unwrap()
+        .to_string();
     let (uid, zid) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
     pool.execute("INSERT INTO users (id, username, password_hash, role) VALUES ($1::text::uuid, 'legacyadmin', $2, 'admin')", &[&uid, &hash]).await.unwrap();
     pool.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'legacy.example', $2::text::uuid)", &[&zid, &uid]).await.unwrap();
@@ -1363,33 +3685,96 @@ async fn legacy_schema_upgrades_in_place_keeping_data() {
             .unwrap_or_else(|e| panic!("record {i}: {}", full_error_string(&e)));
     }
     // upgrade, twice (idempotent)
-    migrate_db(&*pool).await.unwrap_or_else(|e| panic!("first upgrade: {}", full_error_string(&e)));
-    migrate_db(&*pool).await.unwrap_or_else(|e| panic!("second upgrade: {}", full_error_string(&e)));
+    migrate_db(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("first upgrade: {}", full_error_string(&e)));
+    migrate_db(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("second upgrade: {}", full_error_string(&e)));
     // data intact
-    assert_eq!(pool.query_one("SELECT count(*) FROM records WHERE name = 'www'", &[]).await.unwrap().get::<_, i64>(0), 2);
-    let z = pool.query_one("SELECT status, ecs_enabled, dnssec_enabled FROM zones WHERE domain = 'legacy.example'", &[]).await.unwrap();
-    assert_eq!((z.get::<_, String>(0), z.get::<_, bool>(1), z.get::<_, bool>(2)), ("active".to_string(), false, false));
-    for t in ["zone_members", "zone_revisions", "dnssec_keys", "publish_state"] {
-        let n: i64 = pool.query_one(&format!("SELECT count(*) FROM {t}"), &[]).await.unwrap_or_else(|e| panic!("table {t} missing: {}", full_error_string(&e))).get(0);
+    assert_eq!(
+        pool.query_one("SELECT count(*) FROM records WHERE name = 'www'", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    let z = pool
+        .query_one(
+            "SELECT status, ecs_enabled, dnssec_enabled FROM zones WHERE domain = 'legacy.example'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            z.get::<_, String>(0),
+            z.get::<_, bool>(1),
+            z.get::<_, bool>(2)
+        ),
+        ("active".to_string(), false, false)
+    );
+    for t in [
+        "zone_members",
+        "zone_revisions",
+        "dnssec_keys",
+        "publish_state",
+    ] {
+        let n: i64 = pool
+            .query_one(&format!("SELECT count(*) FROM {t}"), &[])
+            .await
+            .unwrap_or_else(|e| panic!("table {t} missing: {}", full_error_string(&e)))
+            .get(0);
         assert!(n >= 0);
     }
     // the old unique constraint no longer prevents an RRset with several values (already inserted above) and
     // the upgraded database serves the legacy account and publishes the legacy zone
     let dir = tempfile::tempdir().unwrap();
     let state = AppState {
-        db: pool.clone(), jwt_secret: "unit-test-secret-unit-test-secret-1234".into(),
+        db: pool.clone(),
+        jwt_secret: "unit-test-secret-unit-test-secret-1234".into(),
         dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
-        verify_resolver: "127.0.0.1:9".parse().unwrap(), verify_domains: false, dns_metrics_url: None, lookup_resolvers: vec![],
+        verify_resolver: "127.0.0.1:9".parse().unwrap(),
+        verify_domains: false,
+        dns_metrics_url: None,
+        lookup_resolvers: vec![],
     };
-    let full = FullState { inner: state.clone(), geo: Arc::new(tokio::sync::Mutex::new(GeoState { db: None })), processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())) };
-    let env = Env { state, full, dir, schema: schema.clone(), admin: uid };
+    let full = FullState {
+        inner: state.clone(),
+        geo: Arc::new(tokio::sync::Mutex::new(GeoState { db: None })),
+        processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    };
+    let env = Env {
+        state,
+        full,
+        dir,
+        schema: schema.clone(),
+        admin: uid,
+    };
     let app = app!(env);
-    let (st, b, raw) = call!(app, post, "/api/v1/auth/login", None::<&str>, j(serde_json::json!({"username": "legacyadmin", "password": "old-admin-pass-1"})));
+    let (st, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username": "legacyadmin", "password": "old-admin-pass-1"}))
+    );
     assert_eq!(st, 200, "{raw}");
     let tok = b["token"].as_str().unwrap().to_string();
-    let (_, recs, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&tok), None);
+    let (_, recs, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&tok),
+        None
+    );
     assert_eq!(recs.as_array().unwrap().len(), 2);
-    let rep = env.state.dns_manager.regenerate_zones(env.state.db.clone()).await.unwrap();
+    let rep = env
+        .state
+        .dns_manager
+        .regenerate_zones(env.state.db.clone())
+        .await
+        .unwrap();
     assert!(rep.failed.is_empty(), "{:?}", rep.failed);
     let zf = std::fs::read_to_string(env.zone_file("legacy.example")).unwrap();
     assert!(zf.contains("192.0.2.1") && zf.contains("192.0.2.2"));
@@ -1403,12 +3788,29 @@ async fn very_long_record_values_never_crash_the_api() {
     let t = env.token(&env.admin, "admin");
     let zid = make_zone(&env, &app, &t, "long.test").await;
     for len in [255usize, 4_095, 4_096, 20_000] {
-        let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{zid}/records"), Some(&t),
-            j(serde_json::json!({"name": format!("t{len}"), "record_type": "TXT", "value": "a".repeat(len), "ttl": 300})));
-        assert!(st == 201 || st == 400, "TXT of {len} chars must be accepted or refused cleanly, got {st}: {}", &raw[..raw.len().min(200)]);
+        let (st, _, raw) = call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zid}/records"),
+            Some(&t),
+            j(
+                serde_json::json!({"name": format!("t{len}"), "record_type": "TXT", "value": "a".repeat(len), "ttl": 300})
+            )
+        );
+        assert!(
+            st == 201 || st == 400,
+            "TXT of {len} chars must be accepted or refused cleanly, got {st}: {}",
+            &raw[..raw.len().min(200)]
+        );
     }
     // the API is still serving and the published zone is intact
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{zid}/records"), Some(&t), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        None
+    );
     assert_eq!(st, 200);
     let zf = std::fs::read_to_string(env.zone_file("long.test")).unwrap();
     assert!(zf.contains("SOA"));
@@ -1426,7 +3828,10 @@ async fn publication_is_serialised_across_api_instances() {
     let started = std::time::Instant::now();
     let publish = tokio::spawn(async move { st.dns_manager.regenerate_zones(st.db.clone()).await });
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-    assert!(!publish.is_finished(), "publication must wait for the other instance");
+    assert!(
+        !publish.is_finished(),
+        "publication must wait for the other instance"
+    );
     drop(held);
     let rep = publish.await.unwrap().unwrap();
     assert!(rep.failed.is_empty());
@@ -1440,10 +3845,15 @@ async fn publication_is_serialised_across_api_instances() {
 
 /// UDP+TCP fake resolver answering every supported type; `big.example` is truncated over UDP.
 async fn fake_multi_resolver() -> std::net::SocketAddr {
+    use hickory_proto::dnssec::{
+        Algorithm, DigestType, PublicKeyBuf,
+        rdata::{DNSKEY, DS},
+    };
     use hickory_proto::op::{Message, ResponseCode};
-    use hickory_proto::rr::rdata::{caa::KeyValue, A, AAAA, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT};
+    use hickory_proto::rr::rdata::{
+        A, AAAA, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, caa::KeyValue,
+    };
     use hickory_proto::rr::{Name, RData, Record, RecordType};
-    use hickory_proto::dnssec::{rdata::{DNSKEY, DS}, Algorithm, DigestType, PublicKeyBuf};
     fn answer(q: &Message, over_udp: bool) -> Vec<u8> {
         let mut r = Message::response(q.id(), q.op_code());
         r.set_recursion_available(true);
@@ -1451,27 +3861,121 @@ async fn fake_multi_resolver() -> std::net::SocketAddr {
             r.add_query(qq.clone());
             let n = qq.name().clone();
             let s = n.to_ascii();
-            if s.starts_with("nx.") { r.set_response_code(ResponseCode::NXDomain);
-                r.add_authority(Record::from_rdata(Name::from_ascii("example.").unwrap(), 900, RData::SOA(SOA::new(Name::from_ascii("ns.example.").unwrap(), Name::from_ascii("h.example.").unwrap(), 1, 2, 3, 4, 900)))); continue; }
-            if s.starts_with("nodata.") { r.add_authority(Record::from_rdata(Name::from_ascii("example.").unwrap(), 777, RData::SOA(SOA::new(Name::from_ascii("ns.example.").unwrap(), Name::from_ascii("h.example.").unwrap(), 1, 2, 3, 4, 777)))); continue; }
-            if s.starts_with("big.") && over_udp { r.set_truncated(true); continue; }
+            if s.starts_with("nx.") {
+                r.set_response_code(ResponseCode::NXDomain);
+                r.add_authority(Record::from_rdata(
+                    Name::from_ascii("example.").unwrap(),
+                    900,
+                    RData::SOA(SOA::new(
+                        Name::from_ascii("ns.example.").unwrap(),
+                        Name::from_ascii("h.example.").unwrap(),
+                        1,
+                        2,
+                        3,
+                        4,
+                        900,
+                    )),
+                ));
+                continue;
+            }
+            if s.starts_with("nodata.") {
+                r.add_authority(Record::from_rdata(
+                    Name::from_ascii("example.").unwrap(),
+                    777,
+                    RData::SOA(SOA::new(
+                        Name::from_ascii("ns.example.").unwrap(),
+                        Name::from_ascii("h.example.").unwrap(),
+                        1,
+                        2,
+                        3,
+                        4,
+                        777,
+                    )),
+                ));
+                continue;
+            }
+            if s.starts_with("big.") && over_udp {
+                r.set_truncated(true);
+                continue;
+            }
             let t = |x: RData, ttl: u32| Record::from_rdata(n.clone(), ttl, x);
             let rr = match qq.query_type() {
                 RecordType::A => Some(t(RData::A(A::new(192, 0, 2, 1)), 301)),
-                RecordType::AAAA => Some(t(RData::AAAA(AAAA::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)), 302)),
-                RecordType::MX => Some(t(RData::MX(MX::new(10, Name::from_ascii("mail.example.").unwrap())), 303)),
+                RecordType::AAAA => Some(t(
+                    RData::AAAA(AAAA::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                    302,
+                )),
+                RecordType::MX => Some(t(
+                    RData::MX(MX::new(10, Name::from_ascii("mail.example.").unwrap())),
+                    303,
+                )),
                 RecordType::TXT => Some(t(RData::TXT(TXT::new(vec!["v=spf1 -all".into()])), 304)),
-                RecordType::NS => Some(t(RData::NS(NS(Name::from_ascii("ns1.example.").unwrap())), 305)),
-                RecordType::CNAME => Some(t(RData::CNAME(CNAME(Name::from_ascii("target.example.").unwrap())), 306)),
-                RecordType::SOA => Some(t(RData::SOA(SOA::new(Name::from_ascii("ns1.example.").unwrap(), Name::from_ascii("hostmaster.example.").unwrap(), 2024010101, 7200, 3600, 1209600, 300)), 307)),
-                RecordType::SRV => Some(t(RData::SRV(SRV::new(5, 6, 5060, Name::from_ascii("sip.example.").unwrap())), 308)),
-                RecordType::PTR => Some(t(RData::PTR(PTR(Name::from_ascii("host.example.").unwrap())), 309)),
-                RecordType::CAA => Some(t(RData::CAA(CAA::new_issue(false, Some(Name::from_ascii("letsencrypt.org").unwrap()), Vec::<KeyValue>::new())), 310)),
-                RecordType::DNSKEY => Some(t(RData::DNSSEC(hickory_proto::dnssec::rdata::DNSSECRData::DNSKEY(DNSKEY::new(true, true, false, PublicKeyBuf::new(vec![7u8; 64], Algorithm::ECDSAP256SHA256)))), 311)),
-                RecordType::DS => Some(t(RData::DNSSEC(hickory_proto::dnssec::rdata::DNSSECRData::DS(DS::new(12345, Algorithm::ECDSAP256SHA256, DigestType::SHA256, vec![0xab; 32]))), 312)),
+                RecordType::NS => Some(t(
+                    RData::NS(NS(Name::from_ascii("ns1.example.").unwrap())),
+                    305,
+                )),
+                RecordType::CNAME => Some(t(
+                    RData::CNAME(CNAME(Name::from_ascii("target.example.").unwrap())),
+                    306,
+                )),
+                RecordType::SOA => Some(t(
+                    RData::SOA(SOA::new(
+                        Name::from_ascii("ns1.example.").unwrap(),
+                        Name::from_ascii("hostmaster.example.").unwrap(),
+                        2024010101,
+                        7200,
+                        3600,
+                        1209600,
+                        300,
+                    )),
+                    307,
+                )),
+                RecordType::SRV => Some(t(
+                    RData::SRV(SRV::new(
+                        5,
+                        6,
+                        5060,
+                        Name::from_ascii("sip.example.").unwrap(),
+                    )),
+                    308,
+                )),
+                RecordType::PTR => Some(t(
+                    RData::PTR(PTR(Name::from_ascii("host.example.").unwrap())),
+                    309,
+                )),
+                RecordType::CAA => Some(t(
+                    RData::CAA(CAA::new_issue(
+                        false,
+                        Some(Name::from_ascii("letsencrypt.org").unwrap()),
+                        Vec::<KeyValue>::new(),
+                    )),
+                    310,
+                )),
+                RecordType::DNSKEY => Some(t(
+                    RData::DNSSEC(hickory_proto::dnssec::rdata::DNSSECRData::DNSKEY(
+                        DNSKEY::new(
+                            true,
+                            true,
+                            false,
+                            PublicKeyBuf::new(vec![7u8; 64], Algorithm::ECDSAP256SHA256),
+                        ),
+                    )),
+                    311,
+                )),
+                RecordType::DS => Some(t(
+                    RData::DNSSEC(hickory_proto::dnssec::rdata::DNSSECRData::DS(DS::new(
+                        12345,
+                        Algorithm::ECDSAP256SHA256,
+                        DigestType::SHA256,
+                        vec![0xab; 32],
+                    ))),
+                    312,
+                )),
                 _ => None,
             };
-            if let Some(rr) = rr { r.add_answer(rr); }
+            if let Some(rr) = rr {
+                r.add_answer(rr);
+            }
         }
         r.to_vec().unwrap()
     }
@@ -1481,22 +3985,35 @@ async fn fake_multi_resolver() -> std::net::SocketAddr {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 1500];
         loop {
-            let Ok((n, from)) = udp.recv_from(&mut buf).await else { return };
-            let Ok(q) = Message::from_vec(&buf[..n]) else { continue };
+            let Ok((n, from)) = udp.recv_from(&mut buf).await else {
+                return;
+            };
+            let Ok(q) = Message::from_vec(&buf[..n]) else {
+                continue;
+            };
             let _ = udp.send_to(&answer(&q, true), from).await;
         }
     });
     tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         loop {
-            let Ok((mut s, _)) = tcp.accept().await else { return };
+            let Ok((mut s, _)) = tcp.accept().await else {
+                return;
+            };
             let mut l = [0u8; 2];
-            if s.read_exact(&mut l).await.is_err() { continue; }
+            if s.read_exact(&mut l).await.is_err() {
+                continue;
+            }
             let mut b = vec![0u8; u16::from_be_bytes(l) as usize];
-            if s.read_exact(&mut b).await.is_err() { continue; }
-            let Ok(q) = Message::from_vec(&b) else { continue };
+            if s.read_exact(&mut b).await.is_err() {
+                continue;
+            }
+            let Ok(q) = Message::from_vec(&b) else {
+                continue;
+            };
             let a = answer(&q, false);
-            let mut out = (a.len() as u16).to_be_bytes().to_vec(); out.extend(a);
+            let mut out = (a.len() as u16).to_be_bytes().to_vec();
+            out.extend(a);
             let _ = s.write_all(&out).await;
         }
     });
@@ -1506,50 +4023,127 @@ async fn fake_multi_resolver() -> std::net::SocketAddr {
 #[actix_web::test]
 async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
     let Some(mut env) = setup().await else { return };
-    env.state.lookup_resolvers = lookup::parse_resolvers(&fake_multi_resolver().await.to_string()).unwrap(); env.full.inner = env.state.clone();
+    env.state.lookup_resolvers =
+        lookup::parse_resolvers(&fake_multi_resolver().await.to_string()).unwrap();
+    env.full.inner = env.state.clone();
     let user = add_user(&env.state, "lookup-user", "lookup-pass-1", "user").await;
     let viewer = add_user(&env.state, "lookup-viewer", "lookup-pass-2", "viewer").await;
     let (tu, tv) = (env.token(&user, "user"), env.token(&viewer, "viewer"));
     let app = app!(env);
     let expect: [(&str, u32, &str); 12] = [
-        ("A", 301, "192.0.2.1"), ("AAAA", 302, "2001:db8::1"), ("MX", 303, "10 mail.example."), ("TXT", 304, "v=spf1 -all"),
-        ("NS", 305, "ns1.example."), ("CNAME", 306, "target.example."), ("SOA", 307, "ns1.example. hostmaster.example. 2024010101 7200 3600 1209600 300"),
-        ("SRV", 308, "5 6 5060 sip.example."), ("PTR", 309, "host.example."), ("CAA", 310, "0 issue \"letsencrypt.org\""),
-        ("DNSKEY", 311, "257 3 13"), ("DS", 312, "12345 13 2"),
+        ("A", 301, "192.0.2.1"),
+        ("AAAA", 302, "2001:db8::1"),
+        ("MX", 303, "10 mail.example."),
+        ("TXT", 304, "v=spf1 -all"),
+        ("NS", 305, "ns1.example."),
+        ("CNAME", 306, "target.example."),
+        (
+            "SOA",
+            307,
+            "ns1.example. hostmaster.example. 2024010101 7200 3600 1209600 300",
+        ),
+        ("SRV", 308, "5 6 5060 sip.example."),
+        ("PTR", 309, "host.example."),
+        ("CAA", 310, "0 issue \"letsencrypt.org\""),
+        ("DNSKEY", 311, "257 3 13"),
+        ("DS", 312, "12345 13 2"),
     ];
     assert_eq!(expect.len(), lookup::SUPPORTED_TYPES.len());
     for (t, ttl, needle) in expect {
-        let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":t})));
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":"www.example","record_type":t}))
+        );
         assert_eq!(st, 200, "{t}: {raw}");
         assert_eq!(b["status"], "NOERROR", "{t}");
         let recs = b["records"].as_array().unwrap();
         assert_eq!(recs.len(), 1, "{t}: {raw}");
         assert_eq!(recs[0]["type"], t, "{raw}");
         assert_eq!(recs[0]["ttl"], ttl, "{t} ttl: {raw}");
-        assert!(recs[0]["value"].as_str().unwrap().contains(needle), "{t}: {} should contain {needle}", recs[0]["value"]);
+        assert!(
+            recs[0]["value"].as_str().unwrap().contains(needle),
+            "{t}: {} should contain {needle}",
+            recs[0]["value"]
+        );
         assert!(b["note"].is_null(), "{t}: a populated answer needs no note");
     }
     // PTR from an IP address
-    let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"192.0.2.1","record_type":"PTR"})));
-    assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["value"], "host.example.");
+    let (st, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tu),
+        j(serde_json::json!({"domain":"192.0.2.1","record_type":"PTR"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["records"][0]["value"], "host.example.");
     // negative answers are reported honestly, with the SOA that proves them
-    let (_, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"nx.example","record_type":"A"})));
-    assert_eq!(b["status"], "NXDOMAIN", "{raw}"); assert_eq!(b["records"].as_array().unwrap().len(), 0); assert_eq!(b["authority"][0]["ttl"], 900);
-    let (_, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"nodata.example","record_type":"MX"})));
-    assert_eq!(b["status"], "NOERROR", "{raw}"); assert_eq!(b["records"].as_array().unwrap().len(), 0);
+    let (_, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tu),
+        j(serde_json::json!({"domain":"nx.example","record_type":"A"}))
+    );
+    assert_eq!(b["status"], "NXDOMAIN", "{raw}");
+    assert_eq!(b["records"].as_array().unwrap().len(), 0);
+    assert_eq!(b["authority"][0]["ttl"], 900);
+    let (_, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tu),
+        j(serde_json::json!({"domain":"nodata.example","record_type":"MX"}))
+    );
+    assert_eq!(b["status"], "NOERROR", "{raw}");
+    assert_eq!(b["records"].as_array().unwrap().len(), 0);
     assert!(b["note"].as_str().unwrap().contains("no MX"), "{raw}");
     // truncated UDP answers are retried over TCP
-    let (_, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"big.example","record_type":"A"})));
-    assert_eq!(b["transport"], "tcp", "{raw}"); assert_eq!(b["records"][0]["value"], "192.0.2.1");
+    let (_, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tu),
+        j(serde_json::json!({"domain":"big.example","record_type":"A"}))
+    );
+    assert_eq!(b["transport"], "tcp", "{raw}");
+    assert_eq!(b["records"][0]["value"], "192.0.2.1");
     // validation
-    for (d, t) in [("www.example", "ANY"), ("www.example", "AXFR"), ("bad name", "A"), ("", "A"), ("192.0.2.1", "A")] {
-        let (st, _, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":d,"record_type":t})));
+    for (d, t) in [
+        ("www.example", "ANY"),
+        ("www.example", "AXFR"),
+        ("bad name", "A"),
+        ("", "A"),
+        ("192.0.2.1", "A"),
+    ] {
+        let (st, _, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":d,"record_type":t}))
+        );
         assert_eq!(st, 400, "{d}/{t}: {raw}");
     }
     // authorization: login required, read-only accounts may use the (read-only) tool
-    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", None::<&str>, j(serde_json::json!({"domain":"www.example"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        None::<&str>,
+        j(serde_json::json!({"domain":"www.example"}))
+    );
     assert_eq!(st, 401);
-    let (st, _, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tv), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tv),
+        j(serde_json::json!({"domain":"www.example","record_type":"A"}))
+    );
     assert_eq!(st, 200, "viewer: {raw}");
     // per-account rate limit (default 30/min): the 31st call in a window is refused, other accounts are unaffected
     let spammer = add_user(&env.state, "spammer", "spam-pass-1", "user").await;
@@ -1559,13 +4153,32 @@ async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
     for _round in 0..2 {
         limited = 0;
         for _ in 0..40 {
-            let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&ts), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
-            if st == 429 { limited += 1; }
+            let (st, _, _) = call!(
+                app,
+                post,
+                "/api/v1/dns/lookup",
+                Some(&ts),
+                j(serde_json::json!({"domain":"www.example","record_type":"A"}))
+            );
+            if st == 429 {
+                limited += 1;
+            }
         }
-        if limited >= 10 { break; }
+        if limited >= 10 {
+            break;
+        }
     }
-    assert!(limited >= 10, "calls above the budget are refused (got {limited})");
-    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    assert!(
+        limited >= 10,
+        "calls above the budget are refused (got {limited})"
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tu),
+        j(serde_json::json!({"domain":"www.example","record_type":"A"}))
+    );
     assert_eq!(st, 200);
     env.cleanup().await;
 }
@@ -1574,13 +4187,24 @@ async fn dns_lookup_supports_every_advertised_type_with_real_answers() {
 async fn dns_lookup_reports_unreachable_resolver_as_error_not_empty_result() {
     let Some(mut env) = setup().await else { return };
     // a closed port on localhost: the resolver is unreachable
-    env.state.lookup_resolvers = lookup::parse_resolvers("127.0.0.1:9").unwrap(); env.full.inner = env.state.clone();
+    env.state.lookup_resolvers = lookup::parse_resolvers("127.0.0.1:9").unwrap();
+    env.full.inner = env.state.clone();
     let u = add_user(&env.state, "lk2", "lookup-pass-1", "user").await;
     let tu = env.token(&u, "user");
     let app = app!(env);
-    let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
-    assert_eq!(st, 502, "{raw}"); assert_eq!(b["error"], "resolver_unavailable");
-    assert!(!raw.contains("127.0.0.1") && !raw.contains("attempts"), "customers must not learn resolver addresses: {raw}");
+    let (st, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tu),
+        j(serde_json::json!({"domain":"www.example","record_type":"A"}))
+    );
+    assert_eq!(st, 502, "{raw}");
+    assert_eq!(b["error"], "resolver_unavailable");
+    assert!(
+        !raw.contains("127.0.0.1") && !raw.contains("attempts"),
+        "customers must not learn resolver addresses: {raw}"
+    );
     env.cleanup().await;
 }
 
@@ -1595,15 +4219,36 @@ async fn nameservers_and_server_status_authorization() {
     assert_eq!(st, 401);
     let (st, b, raw) = call!(app, get, "/api/v1/nameservers", Some(&tc), None);
     assert_eq!(st, 200, "{raw}");
-    let hosts: Vec<String> = b.as_array().unwrap().iter().map(|n| n["hostname"].as_str().unwrap().to_string()).collect();
-    assert!(hosts.contains(&"ns-on.example".to_string()) && !hosts.contains(&"ns-off.example".to_string()), "customers see enabled nameservers only: {hosts:?}");
+    let hosts: Vec<String> = b
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["hostname"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        hosts.contains(&"ns-on.example".to_string())
+            && !hosts.contains(&"ns-off.example".to_string()),
+        "customers see enabled nameservers only: {hosts:?}"
+    );
     let (_, b, _) = call!(app, get, "/api/v1/nameservers", Some(&ta), None);
     assert_eq!(b.as_array().unwrap().len(), 2, "admins see all");
     // writes stay admin-only
-    let (st, _, _) = call!(app, post, "/api/v1/nameservers", Some(&tc), j(serde_json::json!({"hostname":"evil.example","ip_address":"192.0.2.9"})));
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/nameservers",
+        Some(&tc),
+        j(serde_json::json!({"hostname":"evil.example","ip_address":"192.0.2.9"}))
+    );
     assert_eq!(st, 403);
     // server status (infrastructure probe) is admin-only
-    let (st, _, _) = call!(app, get, "/api/v1/servers/00000000-0000-0000-0000-000000000000/status", Some(&tc), None);
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/servers/00000000-0000-0000-0000-000000000000/status",
+        Some(&tc),
+        None
+    );
     assert_eq!(st, 403);
     env.cleanup().await;
 }
@@ -1615,26 +4260,74 @@ async fn legacy_zones_migrate_into_personal_tenants_without_loss() {
     let bob = add_user(&env.state, "bob", "bob-pass-1234", "user").await;
     let zid = Uuid::new_v4().to_string();
     env.state.db.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'bob-legacy.example', $2::text::uuid)", &[&zid, &bob]).await.unwrap();
-    env.state.db.execute("UPDATE zones SET tenant_id = NULL", &[]).await.unwrap();
-    env.state.db.execute("DELETE FROM tenant_members", &[]).await.unwrap();
-    env.state.db.execute("DELETE FROM tenants", &[]).await.unwrap();
+    env.state
+        .db
+        .execute("UPDATE zones SET tenant_id = NULL", &[])
+        .await
+        .unwrap();
+    env.state
+        .db
+        .execute("DELETE FROM tenant_members", &[])
+        .await
+        .unwrap();
+    env.state
+        .db
+        .execute("DELETE FROM tenants", &[])
+        .await
+        .unwrap();
     let admin_zone = Uuid::new_v4().to_string();
     env.state.db.execute("INSERT INTO zones (id, domain, owner) VALUES ($1::text::uuid, 'platform.example', $2::text::uuid)", &[&admin_zone, &env.admin]).await.unwrap();
-    for _ in 0..2 { env.state.db.batch_execute(tenants::SCHEMA).await.unwrap(); } // idempotent
-    let n: i64 = env.state.db.query_one("SELECT count(*) FROM tenants", &[]).await.unwrap().get(0);
-    assert_eq!(n, 1, "one personal tenant for the one non-admin user (admins get none), not duplicated on re-run");
+    for _ in 0..2 {
+        env.state.db.batch_execute(tenants::SCHEMA).await.unwrap();
+    } // idempotent
+    let n: i64 = env
+        .state
+        .db
+        .query_one("SELECT count(*) FROM tenants", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        n, 1,
+        "one personal tenant for the one non-admin user (admins get none), not duplicated on re-run"
+    );
     let r = env.state.db.query_one("SELECT CAST(tenant_id AS varchar) IS NOT NULL FROM zones WHERE domain = 'bob-legacy.example'", &[]).await.unwrap();
-    assert!(r.get::<_, bool>(0), "legacy zone assigned to the owner's tenant");
-    let r = env.state.db.query_one("SELECT tenant_id IS NULL FROM zones WHERE domain = 'platform.example'", &[]).await.unwrap();
+    assert!(
+        r.get::<_, bool>(0),
+        "legacy zone assigned to the owner's tenant"
+    );
+    let r = env
+        .state
+        .db
+        .query_one(
+            "SELECT tenant_id IS NULL FROM zones WHERE domain = 'platform.example'",
+            &[],
+        )
+        .await
+        .unwrap();
     assert!(r.get::<_, bool>(0), "admin-owned zones stay platform-level");
-    let (m, q): (i64, i64) = { let r = env.state.db.query_one("SELECT (SELECT count(*) FROM tenant_members WHERE role='owner'), (SELECT count(*) FROM tenants WHERE max_zones IS NOT NULL OR max_records IS NOT NULL)", &[]).await.unwrap(); (r.get(0), r.get(1)) };
-    assert_eq!((m, q), (1, 0), "owner membership created, migrated tenants are unlimited");
+    let (m, q): (i64, i64) = {
+        let r = env.state.db.query_one("SELECT (SELECT count(*) FROM tenant_members WHERE role='owner'), (SELECT count(*) FROM tenants WHERE max_zones IS NOT NULL OR max_records IS NOT NULL)", &[]).await.unwrap();
+        (r.get(0), r.get(1))
+    };
+    assert_eq!(
+        (m, q),
+        (1, 0),
+        "owner membership created, migrated tenants are unlimited"
+    );
     // still fully functional through the API
     let tb = env.token(&bob, "user");
     let app = app!(env);
     let (st, b, raw) = call!(app, get, "/api/v1/zones", Some(&tb), None);
-    assert_eq!(st, 200, "{raw}"); assert_eq!(b["data"].as_array().unwrap().len(), 1);
-    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", zid), Some(&tb), j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.7","ttl":300})));
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["data"].as_array().unwrap().len(), 1);
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", zid),
+        Some(&tb),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.7","ttl":300}))
+    );
     assert_eq!(st, 201, "{raw}");
     env.cleanup().await;
 }
@@ -1644,7 +4337,11 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
     let Some(env) = setup().await else { return };
     let alice = add_user(&env.state, "alice", "alice-pass-1", "user").await;
     let carol = add_user(&env.state, "carol", "carol-pass-1", "user").await;
-    let (ta, tc, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&env.admin, "admin"));
+    let (ta, tc, tadmin) = (
+        env.token(&alice, "user"),
+        env.token(&carol, "user"),
+        env.token(&env.admin, "admin"),
+    );
     let app = app!(env);
     let az = make_zone(&env, &app, &ta, "alice-one.example").await;
     let _cz = make_zone(&env, &app, &tc, "carol-one.example").await;
@@ -1652,7 +4349,8 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
     // each customer lives in their own tenant and only sees it
     let (_, at, _) = call!(app, get, "/api/v1/tenants", Some(&ta), None);
     let (_, ct, _) = call!(app, get, "/api/v1/tenants", Some(&tc), None);
-    assert_eq!(at.as_array().unwrap().len(), 1); assert_eq!(ct.as_array().unwrap().len(), 1);
+    assert_eq!(at.as_array().unwrap().len(), 1);
+    assert_eq!(ct.as_array().unwrap().len(), 1);
     let atid = at[0]["id"].as_str().unwrap().to_string();
     let ctid = ct[0]["id"].as_str().unwrap().to_string();
     assert_ne!(atid, ctid);
@@ -1660,60 +4358,257 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
     // cross-tenant access is refused everywhere
     for (m, uri) in [("members", format!("/api/v1/tenants/{}/members", ctid))] {
         let _ = m;
-        let (st, _, _) = call!(app, get, &uri, Some(&ta), None); assert_eq!(st, 404, "{uri}");
+        let (st, _, _) = call!(app, get, &uri, Some(&ta), None);
+        assert_eq!(st, 404, "{uri}");
     }
-    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}/members", ctid), Some(&ta), j(serde_json::json!({"username":"alice","role":"owner"}))); assert_eq!(st, 404);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/analytics/tenant?tenant_id={}", ctid), Some(&ta), None); assert_eq!(st, 404);
-    let (st, _, _) = call!(app, get, "/api/v1/analytics/global", Some(&ta), None); assert_eq!(st, 403);
-    let (st, _, _) = call!(app, post, "/api/v1/tenants", Some(&ta), j(serde_json::json!({"name":"mine"}))); assert_eq!(st, 403);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&ta), j(serde_json::json!({"name":"x","max_zones":9999}))); assert_eq!(st, 403, "customers cannot raise their own quota");
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/tenants/{}", atid), Some(&ta), None); assert_eq!(st, 403);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{}/tenant", az), Some(&ta), j(serde_json::json!({"tenant_id": ctid}))); assert_eq!(st, 403, "customers cannot move zones between tenants");
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", az), Some(&tc), None); assert_eq!(st, 403);
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&ta), j(serde_json::json!({"domain":"x.example","tenant_id": ctid}))); assert_eq!(st, 403, "cannot create zones in someone else's tenant");
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}/members", ctid),
+        Some(&ta),
+        j(serde_json::json!({"username":"alice","role":"owner"}))
+    );
+    assert_eq!(st, 404);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/analytics/tenant?tenant_id={}", ctid),
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 404);
+    let (st, _, _) = call!(app, get, "/api/v1/analytics/global", Some(&ta), None);
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/tenants",
+        Some(&ta),
+        j(serde_json::json!({"name":"mine"}))
+    );
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", atid),
+        Some(&ta),
+        j(serde_json::json!({"name":"x","max_zones":9999}))
+    );
+    assert_eq!(st, 403, "customers cannot raise their own quota");
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tenants/{}", atid),
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{}/tenant", az),
+        Some(&ta),
+        j(serde_json::json!({"tenant_id": ctid}))
+    );
+    assert_eq!(st, 403, "customers cannot move zones between tenants");
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", az),
+        Some(&tc),
+        None
+    );
+    assert_eq!(st, 403);
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&ta),
+        j(serde_json::json!({"domain":"x.example","tenant_id": ctid}))
+    );
+    assert_eq!(st, 403, "cannot create zones in someone else's tenant");
     let (_, ov, _) = call!(app, get, "/api/v1/overview", Some(&tc), None);
-    let doms: Vec<&str> = ov["zones"].as_array().unwrap().iter().map(|z| z["domain"].as_str().unwrap()).collect();
-    assert_eq!(doms, vec!["carol-one.example"], "overview never leaks other tenants' zones");
+    let doms: Vec<&str> = ov["zones"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|z| z["domain"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        doms,
+        vec!["carol-one.example"],
+        "overview never leaks other tenants' zones"
+    );
 
     // quotas: zones
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), j(serde_json::json!({"name":"personal-alice","max_zones":2,"max_records":null})));
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", atid),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"personal-alice","max_zones":2,"max_records":null}))
+    );
     assert_eq!(st, 200, "{raw}");
     let _ = make_zone(&env, &app, &ta, "alice-two.example").await;
-    let (st, b, raw) = call!(app, post, "/api/v1/zones", Some(&ta), j(serde_json::json!({"domain":"alice-three.example"})));
-    assert_eq!(st, 403, "{raw}"); assert_eq!(b["error"], "quota_exceeded"); assert_eq!(b["quota"], "zones"); assert_eq!(b["limit"], 2); assert_eq!(b["used"], 2);
+    let (st, b, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&ta),
+        j(serde_json::json!({"domain":"alice-three.example"}))
+    );
+    assert_eq!(st, 403, "{raw}");
+    assert_eq!(b["error"], "quota_exceeded");
+    assert_eq!(b["quota"], "zones");
+    assert_eq!(b["limit"], 2);
+    assert_eq!(b["used"], 2);
     assert!(!env.zone_file("alice-three.example").exists());
     // admin override (platform operators are not limited) and quota relief by raising the limit
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tadmin), j(serde_json::json!({"domain":"admin-for-alice.example","tenant_id": atid}))); assert_eq!(st, 201);
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tadmin),
+        j(serde_json::json!({"domain":"admin-for-alice.example","tenant_id": atid}))
+    );
+    assert_eq!(st, 201);
     // records
     let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id=r.zone_id WHERE CAST(z.tenant_id AS varchar)=$1", &[&atid]).await.unwrap().get(0);
-    call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), j(serde_json::json!({"name":"personal-alice","max_zones":10,"max_records":used + 2})));
+    call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", atid),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"personal-alice","max_zones":10,"max_records":used + 2}))
+    );
     for i in 0..2 {
-        let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&ta), j(serde_json::json!({"name":format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})));
+        let (st, _, raw) = call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{}/records", az),
+            Some(&ta),
+            j(
+                serde_json::json!({"name":format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})
+            )
+        );
         assert_eq!(st, 201, "{raw}");
     }
-    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&ta), j(serde_json::json!({"name":"over","record_type":"A","value":"192.0.2.1","ttl":300})));
-    assert_eq!(st, 403, "{raw}"); assert_eq!(b["quota"], "records");
-    let (st, b, _) = call!(app, post, &format!("/api/v1/zones/{}/import", az), Some(&ta), j(serde_json::json!({"records":[{"name":"i1","record_type":"A","value":"192.0.2.2"}]})));
+    let (st, b, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", az),
+        Some(&ta),
+        j(serde_json::json!({"name":"over","record_type":"A","value":"192.0.2.1","ttl":300}))
+    );
+    assert_eq!(st, 403, "{raw}");
+    assert_eq!(b["quota"], "records");
+    let (st, b, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/import", az),
+        Some(&ta),
+        j(serde_json::json!({"records":[{"name":"i1","record_type":"A","value":"192.0.2.2"}]}))
+    );
     assert_eq!(st, 403, "import counts against the quota: {b}");
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&tadmin), j(serde_json::json!({"name":"adm","record_type":"A","value":"192.0.2.1","ttl":300}))); assert_eq!(st, 201, "admin bypasses record quota");
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", az),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"adm","record_type":"A","value":"192.0.2.1","ttl":300}))
+    );
+    assert_eq!(st, 201, "admin bypasses record quota");
     // deleting frees quota; other tenants were never affected
-    let (_, recs, _) = call!(app, get, &format!("/api/v1/zones/{}/records", az), Some(&ta), None);
-    let victim = recs.as_array().unwrap().iter().find(|r| r["name"] == "h0").unwrap()["id"].as_str().unwrap().to_string();
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{}/records/{}", az, victim), Some(&ta), None); assert_eq!(st, 200);
+    let (_, recs, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", az),
+        Some(&ta),
+        None
+    );
+    let victim = recs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "h0")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{}/records/{}", az, victim),
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 200);
     // (admin added one record above, so usage is still at the limit until a second deletion)
-    let victim2 = recs.as_array().unwrap().iter().find(|r| r["name"] == "h1").unwrap()["id"].as_str().unwrap().to_string();
-    call!(app, delete, &format!("/api/v1/zones/{}/records/{}", az, victim2), Some(&ta), None);
-    let (st, _, raw) = call!(app, post, &format!("/api/v1/zones/{}/records", az), Some(&ta), j(serde_json::json!({"name":"again","record_type":"A","value":"192.0.2.1","ttl":300}))); assert_eq!(st, 201, "{raw}");
-    let (st, _, raw) = call!(app, post, "/api/v1/zones", Some(&tc), j(serde_json::json!({"domain":"carol-two.example"}))); assert_eq!(st, 201, "carol unlimited: {raw}");
+    let victim2 = recs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "h1")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{}/records/{}", az, victim2),
+        Some(&ta),
+        None
+    );
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", az),
+        Some(&ta),
+        j(serde_json::json!({"name":"again","record_type":"A","value":"192.0.2.1","ttl":300}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tc),
+        j(serde_json::json!({"domain":"carol-two.example"}))
+    );
+    assert_eq!(st, 201, "carol unlimited: {raw}");
     // a restore cannot be used to get around the record quota (only growth is counted)
     let big: String = env.state.db.query_one("SELECT CAST(id AS varchar) FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 ORDER BY jsonb_array_length(records) DESC LIMIT 1", &[&az]).await.unwrap().get(0);
-    let (st, b, raw) = call!(app, post, &format!("/api/v1/zones/{}/revisions/{}/restore", az, big), Some(&ta), None);
-    assert_eq!(st, 403, "restoring a larger revision must respect the quota: {raw}"); assert_eq!(b["error"], "quota_exceeded");
+    let (st, b, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/revisions/{}/restore", az, big),
+        Some(&ta),
+        None
+    );
+    assert_eq!(
+        st, 403,
+        "restoring a larger revision must respect the quota: {raw}"
+    );
+    assert_eq!(b["error"], "quota_exceeded");
 
     // invalid quota values
-    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), j(serde_json::json!({"name":"personal-alice","max_zones":-1}))); assert_eq!(st, 400);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", atid),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"personal-alice","max_zones":-1}))
+    );
+    assert_eq!(st, 400);
     // deleting a tenant that owns zones is refused (no silent orphaning)
-    let (st, b, _) = call!(app, delete, &format!("/api/v1/tenants/{}", atid), Some(&tadmin), None); assert_eq!(st, 409, "{b}");
+    let (st, b, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tenants/{}", atid),
+        Some(&tadmin),
+        None
+    );
+    assert_eq!(st, 409, "{b}");
     env.cleanup().await;
 }
 
@@ -1875,37 +4770,163 @@ async fn tenant_roles_control_zone_access_and_membership() {
     let ed = add_user(&env.state, "org-editor", "editor-pass-1", "user").await;
     let vw = add_user(&env.state, "org-viewer", "viewer-pass-1", "user").await;
     let out = add_user(&env.state, "outsider", "outsider-pass-1", "user").await;
-    let (to, te, tv, tx, tadmin) = (env.token(&owner, "user"), env.token(&ed, "user"), env.token(&vw, "user"), env.token(&out, "user"), env.token(&env.admin, "admin"));
+    let (to, te, tv, tx, tadmin) = (
+        env.token(&owner, "user"),
+        env.token(&ed, "user"),
+        env.token(&vw, "user"),
+        env.token(&out, "user"),
+        env.token(&env.admin, "admin"),
+    );
     let app = app!(env);
     let z = make_zone(&env, &app, &to, "org.example").await;
     let (_, ts, _) = call!(app, get, "/api/v1/tenants", Some(&to), None);
     let tid = ts[0]["id"].as_str().unwrap().to_string();
     // owner invites an editor and a viewer
     for (u, r) in [("org-editor", "editor"), ("org-viewer", "viewer")] {
-        let (st, _, raw) = call!(app, put, &format!("/api/v1/tenants/{}/members", tid), Some(&to), j(serde_json::json!({"username":u,"role":r}))); assert_eq!(st, 200, "{raw}");
+        let (st, _, raw) = call!(
+            app,
+            put,
+            &format!("/api/v1/tenants/{}/members", tid),
+            Some(&to),
+            j(serde_json::json!({"username":u,"role":r}))
+        );
+        assert_eq!(st, 200, "{raw}");
     }
     let rec = serde_json::json!({"name":"w","record_type":"A","value":"192.0.2.3","ttl":300});
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&te), j(rec.clone())); assert_eq!(st, 201, "editor writes");
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tv), None); assert_eq!(st, 200, "viewer reads");
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&tv), j(rec.clone())); assert_eq!(st, 403, "tenant viewer cannot write");
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/zones/{}", z), Some(&te), None); assert_eq!(st, 403, "editor cannot delete the zone");
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tx), None); assert_eq!(st, 403, "outsider");
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&te),
+        j(rec.clone())
+    );
+    assert_eq!(st, 201, "editor writes");
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&tv),
+        None
+    );
+    assert_eq!(st, 200, "viewer reads");
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&tv),
+        j(rec.clone())
+    );
+    assert_eq!(st, 403, "tenant viewer cannot write");
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{}", z),
+        Some(&te),
+        None
+    );
+    assert_eq!(st, 403, "editor cannot delete the zone");
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&tx),
+        None
+    );
+    assert_eq!(st, 403, "outsider");
     let (_, l, _) = call!(app, get, "/api/v1/zones", Some(&te), None);
-    assert_eq!(l["data"][0]["access"], "editor"); assert_eq!(l["data"].as_array().unwrap().len(), 1);
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tv), j(serde_json::json!({"domain":"v.example"}))); assert!(st == 403 || st == 201 && false, "a tenant viewer's own personal tenant is separate; creating in the org tenant is refused");
-    let (st, _, _) = call!(app, post, "/api/v1/zones", Some(&tv), j(serde_json::json!({"domain":"v.example","tenant_id":tid}))); assert_eq!(st, 403);
+    assert_eq!(l["data"][0]["access"], "editor");
+    assert_eq!(l["data"].as_array().unwrap().len(), 1);
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tv),
+        j(serde_json::json!({"domain":"v.example"}))
+    );
+    assert!(
+        st == 403 || st == 201 && false,
+        "a tenant viewer's own personal tenant is separate; creating in the org tenant is refused"
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&tv),
+        j(serde_json::json!({"domain":"v.example","tenant_id":tid}))
+    );
+    assert_eq!(st, 403);
     // membership management is owner-only
-    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}/members", tid), Some(&te), j(serde_json::json!({"username":"outsider","role":"viewer"}))); assert_eq!(st, 403);
-    let (st, m, _) = call!(app, get, &format!("/api/v1/tenants/{}/members", tid), Some(&tv), None); assert_eq!(st, 200); assert_eq!(m.as_array().unwrap().len(), 3);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}/members", tid),
+        Some(&te),
+        j(serde_json::json!({"username":"outsider","role":"viewer"}))
+    );
+    assert_eq!(st, 403);
+    let (st, m, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/tenants/{}/members", tid),
+        Some(&tv),
+        None
+    );
+    assert_eq!(st, 200);
+    assert_eq!(m.as_array().unwrap().len(), 3);
     // the last owner cannot be removed or demoted
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/tenants/{}/members/{}", tid, owner), Some(&to), None); assert_eq!(st, 409);
-    let (st, _, _) = call!(app, put, &format!("/api/v1/tenants/{}/members", tid), Some(&to), j(serde_json::json!({"user_id":owner,"role":"viewer"}))); assert_eq!(st, 409);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tenants/{}/members/{}", tid, owner),
+        Some(&to),
+        None
+    );
+    assert_eq!(st, 409);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}/members", tid),
+        Some(&to),
+        j(serde_json::json!({"user_id":owner,"role":"viewer"}))
+    );
+    assert_eq!(st, 409);
     // revocation is immediate
-    let (st, _, _) = call!(app, delete, &format!("/api/v1/tenants/{}/members/{}", tid, ed), Some(&to), None); assert_eq!(st, 200);
-    let (st, _, _) = call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&te), j(rec)); assert_eq!(st, 403);
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tenants/{}/members/{}", tid, ed),
+        Some(&to),
+        None
+    );
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&te),
+        j(rec)
+    );
+    assert_eq!(st, 403);
     // admin can reassign the zone; target quota applies
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{}/tenant", z), Some(&tadmin), j(serde_json::json!({"tenant_id": null}))); assert_eq!(st, 200);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tv), None); assert_eq!(st, 403, "detached zone is no longer visible through the tenant");
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{}/tenant", z),
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": null}))
+    );
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&tv),
+        None
+    );
+    assert_eq!(
+        st, 403,
+        "detached zone is no longer visible through the tenant"
+    );
     env.cleanup().await;
 }
 
@@ -1914,21 +4935,52 @@ async fn overview_is_one_accurate_tenant_scoped_query_and_scales() {
     let Some(env) = setup().await else { return };
     let alice = add_user(&env.state, "ov-alice", "alice-pass-1", "user").await;
     let other = add_user(&env.state, "ov-other", "other-pass-1", "user").await;
-    let (ta, to, tadmin) = (env.token(&alice, "user"), env.token(&other, "user"), env.token(&env.admin, "admin"));
+    let (ta, to, tadmin) = (
+        env.token(&alice, "user"),
+        env.token(&other, "user"),
+        env.token(&env.admin, "admin"),
+    );
     let app = app!(env);
     let z1 = make_zone(&env, &app, &ta, "ov-a.example").await;
     let _z2 = make_zone(&env, &app, &ta, "ov-b.example").await;
     let _zo = make_zone(&env, &app, &to, "ov-other.example").await;
-    for i in 0..5 { call!(app, post, &format!("/api/v1/zones/{}/records", z1), Some(&ta), j(serde_json::json!({"name":format!("r{i}"),"record_type":"A","value":"192.0.2.1","ttl":300}))); }
-    call!(app, post, &format!("/api/v1/zones/{}/records", z1), Some(&ta), j(serde_json::json!({"name":"m","record_type":"TXT","value":"hello","ttl":300})));
+    for i in 0..5 {
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{}/records", z1),
+            Some(&ta),
+            j(
+                serde_json::json!({"name":format!("r{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})
+            )
+        );
+    }
+    call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{}/records", z1),
+        Some(&ta),
+        j(serde_json::json!({"name":"m","record_type":"TXT","value":"hello","ttl":300}))
+    );
     let (st, ov, raw) = call!(app, get, "/api/v1/overview", Some(&ta), None);
     assert_eq!(st, 200, "{raw}");
     assert_eq!(ov["zones_total"], 2);
     // counts equal what the records endpoint lists, per zone
     let mut sum = 0;
     for z in ov["zones"].as_array().unwrap() {
-        let (_, recs, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z["id"].as_str().unwrap()), Some(&ta), None);
-        assert_eq!(z["records"].as_i64().unwrap(), recs.as_array().unwrap().len() as i64, "{}", z["domain"]);
+        let (_, recs, _) = call!(
+            app,
+            get,
+            &format!("/api/v1/zones/{}/records", z["id"].as_str().unwrap()),
+            Some(&ta),
+            None
+        );
+        assert_eq!(
+            z["records"].as_i64().unwrap(),
+            recs.as_array().unwrap().len() as i64,
+            "{}",
+            z["domain"]
+        );
         sum += z["records"].as_i64().unwrap();
     }
     assert_eq!(ov["records_total"], sum);
@@ -1948,9 +5000,18 @@ async fn overview_is_one_accurate_tenant_scoped_query_and_scales() {
     let t0 = std::time::Instant::now();
     let (_, ov2, _) = call!(app, get, "/api/v1/overview", Some(&ta), None);
     let cust_ms = t0.elapsed().as_millis();
-    assert_eq!(ov2["zones_total"], 2, "bulk platform zones never leak into a customer's overview");
-    eprintln!("overview timing: admin ({} zones, {} records) {} ms; customer {} ms", ov["zones_total"], ov["records_total"], admin_ms, cust_ms);
-    assert!(admin_ms < 3000, "admin overview over 3,000 zones took {admin_ms} ms");
+    assert_eq!(
+        ov2["zones_total"], 2,
+        "bulk platform zones never leak into a customer's overview"
+    );
+    eprintln!(
+        "overview timing: admin ({} zones, {} records) {} ms; customer {} ms",
+        ov["zones_total"], ov["records_total"], admin_ms, cust_ms
+    );
+    assert!(
+        admin_ms < 3000,
+        "admin overview over 3,000 zones took {admin_ms} ms"
+    );
     assert!(cust_ms < 500, "customer overview took {cust_ms} ms");
     env.cleanup().await;
 }
@@ -1960,46 +5021,142 @@ async fn analytics_are_persistent_tenant_scoped_and_retained_configurably() {
     let Some(env) = setup().await else { return };
     let alice = add_user(&env.state, "an-alice", "alice-pass-1", "user").await;
     let carol = add_user(&env.state, "an-carol", "carol-pass-1", "user").await;
-    let (ta, tc, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&env.admin, "admin"));
+    let (ta, tc, tadmin) = (
+        env.token(&alice, "user"),
+        env.token(&carol, "user"),
+        env.token(&env.admin, "admin"),
+    );
     let app = app!(env);
     let _ = make_zone(&env, &app, &ta, "an-alice.example").await;
     let _ = make_zone(&env, &app, &tc, "an-carol.example").await;
-    let metrics = |a: u32, c: u32, total: u32, ae: u32| format!(
-        "hickory_request_total{{class=\"in\"}} {total}\nhickory_zone_queries_total{{zone=\"an-alice.example.\",result=\"ok\"}} {a}\n\
-         hickory_zone_queries_total{{zone=\"an-alice.example.\",result=\"error\"}} {ae}\nhickory_zone_queries_total{{zone=\"an-carol.example.\",result=\"ok\"}} {c}\n");
+    let metrics = |a: u32, c: u32, total: u32, ae: u32| {
+        format!(
+            "hickory_request_total{{class=\"in\"}} {total}\nhickory_zone_queries_total{{zone=\"an-alice.example.\",result=\"ok\"}} {a}\n\
+         hickory_zone_queries_total{{zone=\"an-alice.example.\",result=\"error\"}} {ae}\nhickory_zone_queries_total{{zone=\"an-carol.example.\",result=\"ok\"}} {c}\n"
+        )
+    };
     let mut prev = tenants::Prev::default();
     let now = chrono::Utc::now().timestamp();
+    let collect_db = env.state.db.connection();
     // first scrape is the baseline (no delta can be computed), later scrapes store the differences
-    assert_eq!(tenants::ingest(&env.state.db, &metrics(100, 50, 1000, 0), &mut prev, now - 120).await.unwrap(), (0, 0));
-    assert_eq!(tenants::ingest(&env.state.db, &metrics(160, 55, 1100, 4), &mut prev, now - 60).await.unwrap(), (100, 2));
+    assert_eq!(
+        tenants::ingest(
+            &collect_db,
+            &metrics(100, 50, 1000, 0),
+            &mut prev,
+            now - 120
+        )
+        .await
+        .unwrap(),
+        (0, 0)
+    );
+    assert_eq!(
+        tenants::ingest(&collect_db, &metrics(160, 55, 1100, 4), &mut prev, now - 60)
+            .await
+            .unwrap(),
+        (100, 2)
+    );
     // a restart of the DNS server resets counters: the new value is the delta
-    tenants::ingest(&env.state.db, &metrics(10, 0, 20, 0), &mut prev, now).await.unwrap();
+    tenants::ingest(&collect_db, &metrics(10, 0, 20, 0), &mut prev, now)
+        .await
+        .unwrap();
     tenants::snapshot_usage(&env.state.db, now).await.unwrap();
 
-    let (st, a, raw) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&ta), None);
+    let (st, a, raw) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h",
+        Some(&ta),
+        None
+    );
     assert_eq!(st, 200, "{raw}");
-    assert_eq!(a["total_queries"], 60 + 4 + 10, "alice: 60 ok + 4 errors in the first interval, 10 after reset: {raw}");
-    let zones: Vec<&str> = a["zones"].as_array().unwrap().iter().map(|z| z["domain"].as_str().unwrap()).collect();
-    assert_eq!(zones, vec!["an-alice.example"], "a customer never sees other tenants' zones");
+    assert_eq!(
+        a["total_queries"],
+        60 + 4 + 10,
+        "alice: 60 ok + 4 errors in the first interval, 10 after reset: {raw}"
+    );
+    let zones: Vec<&str> = a["zones"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|z| z["domain"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        zones,
+        vec!["an-alice.example"],
+        "a customer never sees other tenants' zones"
+    );
     assert!(a["usage"].as_array().unwrap().len() >= 1);
-    let (_, c, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&tc), None);
+    let (_, c, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h",
+        Some(&tc),
+        None
+    );
     assert_eq!(c["total_queries"], 5);
     assert_eq!(c["zones"].as_array().unwrap().len(), 1);
     // admin: global totals and any tenant
-    let (st, g, raw) = call!(app, get, "/api/v1/analytics/global?range=24h", Some(&tadmin), None);
-    assert_eq!(st, 200, "{raw}"); assert_eq!(g["total"], 100 + 20); assert!(g["top_zones"].as_array().unwrap().len() >= 2);
-    let (_, all, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&tadmin), None);
+    let (st, g, raw) = call!(
+        app,
+        get,
+        "/api/v1/analytics/global?range=24h",
+        Some(&tadmin),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(g["total"], 100 + 20);
+    assert!(g["top_zones"].as_array().unwrap().len() >= 2);
+    let (_, all, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h",
+        Some(&tadmin),
+        None
+    );
     assert_eq!(all["zones"].as_array().unwrap().len(), 2);
     // zone filter inside a tenant
-    let (_, f, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h&zone=an-alice.example", Some(&ta), None);
+    let (_, f, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h&zone=an-alice.example",
+        Some(&ta),
+        None
+    );
     assert_eq!(f["total_queries"], 74);
     // history survives deleting the zone (no foreign key) and is purged by the configurable retention
-    env.state.db.execute("DELETE FROM zones WHERE domain = 'an-alice.example'", &[]).await.unwrap();
-    let n: i64 = env.state.db.query_one("SELECT count(*) FROM zone_query_samples WHERE domain='an-alice.example'", &[]).await.unwrap().get(0);
+    env.state
+        .db
+        .execute("DELETE FROM zones WHERE domain = 'an-alice.example'", &[])
+        .await
+        .unwrap();
+    let n: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM zone_query_samples WHERE domain='an-alice.example'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
     assert!(n > 0, "history persists after zone deletion");
-    env.state.db.execute("UPDATE zone_query_samples SET ts = ts - interval '40 days'", &[]).await.unwrap();
+    env.state
+        .db
+        .execute(
+            "UPDATE zone_query_samples SET ts = ts - interval '40 days'",
+            &[],
+        )
+        .await
+        .unwrap();
     assert!(tenants::purge_analytics(&env.state.db, 30).await.unwrap() > 0);
-    let n: i64 = env.state.db.query_one("SELECT count(*) FROM zone_query_samples", &[]).await.unwrap().get(0);
+    let n: i64 = env
+        .state
+        .db
+        .query_one("SELECT count(*) FROM zone_query_samples", &[])
+        .await
+        .unwrap()
+        .get(0);
     assert_eq!(n, 0, "rows older than the retention are removed");
     env.cleanup().await;
 }
@@ -2014,83 +5171,394 @@ async fn zone_transfer_is_atomic_authorised_quota_checked_and_audited() {
     let alice = add_user(&env.state, "tr-alice", "alice-pass-1", "user").await;
     let carol = add_user(&env.state, "tr-carol", "carol-pass-1", "user").await;
     let sharee = add_user(&env.state, "tr-sharee", "sharee-pass-1", "user").await;
-    let (ta, tc, ts, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&sharee, "user"), env.token(&env.admin, "admin"));
+    let (ta, tc, ts, tadmin) = (
+        env.token(&alice, "user"),
+        env.token(&carol, "user"),
+        env.token(&sharee, "user"),
+        env.token(&env.admin, "admin"),
+    );
     let app = app!(env);
     let z = make_zone(&env, &app, &ta, "moveme.example").await;
     let _z2 = make_zone(&env, &app, &ta, "moveme2.example").await;
     let _cz = make_zone(&env, &app, &tc, "carol-home.example").await;
-    for i in 0..3 { call!(app, post, &format!("/api/v1/zones/{}/records", z), Some(&ta), j(serde_json::json!({"name":format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300}))); }
+    for i in 0..3 {
+        call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{}/records", z),
+            Some(&ta),
+            j(
+                serde_json::json!({"name":format!("h{i}"),"record_type":"A","value":"192.0.2.1","ttl":300})
+            )
+        );
+    }
     let (_, tl, _) = call!(app, get, "/api/v1/tenants", Some(&tadmin), None);
-    let tid = |n: &str| tl.as_array().unwrap().iter().find(|t| t["name"] == n).unwrap()["id"].as_str().unwrap().to_string();
+    let tid = |n: &str| {
+        tl.as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == n)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
     let (at, ct) = (tid("personal-tr-alice"), tid("personal-tr-carol"));
     // a share and a geo rule that must survive / be handled
-    let (st, _, raw) = call!(app, put, &format!("/api/v1/zones/{}/members", z), Some(&ta), j(serde_json::json!({"username":"tr-sharee","role":"viewer"}))); assert_eq!(st, 200, "{raw}");
-    let (st, _, raw) = call!(app, post, "/api/v1/georules", Some(&ta), j(serde_json::json!({"zone_id": z, "match_type":"country","match_value":"DE","target":"192.0.2.9","priority":1,"enabled":true}))); assert!(st == 200 || st == 201, "{raw}");
-    let ids = |v: &serde_json::Value| { let mut x: Vec<String> = v.as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect(); x.sort(); x };
-    let (_, before, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&ta), None);
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{}/members", z),
+        Some(&ta),
+        j(serde_json::json!({"username":"tr-sharee","role":"viewer"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/georules",
+        Some(&ta),
+        j(
+            serde_json::json!({"zone_id": z, "match_type":"country","match_value":"DE","target":"192.0.2.9","priority":1,"enabled":true})
+        )
+    );
+    assert!(st == 200 || st == 201, "{raw}");
+    let ids = |v: &serde_json::Value| {
+        let mut x: Vec<String> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        x.sort();
+        x
+    };
+    let (_, before, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&ta),
+        None
+    );
     let before_ids = ids(&before);
-    let nrules_before: i64 = env.state.db.query_one("SELECT count(*) FROM georules WHERE CAST(zone_id AS varchar) = $1", &[&z]).await.unwrap().get(0);
+    let nrules_before: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM georules WHERE CAST(zone_id AS varchar) = $1",
+            &[&z],
+        )
+        .await
+        .unwrap()
+        .get(0);
 
     // authorization and validation
     let uri = format!("/api/v1/zones/{}/tenant", z);
-    for t in [&ta, &tc, &ts] { let (st, _, _) = call!(app, put, &uri, Some(t), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 403, "only administrators transfer zones"); }
-    let (st, _, _) = call!(app, put, &uri, None::<&str>, j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 401);
-    let (st, _, _) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": Uuid::new_v4().to_string()}))); assert_eq!(st, 404, "unknown destination");
-    let (st, _, _) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": "not-a-uuid"}))); assert_eq!(st, 400);
-    let (st, _, _) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": at}))); assert_eq!(st, 400, "same tenant is a no-op error");
-    let (st, _, _) = call!(app, put, &format!("/api/v1/zones/{}/tenant", Uuid::new_v4()), Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 404);
+    for t in [&ta, &tc, &ts] {
+        let (st, _, _) = call!(
+            app,
+            put,
+            &uri,
+            Some(t),
+            j(serde_json::json!({"tenant_id": ct}))
+        );
+        assert_eq!(st, 403, "only administrators transfer zones");
+    }
+    let (st, _, _) = call!(
+        app,
+        put,
+        &uri,
+        None::<&str>,
+        j(serde_json::json!({"tenant_id": ct}))
+    );
+    assert_eq!(st, 401);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": Uuid::new_v4().to_string()}))
+    );
+    assert_eq!(st, 404, "unknown destination");
+    let (st, _, _) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": "not-a-uuid"}))
+    );
+    assert_eq!(st, 400);
+    let (st, _, _) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": at}))
+    );
+    assert_eq!(st, 400, "same tenant is a no-op error");
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{}/tenant", Uuid::new_v4()),
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": ct}))
+    );
+    assert_eq!(st, 404);
 
     // quota failures leave EVERYTHING untouched (atomic)
-    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones":1,"max_records":null})));
-    let (st, b, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 403, "{raw}"); assert_eq!(b["quota"], "zones");
+    call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", ct),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"personal-tr-carol","max_zones":1,"max_records":null}))
+    );
+    let (st, b, raw) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": ct}))
+    );
+    assert_eq!(st, 403, "{raw}");
+    assert_eq!(b["quota"], "zones");
     let used: i64 = env.state.db.query_one("SELECT count(*) FROM records r JOIN zones z ON z.id=r.zone_id WHERE CAST(z.tenant_id AS varchar)=$1", &[&ct]).await.unwrap().get(0);
-    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones":5,"max_records":used + 2})));
-    let (st, b, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 403, "{raw}"); assert_eq!(b["quota"], "records");
-    let cur: (Option<String>, i64) = { let r = env.state.db.query_one("SELECT CAST(tenant_id AS varchar), (SELECT count(*) FROM zone_members WHERE CAST(zone_id AS varchar)=$1) FROM zones WHERE CAST(id AS varchar)=$1", &[&z]).await.unwrap(); (r.get(0), r.get(1)) };
-    assert_eq!(cur.0.as_deref(), Some(at.as_str()), "failed transfer must not move the zone"); assert_eq!(cur.1, 1, "nor drop the share");
+    call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", ct),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"personal-tr-carol","max_zones":5,"max_records":used + 2}))
+    );
+    let (st, b, raw) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": ct}))
+    );
+    assert_eq!(st, 403, "{raw}");
+    assert_eq!(b["quota"], "records");
+    let cur: (Option<String>, i64) = {
+        let r = env.state.db.query_one("SELECT CAST(tenant_id AS varchar), (SELECT count(*) FROM zone_members WHERE CAST(zone_id AS varchar)=$1) FROM zones WHERE CAST(id AS varchar)=$1", &[&z]).await.unwrap();
+        (r.get(0), r.get(1))
+    };
+    assert_eq!(
+        cur.0.as_deref(),
+        Some(at.as_str()),
+        "failed transfer must not move the zone"
+    );
+    assert_eq!(cur.1, 1, "nor drop the share");
 
     // success
-    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones":5,"max_records":null})));
-    let (st, b, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))); assert_eq!(st, 200, "{raw}");
-    assert_eq!(b["records"], before_ids.len() as i64); assert_eq!(b["shares_removed"], 1); assert_eq!(b["owner_changed"], true);
-    assert_eq!(b["from"]["name"], "personal-tr-alice"); assert_eq!(b["to"]["name"], "personal-tr-carol");
-    let (_, after, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tc), None);
-    assert_eq!(ids(&after), before_ids, "same record rows: nothing duplicated or lost");
-    let nrules: i64 = env.state.db.query_one("SELECT count(*) FROM georules WHERE CAST(zone_id AS varchar) = $1", &[&z]).await.unwrap().get(0);
+    call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", ct),
+        Some(&tadmin),
+        j(serde_json::json!({"name":"personal-tr-carol","max_zones":5,"max_records":null}))
+    );
+    let (st, b, raw) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": ct}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["records"], before_ids.len() as i64);
+    assert_eq!(b["shares_removed"], 1);
+    assert_eq!(b["owner_changed"], true);
+    assert_eq!(b["from"]["name"], "personal-tr-alice");
+    assert_eq!(b["to"]["name"], "personal-tr-carol");
+    let (_, after, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&tc),
+        None
+    );
+    assert_eq!(
+        ids(&after),
+        before_ids,
+        "same record rows: nothing duplicated or lost"
+    );
+    let nrules: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM georules WHERE CAST(zone_id AS varchar) = $1",
+            &[&z],
+        )
+        .await
+        .unwrap()
+        .get(0);
     assert_eq!(nrules, nrules_before, "geo rules preserved");
-    assert!(env.zone_file("moveme.example").is_file(), "zone still published");
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&ta), None); assert_eq!(st, 403, "previous tenant lost access (owner moved, shares removed)");
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&ts), None); assert_eq!(st, 403, "removed share");
+    assert!(
+        env.zone_file("moveme.example").is_file(),
+        "zone still published"
+    );
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&ta),
+        None
+    );
+    assert_eq!(
+        st, 403,
+        "previous tenant lost access (owner moved, shares removed)"
+    );
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&ts),
+        None
+    );
+    assert_eq!(st, 403, "removed share");
     let (_, lz, _) = call!(app, get, "/api/v1/zones", Some(&tadmin), None);
-    let row = lz["data"].as_array().unwrap().iter().find(|x| x["domain"] == "moveme.example").unwrap();
-    assert_eq!(row["tenant_name"], "personal-tr-carol"); assert_eq!(row["tenant_id"], ct.as_str());
+    let row = lz["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["domain"] == "moveme.example")
+        .unwrap();
+    assert_eq!(row["tenant_name"], "personal-tr-carol");
+    assert_eq!(row["tenant_id"], ct.as_str());
     // audit
-    let (_, au, _) = call!(app, get, "/api/v1/audit/logs?action=zone.transfer", Some(&tadmin), None);
-    let e = au.as_array().map(|a| a.to_vec()).or_else(|| au["data"].as_array().cloned()).unwrap_or_default();
+    let (_, au, _) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs?action=zone.transfer",
+        Some(&tadmin),
+        None
+    );
+    let e = au
+        .as_array()
+        .map(|a| a.to_vec())
+        .or_else(|| au["data"].as_array().cloned())
+        .unwrap_or_default();
     assert!(!e.is_empty(), "transfer is audited: {au}");
     let d = e[0]["details"].to_string();
-    assert!(d.contains("personal-tr-alice") && d.contains("personal-tr-carol") && d.contains("moveme.example") && d.contains(&env.admin), "audit lacks source/destination/actor: {d}");
+    assert!(
+        d.contains("personal-tr-alice")
+            && d.contains("personal-tr-carol")
+            && d.contains("moveme.example")
+            && d.contains(&env.admin),
+        "audit lacks source/destination/actor: {d}"
+    );
 
     // keep_shares keeps the explicit grant
-    call!(app, put, &format!("/api/v1/zones/{}/members", _z2), Some(&ta), j(serde_json::json!({"username":"tr-sharee","role":"viewer"})));
-    let (st, b, raw) = call!(app, put, &format!("/api/v1/zones/{}/tenant", _z2), Some(&tadmin), j(serde_json::json!({"tenant_id": ct, "keep_shares": true}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["shares_removed"], 0);
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", _z2), Some(&ts), None); assert_eq!(st, 200);
+    call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{}/members", _z2),
+        Some(&ta),
+        j(serde_json::json!({"username":"tr-sharee","role":"viewer"}))
+    );
+    let (st, b, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{}/tenant", _z2),
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": ct, "keep_shares": true}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["shares_removed"], 0);
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", _z2),
+        Some(&ts),
+        None
+    );
+    assert_eq!(st, 200);
 
     // race: two zones into a tenant with room for exactly one more
-    let r1 = make_zone(&env, &app, &tadmin, "race-a.example").await; let r2 = make_zone(&env, &app, &tadmin, "race-b.example").await;
-    let zones_now: i64 = env.state.db.query_one("SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar)=$1", &[&ct]).await.unwrap().get(0);
-    call!(app, put, &format!("/api/v1/tenants/{}", ct), Some(&tadmin), j(serde_json::json!({"name":"personal-tr-carol","max_zones": zones_now + 1,"max_records":null})));
-    let (u1, u2) = (format!("/api/v1/zones/{}/tenant", r1), format!("/api/v1/zones/{}/tenant", r2));
+    let r1 = make_zone(&env, &app, &tadmin, "race-a.example").await;
+    let r2 = make_zone(&env, &app, &tadmin, "race-b.example").await;
+    let zones_now: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar)=$1",
+            &[&ct],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    call!(
+        app,
+        put,
+        &format!("/api/v1/tenants/{}", ct),
+        Some(&tadmin),
+        j(
+            serde_json::json!({"name":"personal-tr-carol","max_zones": zones_now + 1,"max_records":null})
+        )
+    );
+    let (u1, u2) = (
+        format!("/api/v1/zones/{}/tenant", r1),
+        format!("/api/v1/zones/{}/tenant", r2),
+    );
     let (a, b) = futures_util::future::join(
-        async { call!(app, put, &u1, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))).0 },
-        async { call!(app, put, &u2, Some(&tadmin), j(serde_json::json!({"tenant_id": ct}))).0 }).await;
-    let mut got = vec![a, b]; got.sort();
-    assert_eq!(got, vec![200, 403], "exactly one concurrent transfer fits the quota");
-    let zones_end: i64 = env.state.db.query_one("SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar)=$1", &[&ct]).await.unwrap().get(0);
+        async {
+            call!(
+                app,
+                put,
+                &u1,
+                Some(&tadmin),
+                j(serde_json::json!({"tenant_id": ct}))
+            )
+            .0
+        },
+        async {
+            call!(
+                app,
+                put,
+                &u2,
+                Some(&tadmin),
+                j(serde_json::json!({"tenant_id": ct}))
+            )
+            .0
+        },
+    )
+    .await;
+    let mut got = vec![a, b];
+    got.sort();
+    assert_eq!(
+        got,
+        vec![200, 403],
+        "exactly one concurrent transfer fits the quota"
+    );
+    let zones_end: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar)=$1",
+            &[&ct],
+        )
+        .await
+        .unwrap()
+        .get(0);
     assert_eq!(zones_end, zones_now + 1);
     // detach to platform
-    let (st, _, raw) = call!(app, put, &uri, Some(&tadmin), j(serde_json::json!({"tenant_id": null}))); assert_eq!(st, 200, "{raw}");
-    let (st, _, _) = call!(app, get, &format!("/api/v1/zones/{}/records", z), Some(&tc), None); assert_eq!(st, 403, "detached zone is invisible to tenant members");
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &uri,
+        Some(&tadmin),
+        j(serde_json::json!({"tenant_id": null}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{}/records", z),
+        Some(&tc),
+        None
+    );
+    assert_eq!(st, 403, "detached zone is invisible to tenant members");
     env.cleanup().await;
 }
 
@@ -2099,12 +5567,21 @@ async fn zone_transfer_is_atomic_authorised_quota_checked_and_audited() {
 // ===========================================================================
 
 #[derive(Clone, Copy, PartialEq)]
-enum Behave { Answer, Servfail, Refused, Silent }
+enum Behave {
+    Answer,
+    Servfail,
+    Refused,
+    Silent,
+}
 
 /// UDP resolver on `bind` that answers A queries with TTL `ttl` (or misbehaves). Counts the queries it received.
-async fn behaving_resolver(bind: &str, how: Behave, ttl: u32) -> Option<(std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>)> {
+async fn behaving_resolver(
+    bind: &str,
+    how: Behave,
+    ttl: u32,
+) -> Option<(std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>)> {
     use hickory_proto::op::{Message, ResponseCode};
-    use hickory_proto::rr::{rdata::A, RData, Record};
+    use hickory_proto::rr::{RData, Record, rdata::A};
     let sock = tokio::net::UdpSocket::bind(bind).await.ok()?;
     let addr = sock.local_addr().ok()?;
     let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2112,17 +5589,35 @@ async fn behaving_resolver(bind: &str, how: Behave, ttl: u32) -> Option<(std::ne
     tokio::spawn(async move {
         let mut buf = vec![0u8; 1500];
         loop {
-            let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
+            let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                return;
+            };
             h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let Ok(q) = Message::from_vec(&buf[..n]) else { continue };
-            if how == Behave::Silent { continue; }
+            let Ok(q) = Message::from_vec(&buf[..n]) else {
+                continue;
+            };
+            if how == Behave::Silent {
+                continue;
+            }
             let mut r = Message::response(q.id(), q.op_code());
-            for qq in q.queries() { r.add_query(qq.clone());
+            for qq in q.queries() {
+                r.add_query(qq.clone());
                 match how {
-                    Behave::Servfail => { r.set_response_code(ResponseCode::ServFail); }
-                    Behave::Refused => { r.set_response_code(ResponseCode::Refused); }
-                    _ => { r.add_answer(Record::from_rdata(qq.name().clone(), ttl, RData::A(A::new(192, 0, 2, 1)))); }
-                } }
+                    Behave::Servfail => {
+                        r.set_response_code(ResponseCode::ServFail);
+                    }
+                    Behave::Refused => {
+                        r.set_response_code(ResponseCode::Refused);
+                    }
+                    _ => {
+                        r.add_answer(Record::from_rdata(
+                            qq.name().clone(),
+                            ttl,
+                            RData::A(A::new(192, 0, 2, 1)),
+                        ));
+                    }
+                }
+            }
             let _ = sock.send_to(&r.to_vec().unwrap(), from).await;
         }
     });
@@ -2130,7 +5625,13 @@ async fn behaving_resolver(bind: &str, how: Behave, ttl: u32) -> Option<(std::ne
 }
 
 fn spec(addrs: &[(&str, std::net::SocketAddr)]) -> Vec<lookup::ResolverSpec> {
-    addrs.iter().map(|(l, a)| lookup::ResolverSpec { label: l.to_string(), addr: *a }).collect()
+    addrs
+        .iter()
+        .map(|(l, a)| lookup::ResolverSpec {
+            label: l.to_string(),
+            addr: *a,
+        })
+        .collect()
 }
 
 #[actix_web::test]
@@ -2139,66 +5640,186 @@ async fn dns_lookup_failover_selection_and_information_hiding() {
     let Some(mut env) = setup().await else { return };
     let user = add_user(&env.state, "mr-user", "mr-user-pass-1", "user").await;
     let (tu, tadmin) = (env.token(&user, "user"), env.token(&env.admin, "admin"));
-    let (a1, h1) = behaving_resolver("127.0.0.1:0", Behave::Answer, 111).await.unwrap();
-    let (a2, _h2) = behaving_resolver("127.0.0.1:0", Behave::Answer, 222).await.unwrap();
-    let (sf, _) = behaving_resolver("127.0.0.1:0", Behave::Servfail, 0).await.unwrap();
-    let (rf, _) = behaving_resolver("127.0.0.1:0", Behave::Refused, 0).await.unwrap();
-    let (si, hs) = behaving_resolver("127.0.0.1:0", Behave::Silent, 0).await.unwrap();
+    let (a1, h1) = behaving_resolver("127.0.0.1:0", Behave::Answer, 111)
+        .await
+        .unwrap();
+    let (a2, _h2) = behaving_resolver("127.0.0.1:0", Behave::Answer, 222)
+        .await
+        .unwrap();
+    let (sf, _) = behaving_resolver("127.0.0.1:0", Behave::Servfail, 0)
+        .await
+        .unwrap();
+    let (rf, _) = behaving_resolver("127.0.0.1:0", Behave::Refused, 0)
+        .await
+        .unwrap();
+    let (si, hs) = behaving_resolver("127.0.0.1:0", Behave::Silent, 0)
+        .await
+        .unwrap();
     let q = serde_json::json!({"domain":"www.example","record_type":"A"});
 
     // 0. nothing configured -> explicit "not configured", never a built-in public resolver
-    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone())); assert_eq!(st, 503, "{raw}"); assert_eq!(b["error"], "not_configured"); }
+    {
+        let app = app!(env);
+        let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone()));
+        assert_eq!(st, 503, "{raw}");
+        assert_eq!(b["error"], "not_configured");
+    }
 
     // 1. primary success: the second resolver is never asked
-    env.state.lookup_resolvers = spec(&[("primary", a1), ("secondary", a2)]); env.full.inner = env.state.clone();
+    env.state.lookup_resolvers = spec(&[("primary", a1), ("secondary", a2)]);
+    env.full.inner = env.state.clone();
     let app = app!(env);
     let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone()));
-    assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 111);
-    assert!(b.get("resolver").is_none() && b.get("attempts").is_none(), "customers see no resolver details: {raw}");
-    assert!(!raw.contains("127.0.0.1") && !raw.contains("primary"), "{raw}");
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["records"][0]["ttl"], 111);
+    assert!(
+        b.get("resolver").is_none() && b.get("attempts").is_none(),
+        "customers see no resolver details: {raw}"
+    );
+    assert!(
+        !raw.contains("127.0.0.1") && !raw.contains("primary"),
+        "{raw}"
+    );
     let (_, ba, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(q.clone()));
-    assert!(ba["resolver"].as_str().unwrap().starts_with("primary (127.0.0.1:"), "{ba}"); assert_eq!(ba["attempts"].as_array().unwrap().len(), 1);
+    assert!(
+        ba["resolver"]
+            .as_str()
+            .unwrap()
+            .starts_with("primary (127.0.0.1:"),
+        "{ba}"
+    );
+    assert_eq!(ba["attempts"].as_array().unwrap().len(), 1);
 
     // 2. primary times out -> fallback answers, within roughly one timeout
-    env.state.lookup_resolvers = spec(&[("dead", si), ("backup", a2)]); env.full.inner = env.state.clone();
+    env.state.lookup_resolvers = spec(&[("dead", si), ("backup", a2)]);
+    env.full.inner = env.state.clone();
     let app = app!(env);
     let t0 = std::time::Instant::now();
     let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone()));
     let first = t0.elapsed();
-    assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 222);
-    assert!(first >= std::time::Duration::from_millis(380) && first < std::time::Duration::from_millis(1500), "one timeout, not more: {first:?}");
-    let (_, ba, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"www.example","record_type":"A"})));
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(b["records"][0]["ttl"], 222);
+    assert!(
+        first >= std::time::Duration::from_millis(380)
+            && first < std::time::Duration::from_millis(1500),
+        "one timeout, not more: {first:?}"
+    );
+    let (_, ba, _) = call!(
+        app,
+        post,
+        "/api/v1/dns/lookup",
+        Some(&tadmin),
+        j(serde_json::json!({"domain":"www.example","record_type":"A"}))
+    );
     // 3. the failed resolver is remembered: the next lookups do not pay the timeout again
     let before = hs.load(std::sync::atomic::Ordering::SeqCst);
     let t1 = std::time::Instant::now();
-    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone())); assert_eq!(st, 200);
-    assert!(t1.elapsed() < std::time::Duration::from_millis(300), "demoted resolver must not delay the next lookup: {:?}", t1.elapsed());
-    assert_eq!(hs.load(std::sync::atomic::Ordering::SeqCst), before, "demoted resolver was not queried again");
+    let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(q.clone()));
+    assert_eq!(st, 200);
+    assert!(
+        t1.elapsed() < std::time::Duration::from_millis(300),
+        "demoted resolver must not delay the next lookup: {:?}",
+        t1.elapsed()
+    );
+    assert_eq!(
+        hs.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "demoted resolver was not queried again"
+    );
     let _ = ba;
 
     // 4. SERVFAIL / REFUSED on the primary -> fallback success
     for (label, bad) in [("servfail", sf), ("refused", rf)] {
-        env.state.lookup_resolvers = spec(&[(label, bad), ("good", a1)]); env.full.inner = env.state.clone();
+        env.state.lookup_resolvers = spec(&[(label, bad), ("good", a1)]);
+        env.full.inner = env.state.clone();
         let app = app!(env);
-        let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":format!("{label}.example"),"record_type":"A"})));
-        assert_eq!(st, 200, "{label}: {raw}"); assert_eq!(b["status"], "NOERROR"); assert_eq!(b["records"][0]["ttl"], 111);
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":format!("{label}.example"),"record_type":"A"}))
+        );
+        assert_eq!(st, 200, "{label}: {raw}");
+        assert_eq!(b["status"], "NOERROR");
+        assert_eq!(b["records"][0]["ttl"], 111);
     }
     // 5. every resolver answers SERVFAIL: that status is returned honestly (not an invented success, not a 502)
-    env.state.lookup_resolvers = spec(&[("s1", sf), ("s2", rf)]); env.full.inner = env.state.clone();
-    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"allbad.example","record_type":"A"}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["status"], "REFUSED"); assert!(b["records"].as_array().unwrap().is_empty()); }
+    env.state.lookup_resolvers = spec(&[("s1", sf), ("s2", rf)]);
+    env.full.inner = env.state.clone();
+    {
+        let app = app!(env);
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":"allbad.example","record_type":"A"}))
+        );
+        assert_eq!(st, 200, "{raw}");
+        assert_eq!(b["status"], "REFUSED");
+        assert!(b["records"].as_array().unwrap().is_empty());
+    }
     // 6. all unavailable -> 502; customers see no addresses, administrators see each resolver's outcome
-    env.state.lookup_resolvers = spec(&[("x1", "127.0.0.1:9".parse().unwrap()), ("x2", si)]); env.full.inner = env.state.clone();
-    { let app = app!(env);
-      let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"down.example","record_type":"A"})));
-      assert_eq!(st, 502, "{raw}"); assert_eq!(b["error"], "resolver_unavailable"); assert!(!raw.contains("127.0.0.1") && !raw.contains("x1") && !raw.contains("attempts"), "{raw}");
-      let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"down2.example","record_type":"A"})));
-      assert_eq!(st, 502); assert_eq!(b["attempts"].as_array().unwrap().len(), 2, "{raw}"); assert!(raw.contains("127.0.0.1")); }
+    env.state.lookup_resolvers = spec(&[("x1", "127.0.0.1:9".parse().unwrap()), ("x2", si)]);
+    env.full.inner = env.state.clone();
+    {
+        let app = app!(env);
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":"down.example","record_type":"A"}))
+        );
+        assert_eq!(st, 502, "{raw}");
+        assert_eq!(b["error"], "resolver_unavailable");
+        assert!(
+            !raw.contains("127.0.0.1") && !raw.contains("x1") && !raw.contains("attempts"),
+            "{raw}"
+        );
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tadmin),
+            j(serde_json::json!({"domain":"down2.example","record_type":"A"}))
+        );
+        assert_eq!(st, 502);
+        assert_eq!(b["attempts"].as_array().unwrap().len(), 2, "{raw}");
+        assert!(raw.contains("127.0.0.1"));
+    }
     // 7. selection: administrators may pick a resolver by label, customers may not, unknown labels are rejected
-    env.state.lookup_resolvers = spec(&[("one", a1), ("two", a2)]); env.full.inner = env.state.clone();
-    { let app = app!(env);
-      let (st, b, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"two"}))); assert_eq!(st, 200); assert_eq!(b["records"][0]["ttl"], 222);
-      let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"two"}))); assert_eq!(st, 403);
-      let (st, _, _) = call!(app, post, "/api/v1/dns/lookup", Some(&tadmin), j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"nope"}))); assert_eq!(st, 400); }
+    env.state.lookup_resolvers = spec(&[("one", a1), ("two", a2)]);
+    env.full.inner = env.state.clone();
+    {
+        let app = app!(env);
+        let (st, b, _) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tadmin),
+            j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"two"}))
+        );
+        assert_eq!(st, 200);
+        assert_eq!(b["records"][0]["ttl"], 222);
+        let (st, _, _) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"two"}))
+        );
+        assert_eq!(st, 403);
+        let (st, _, _) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tadmin),
+            j(serde_json::json!({"domain":"sel.example","record_type":"A","resolver":"nope"}))
+        );
+        assert_eq!(st, 400);
+    }
     let _ = h1;
     env.cleanup().await;
 }
@@ -2207,18 +5828,51 @@ async fn dns_lookup_failover_selection_and_information_hiding() {
 async fn dns_lookup_works_with_ipv6_resolvers_and_mixed_families() {
     std::env::set_var("DNS_LOOKUP_TIMEOUT_MS", "400");
     let Some(mut env) = setup().await else { return };
-    let Some((v6, _)) = behaving_resolver("[::1]:0", Behave::Answer, 606).await else { eprintln!("SKIPPED: no IPv6 loopback"); env.cleanup().await; return };
-    let (v4dead, _) = behaving_resolver("127.0.0.1:0", Behave::Silent, 0).await.unwrap();
+    let Some((v6, _)) = behaving_resolver("[::1]:0", Behave::Answer, 606).await else {
+        eprintln!("SKIPPED: no IPv6 loopback");
+        env.cleanup().await;
+        return;
+    };
+    let (v4dead, _) = behaving_resolver("127.0.0.1:0", Behave::Silent, 0)
+        .await
+        .unwrap();
     let user = add_user(&env.state, "v6-user", "v6-user-pass-1", "user").await;
     let tu = env.token(&user, "user");
     assert!(v6.is_ipv6());
     // textual configuration round trip for IPv6
     let cfg = lookup::parse_resolvers(&format!("six={}", v6)).unwrap();
     assert_eq!(cfg[0].addr, v6);
-    env.state.lookup_resolvers = cfg; env.full.inner = env.state.clone();
-    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"v6.example","record_type":"A"}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 606); }
-    env.state.lookup_resolvers = spec(&[("v4dead", v4dead), ("six", v6)]); env.full.inner = env.state.clone();
-    { let app = app!(env); let (st, b, raw) = call!(app, post, "/api/v1/dns/lookup", Some(&tu), j(serde_json::json!({"domain":"mixed.example","record_type":"A"}))); assert_eq!(st, 200, "{raw}"); assert_eq!(b["records"][0]["ttl"], 606, "IPv4 resolver down -> IPv6 fallback"); }
+    env.state.lookup_resolvers = cfg;
+    env.full.inner = env.state.clone();
+    {
+        let app = app!(env);
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":"v6.example","record_type":"A"}))
+        );
+        assert_eq!(st, 200, "{raw}");
+        assert_eq!(b["records"][0]["ttl"], 606);
+    }
+    env.state.lookup_resolvers = spec(&[("v4dead", v4dead), ("six", v6)]);
+    env.full.inner = env.state.clone();
+    {
+        let app = app!(env);
+        let (st, b, raw) = call!(
+            app,
+            post,
+            "/api/v1/dns/lookup",
+            Some(&tu),
+            j(serde_json::json!({"domain":"mixed.example","record_type":"A"}))
+        );
+        assert_eq!(st, 200, "{raw}");
+        assert_eq!(
+            b["records"][0]["ttl"], 606,
+            "IPv4 resolver down -> IPv6 fallback"
+        );
+    }
     env.cleanup().await;
 }
 
@@ -2232,8 +5886,18 @@ async fn shared_rate_limit_is_atomic_under_concurrency() {
     // 40 concurrent "replicas" (separate pooled connections) against ONE bucket with a budget of 10
     let db = env.state.db.clone();
     let mut tasks = vec![];
-    for _ in 0..40 { let db = db.clone(); tasks.push(tokio::spawn(async move { shared::hit(&db, "t:one", 10, 60).await.unwrap() })); }
-    let mut allowed = 0; for t in tasks { if t.await.unwrap().is_none() { allowed += 1; } }
+    for _ in 0..40 {
+        let db = db.clone();
+        tasks.push(tokio::spawn(async move {
+            shared::hit(&db, "t:one", 10, 60).await.unwrap()
+        }));
+    }
+    let mut allowed = 0;
+    for t in tasks {
+        if t.await.unwrap().is_none() {
+            allowed += 1;
+        }
+    }
     assert_eq!(allowed, 10, "exactly the budget is granted, never more");
     // buckets are isolated from each other
     assert!(shared::hit(&db, "t:other", 10, 60).await.unwrap().is_none());
@@ -2250,11 +5914,28 @@ async fn collector_lease_has_one_holder_and_expires() {
     let Some(env) = setup().await else { return };
     let db = &env.state.db;
     assert!(shared::try_lease(db, "x", "A", 60.0).await.unwrap());
-    assert!(!shared::try_lease(db, "x", "B", 60.0).await.unwrap(), "second replica is refused while the lease is valid");
-    assert!(shared::try_lease(db, "x", "A", 60.0).await.unwrap(), "holder renews");
-    db.execute("UPDATE collector_lease SET expires_at = now() - interval '1 second' WHERE name = 'x'", &[]).await.unwrap();
-    assert!(shared::try_lease(db, "x", "B", 60.0).await.unwrap(), "expired lease is taken over");
-    assert!(!shared::try_lease(db, "x", "A", 60.0).await.unwrap(), "the former holder is now refused");
+    assert!(
+        !shared::try_lease(db, "x", "B", 60.0).await.unwrap(),
+        "second replica is refused while the lease is valid"
+    );
+    assert!(
+        shared::try_lease(db, "x", "A", 60.0).await.unwrap(),
+        "holder renews"
+    );
+    db.execute(
+        "UPDATE collector_lease SET expires_at = now() - interval '1 second' WHERE name = 'x'",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(
+        shared::try_lease(db, "x", "B", 60.0).await.unwrap(),
+        "expired lease is taken over"
+    );
+    assert!(
+        !shared::try_lease(db, "x", "A", 60.0).await.unwrap(),
+        "the former holder is now refused"
+    );
     env.cleanup().await;
 }
 
@@ -2266,30 +5947,73 @@ async fn persisted_collector_state_prevents_duplicates_and_loses_nothing() {
     let ta = env.token(&alice, "user");
     let app = app!(env);
     let _ = make_zone(&env, &app, &ta, "cs-zone.example").await;
-    let m = |total: u32, z: u32| format!("hickory_request_total{{class=\"in\"}} {total}\nhickory_zone_queries_total{{zone=\"cs-zone.example.\",result=\"ok\"}} {z}\n");
-    let sum = || async { let r = db.query_one("SELECT COALESCE(sum(requests),0)::bigint, (SELECT COALESCE(sum(queries),0)::bigint FROM zone_query_samples) FROM analytics_samples", &[]).await.unwrap(); (r.get::<_, i64>(0), r.get::<_, i64>(1)) };
+    let m = |total: u32, z: u32| {
+        format!(
+            "hickory_request_total{{class=\"in\"}} {total}\nhickory_zone_queries_total{{zone=\"cs-zone.example.\",result=\"ok\"}} {z}\n"
+        )
+    };
+    let sum = || async {
+        let r = db.query_one("SELECT COALESCE(sum(requests),0)::bigint, (SELECT COALESCE(sum(queries),0)::bigint FROM zone_query_samples) FROM analytics_samples", &[]).await.unwrap();
+        (r.get::<_, i64>(0), r.get::<_, i64>(1))
+    };
     let now = chrono::Utc::now().timestamp();
-    tenants::ingest_persistent(db, &m(1000, 100), now - 100).await.unwrap();         // baseline
-    tenants::ingest_persistent(db, &m(1050, 130), now - 90).await.unwrap();           // +50 / +30
+    tenants::ingest_persistent(db, &m(1000, 100), now - 100)
+        .await
+        .unwrap(); // baseline
+    tenants::ingest_persistent(db, &m(1050, 130), now - 90)
+        .await
+        .unwrap(); // +50 / +30
     // a second replica (or a retry) delivering the SAME scrape adds nothing
-    tenants::ingest_persistent(db, &m(1050, 130), now - 85).await.unwrap();
-    assert_eq!(sum().await, (50, 30), "duplicate delivery must not double count");
+    tenants::ingest_persistent(db, &m(1050, 130), now - 85)
+        .await
+        .unwrap();
+    assert_eq!(
+        sum().await,
+        (50, 30),
+        "duplicate delivery must not double count"
+    );
     // two writers racing on the same new scrape: exactly one delta
     let (m1, m2) = (m(1100, 160), m(1100, 160));
-    let (a, b) = tokio::join!(tenants::ingest_persistent(db, &m1, now - 80), tenants::ingest_persistent(db, &m2, now - 79));
-    a.unwrap(); b.unwrap();
-    assert_eq!(sum().await, (100, 60), "concurrent writers produce one sample, not two");
+    let (a, b) = tokio::join!(
+        tenants::ingest_persistent(db, &m1, now - 80),
+        tenants::ingest_persistent(db, &m2, now - 79)
+    );
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(
+        sum().await,
+        (100, 60),
+        "concurrent writers produce one sample, not two"
+    );
     // an outage: several scrapes are never ingested; the first one afterwards records the entire gap
-    tenants::ingest_persistent(db, &m(1400, 400), now - 10).await.unwrap();
+    tenants::ingest_persistent(db, &m(1400, 400), now - 10)
+        .await
+        .unwrap();
     assert_eq!(sum().await, (400, 300), "no data lost across a gap");
     // a failed write rolls back everything including the stored counters (so it is retried, not skipped)
-    db.batch_execute("ALTER TABLE analytics_samples RENAME TO analytics_samples_x").await.unwrap();
-    assert!(tenants::ingest_persistent(db, &m(1500, 500), now).await.is_err());
-    db.batch_execute("ALTER TABLE analytics_samples_x RENAME TO analytics_samples").await.unwrap();
-    tenants::ingest_persistent(db, &m(1500, 500), now).await.unwrap();
-    assert_eq!(sum().await, (500, 400), "the failed attempt left no trace and the retry recorded the full delta");
+    db.batch_execute("ALTER TABLE analytics_samples RENAME TO analytics_samples_x")
+        .await
+        .unwrap();
+    assert!(
+        tenants::ingest_persistent(db, &m(1500, 500), now)
+            .await
+            .is_err()
+    );
+    db.batch_execute("ALTER TABLE analytics_samples_x RENAME TO analytics_samples")
+        .await
+        .unwrap();
+    tenants::ingest_persistent(db, &m(1500, 500), now)
+        .await
+        .unwrap();
+    assert_eq!(
+        sum().await,
+        (500, 400),
+        "the failed attempt left no trace and the retry recorded the full delta"
+    );
     // counter reset (DNS server restart): the new value is the delta
-    tenants::ingest_persistent(db, &m(20, 5), now + 5).await.unwrap();
+    tenants::ingest_persistent(db, &m(20, 5), now + 5)
+        .await
+        .unwrap();
     assert_eq!(sum().await, (520, 405));
     env.cleanup().await;
 }
@@ -2304,11 +6028,18 @@ async fn breakdowns_are_isolated_bounded_honest_and_from_real_samples() {
     let db = &env.state.db;
     let alice = add_user(&env.state, "bd-alice", "alice-pass-1", "user").await;
     let carol = add_user(&env.state, "bd-carol", "carol-pass-1", "user").await;
-    let (ta, tc, tadmin) = (env.token(&alice, "user"), env.token(&carol, "user"), env.token(&env.admin, "admin"));
+    let (ta, tc, tadmin) = (
+        env.token(&alice, "user"),
+        env.token(&carol, "user"),
+        env.token(&env.admin, "admin"),
+    );
     let app = app!(env);
-    let _ = make_zone(&env, &app, &ta, "bd-alice.example").await; let _ = make_zone(&env, &app, &ta, "bd-alice2.example").await; let _ = make_zone(&env, &app, &tc, "bd-carol.example").await;
-    let scrape = |k: u32| format!(
-        "hickory_request_total{{class=\"in\"}} {}\n\
+    let _ = make_zone(&env, &app, &ta, "bd-alice.example").await;
+    let _ = make_zone(&env, &app, &ta, "bd-alice2.example").await;
+    let _ = make_zone(&env, &app, &tc, "bd-carol.example").await;
+    let scrape = |k: u32| {
+        format!(
+            "hickory_request_total{{class=\"in\"}} {}\n\
          hickory_zone_queries_total{{zone=\"bd-alice.example.\",result=\"ok\"}} {}\n\
          hickory_zone_qtype_total{{zone=\"bd-alice.example.\",qtype=\"A\"}} {}\nhickory_zone_qtype_total{{zone=\"bd-alice.example.\",qtype=\"MX\"}} {}\n\
          hickory_zone_qtype_total{{zone=\"bd-alice2.example.\",qtype=\"TXT\"}} {}\n\
@@ -2318,46 +6049,183 @@ async fn breakdowns_are_isolated_bounded_honest_and_from_real_samples() {
          hickory_zone_country_total{{zone=\"bd-alice2.example.\",country=\"ZZ-unknown\"}} {}\n\
          hickory_zone_country_total{{zone=\"bd-carol.example.\",country=\"ZZ-nodata\"}} {}\nhickory_zone_country_total{{zone=\"bd-carol.example.\",country=\"ZZ-private\"}} {}\n\
          hickory_geoip_build_epoch 1700000000\n",
-        100 + 10 * k, 5 * k, 3 * k, 2 * k, 4 * k, k, 2 * k, k, 4 * k, 6 * k, k);
+            100 + 10 * k,
+            5 * k,
+            3 * k,
+            2 * k,
+            4 * k,
+            k,
+            2 * k,
+            k,
+            4 * k,
+            6 * k,
+            k
+        )
+    };
     let now = chrono::Utc::now().timestamp();
-    tenants::ingest_persistent(db, &scrape(0), now - 100).await.unwrap();
-    tenants::ingest_persistent(db, &scrape(10), now - 50).await.unwrap();
-    tenants::ingest_persistent(db, &scrape(10), now - 40).await.unwrap(); // duplicate delivery: no change
+    tenants::ingest_persistent(db, &scrape(0), now - 100)
+        .await
+        .unwrap();
+    tenants::ingest_persistent(db, &scrape(10), now - 50)
+        .await
+        .unwrap();
+    tenants::ingest_persistent(db, &scrape(10), now - 40)
+        .await
+        .unwrap(); // duplicate delivery: no change
 
-    let (st, a, raw) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&ta), None); assert_eq!(st, 200, "{raw}");
-    let qt: Vec<(String, i64)> = a["breakdown"]["qtypes"].as_array().unwrap().iter().map(|x| (x["qtype"].as_str().unwrap().to_string(), x["queries"].as_i64().unwrap())).collect();
-    assert_eq!(qt, vec![("TXT".into(), 40), ("A".into(), 30), ("MX".into(), 20)], "alice sees only her zones, summed over zones, malicious label ignored: {raw}");
+    let (st, a, raw) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h",
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    let qt: Vec<(String, i64)> = a["breakdown"]["qtypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| {
+            (
+                x["qtype"].as_str().unwrap().to_string(),
+                x["queries"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        qt,
+        vec![("TXT".into(), 40), ("A".into(), 30), ("MX".into(), 20)],
+        "alice sees only her zones, summed over zones, malicious label ignored: {raw}"
+    );
     let co = a["breakdown"]["countries"].as_array().unwrap();
-    let find = |kind: &str| co.iter().find(|c| c["kind"] == kind).map(|c| c["queries"].as_i64().unwrap());
-    assert_eq!(co.iter().find(|c| c["code"] == "DE").unwrap()["queries"], 20);
-    assert_eq!(find("private"), Some(10)); assert_eq!(find("unknown"), Some(40)); assert_eq!(find("no_geoip"), None, "carol's sentinel must not leak into alice's view");
+    let find = |kind: &str| {
+        co.iter()
+            .find(|c| c["kind"] == kind)
+            .map(|c| c["queries"].as_i64().unwrap())
+    };
+    assert_eq!(
+        co.iter().find(|c| c["code"] == "DE").unwrap()["queries"],
+        20
+    );
+    assert_eq!(find("private"), Some(10));
+    assert_eq!(find("unknown"), Some(40));
+    assert_eq!(
+        find("no_geoip"),
+        None,
+        "carol's sentinel must not leak into alice's view"
+    );
     assert_eq!(a["breakdown"]["country_status"], "ok");
     assert_eq!(a["breakdown"]["geoip"]["available"], true);
     // zone filter inside the tenant
-    let (_, z, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h&zone=bd-alice2.example", Some(&ta), None);
-    assert_eq!(z["breakdown"]["qtypes"].as_array().unwrap().len(), 1); assert_eq!(z["breakdown"]["qtypes"][0]["qtype"], "TXT");
+    let (_, z, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h&zone=bd-alice2.example",
+        Some(&ta),
+        None
+    );
+    assert_eq!(z["breakdown"]["qtypes"].as_array().unwrap().len(), 1);
+    assert_eq!(z["breakdown"]["qtypes"][0]["qtype"], "TXT");
     // carol: only CAA, and her country data is entirely "GeoIP unavailable" (+private) -> status says so instead of inventing a country
-    let (_, c, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h", Some(&tc), None);
-    assert_eq!(c["breakdown"]["qtypes"].as_array().unwrap().len(), 1); assert_eq!(c["breakdown"]["qtypes"][0]["qtype"], "CAA");
+    let (_, c, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h",
+        Some(&tc),
+        None
+    );
+    assert_eq!(c["breakdown"]["qtypes"].as_array().unwrap().len(), 1);
+    assert_eq!(c["breakdown"]["qtypes"][0]["qtype"], "CAA");
     assert_eq!(c["breakdown"]["country_status"], "geoip_unavailable");
-    assert!(c["breakdown"]["countries"].as_array().unwrap().iter().all(|x| x["code"] == ""), "no country codes fabricated");
+    assert!(
+        c["breakdown"]["countries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x["code"] == ""),
+        "no country codes fabricated"
+    );
     // asking for another tenant's data is refused; foreign zone filter yields nothing
     let (_, tl, _) = call!(app, get, "/api/v1/tenants", Some(&tadmin), None);
-    let ctid = tl.as_array().unwrap().iter().find(|t| t["name"] == "personal-bd-carol").unwrap()["id"].as_str().unwrap().to_string();
-    let (st, _, _) = call!(app, get, &format!("/api/v1/analytics/tenant?tenant_id={}", ctid), Some(&ta), None); assert_eq!(st, 404);
-    let (_, x, _) = call!(app, get, "/api/v1/analytics/tenant?range=1h&zone=bd-carol.example", Some(&ta), None);
-    assert!(x["breakdown"]["qtypes"].as_array().unwrap().is_empty(), "foreign zone filter leaks nothing: {x}");
+    let ctid = tl
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "personal-bd-carol")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/analytics/tenant?tenant_id={}", ctid),
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 404);
+    let (_, x, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h&zone=bd-carol.example",
+        Some(&ta),
+        None
+    );
+    assert!(
+        x["breakdown"]["qtypes"].as_array().unwrap().is_empty(),
+        "foreign zone filter leaks nothing: {x}"
+    );
     // admin: global view is separate and covers everyone; customers cannot call it
-    let (st, g, raw) = call!(app, get, "/api/v1/analytics/global?range=1h", Some(&tadmin), None); assert_eq!(st, 200, "{raw}");
+    let (st, g, raw) = call!(
+        app,
+        get,
+        "/api/v1/analytics/global?range=1h",
+        Some(&tadmin),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
     assert_eq!(g["breakdown"]["qtypes"].as_array().unwrap().len(), 4);
-    let (st, _, _) = call!(app, get, "/api/v1/analytics/global", Some(&ta), None); assert_eq!(st, 403);
+    let (st, _, _) = call!(app, get, "/api/v1/analytics/global", Some(&ta), None);
+    assert_eq!(st, 403);
     // intervals
-    let (st, i, _) = call!(app, get, "/api/v1/analytics/tenant?range=7d&interval=1d", Some(&ta), None); assert_eq!(st, 200); assert_eq!(i["bucket_seconds"], 86400);
-    let (st, _, _) = call!(app, get, "/api/v1/analytics/tenant?range=90d&interval=1m", Some(&ta), None); assert_eq!(st, 400, "would exceed 2,000 buckets");
-    let (st, _, _) = call!(app, get, "/api/v1/analytics/tenant?interval=7s", Some(&ta), None); assert_eq!(st, 400);
+    let (st, i, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=7d&interval=1d",
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 200);
+    assert_eq!(i["bucket_seconds"], 86400);
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=90d&interval=1m",
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 400, "would exceed 2,000 buckets");
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?interval=7s",
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 400);
     // retention covers the new tables
-    db.execute("UPDATE zone_qtype_samples SET ts = ts - interval '200 days'", &[]).await.unwrap();
-    db.execute("UPDATE zone_country_samples SET ts = ts - interval '200 days'", &[]).await.unwrap();
+    db.execute(
+        "UPDATE zone_qtype_samples SET ts = ts - interval '200 days'",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "UPDATE zone_country_samples SET ts = ts - interval '200 days'",
+        &[],
+    )
+    .await
+    .unwrap();
     assert!(tenants::purge_analytics(db, 90).await.unwrap() > 0);
     let n: i64 = db.query_one("SELECT (SELECT count(*) FROM zone_qtype_samples) + (SELECT count(*) FROM zone_country_samples)", &[]).await.unwrap().get(0);
     assert_eq!(n, 0);
@@ -2379,21 +6247,52 @@ async fn rollup_preserves_sums_bounds_growth_and_is_idempotent() {
         INSERT INTO zone_country_samples (ts, tenant_id, domain, country, queries) SELECT now() - interval '3 days' + make_interval(secs => s * 300), (SELECT tenant_id FROM zones WHERE domain='ru.example'), 'ru.example', 'DE', 3 FROM generate_series(0, 287) s; \
         INSERT INTO analytics_samples (ts, requests) SELECT now() - interval '3 days' + make_interval(secs => s * 300), 7 FROM generate_series(0, 287) s; \
         INSERT INTO zone_query_samples (ts, tenant_id, domain, queries, failed) VALUES (now() - interval '10 minutes', (SELECT tenant_id FROM zones WHERE domain='ru.example'), 'ru.example', 5, 0)").await.unwrap();
-    let snap = || async { let r = db.query_one("SELECT (SELECT sum(queries)::bigint FROM zone_query_samples), (SELECT sum(failed)::bigint FROM zone_query_samples), (SELECT sum(queries)::bigint FROM zone_qtype_samples), (SELECT sum(queries)::bigint FROM zone_country_samples), (SELECT sum(requests)::bigint FROM analytics_samples), (SELECT count(*) FROM zone_query_samples) + (SELECT count(*) FROM zone_qtype_samples) + (SELECT count(*) FROM zone_country_samples) + (SELECT count(*) FROM analytics_samples)", &[]).await.unwrap();
-        ((r.get::<_, i64>(0), r.get::<_, i64>(1), r.get::<_, i64>(2), r.get::<_, i64>(3), r.get::<_, i64>(4)), r.get::<_, i64>(5)) };
+    let snap = || async {
+        let r = db.query_one("SELECT (SELECT sum(queries)::bigint FROM zone_query_samples), (SELECT sum(failed)::bigint FROM zone_query_samples), (SELECT sum(queries)::bigint FROM zone_qtype_samples), (SELECT sum(queries)::bigint FROM zone_country_samples), (SELECT sum(requests)::bigint FROM analytics_samples), (SELECT count(*) FROM zone_query_samples) + (SELECT count(*) FROM zone_qtype_samples) + (SELECT count(*) FROM zone_country_samples) + (SELECT count(*) FROM analytics_samples)", &[]).await.unwrap();
+        (
+            (
+                r.get::<_, i64>(0),
+                r.get::<_, i64>(1),
+                r.get::<_, i64>(2),
+                r.get::<_, i64>(3),
+                r.get::<_, i64>(4),
+            ),
+            r.get::<_, i64>(5),
+        )
+    };
     let (sums_before, rows_before) = snap().await;
     assert!(tenants::rollup_analytics(db).await.unwrap() > 0);
     let (sums_after, rows_after) = snap().await;
     assert_eq!(sums_before, sums_after, "every sum is preserved exactly");
-    assert!(rows_after < rows_before / 4, "row count shrinks: {rows_before} -> {rows_after}");
-    let recent: i64 = db.query_one("SELECT count(*) FROM zone_query_samples WHERE ts > now() - interval '1 hour'", &[]).await.unwrap().get(0);
+    assert!(
+        rows_after < rows_before / 4,
+        "row count shrinks: {rows_before} -> {rows_after}"
+    );
+    let recent: i64 = db
+        .query_one(
+            "SELECT count(*) FROM zone_query_samples WHERE ts > now() - interval '1 hour'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
     assert_eq!(recent, 1, "recent detail is kept");
     let non_hour: i64 = db.query_one("SELECT count(*) FROM zone_qtype_samples WHERE ts < now() - interval '49 hours' AND ts <> date_trunc('hour', ts)", &[]).await.unwrap().get(0);
     assert_eq!(non_hour, 0, "old rows are hour-aligned");
-    assert_eq!(tenants::rollup_analytics(db).await.unwrap(), 0, "idempotent: nothing left to merge");
+    assert_eq!(
+        tenants::rollup_analytics(db).await.unwrap(),
+        0,
+        "idempotent: nothing left to merge"
+    );
     assert_eq!(snap().await.0, sums_before);
     // the API serves the same totals from the rolled-up data
-    let (_, a, _) = call!(app, get, "/api/v1/analytics/tenant?range=7d", Some(&ta), None);
+    let (_, a, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=7d",
+        Some(&ta),
+        None
+    );
     assert_eq!(a["total_queries"], 288 * 10 + 5);
     env.cleanup().await;
 }

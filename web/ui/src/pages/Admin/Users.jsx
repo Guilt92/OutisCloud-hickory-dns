@@ -7,6 +7,7 @@ import { useServerPagination, PaginationControls } from '../../hooks/useAdvanced
 import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Eye, Edit, ShieldCheck } from 'lucide-react'
 import { PageHeader, useConfirm } from '../../components/ui'
 import Notifications from '../../components/Notifications'
+import { validators } from '../../hooks/useFormValidation'
 
 const ROLES = [
   { value: 'admin', label: 'Admin', description: 'Full access to all features', icon: ShieldCheck },
@@ -50,11 +51,13 @@ export default function Users() {
   const save = async () => {
     try {
       if (!form.username || form.username.length < 3) { notify?.warning('Username must be at least 3 characters'); return }
+      const email = form.email.trim()
+      if (email && validators.email(email)) { notify?.warning('Enter a valid email address'); return }
       if (editing) {
-        await api.put(`/api/v1/users/${editing.id}`, { username: form.username, role: form.role })
+        await api.put(`/api/v1/users/${editing.id}`, { username: form.username, role: form.role, email })
       } else {
         if (!form.password || form.password.length < 8) { notify?.warning('Password must be at least 8 characters'); return }
-        await api.post('/api/v1/users', { username: form.username, password: form.password, role: form.role })
+        await api.post('/api/v1/users', { username: form.username, password: form.password, role: form.role, email })
       }
       setOpen(false)
       load()
@@ -124,6 +127,7 @@ export default function Users() {
       <Modal title={editing ? 'Edit user' : 'Create user'} open={open} onClose={() => setOpen(false)}>
         <div className="space-y-4">
           <div><label htmlFor="user-name" className="form-label">Username</label><input id="user-name" className="input" placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></div>
+          <div><label htmlFor="user-email" className="form-label">Email <span className="text-muted">(optional)</span></label><input id="user-email" type="email" className="input" placeholder="user@example.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
           {!editing && (
             <div><label htmlFor="user-password" className="form-label">Password</label><input id="user-password" type="password" className="input" placeholder="Minimum 8 characters" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
           )}

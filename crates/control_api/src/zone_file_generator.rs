@@ -1,13 +1,18 @@
-use anyhow::{anyhow, Context};
-use std::sync::Arc;
-use tokio_postgres::Client;
-use std::path::Path;
-use std::{collections::{HashSet, HashMap}, fs};
-use tokio::task;
-use log::{debug, error, info, warn};
-use hickory_proto::rr::domain::Name;
-use crate::dns_builder::{write_synced, sync_parent_dir, DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder};
+use crate::db_pool::Pool;
+use crate::dns_builder::{
+    DnsRecordBuilder, SafeZoneFileWriter, TomlConfigBuilder, sync_parent_dir, write_synced,
+};
 use crate::dns_validator::validate_zone_file;
+use anyhow::{Context, anyhow};
+use hickory_proto::rr::domain::Name;
+use log::{debug, error, info, warn};
+use std::path::Path;
+use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+};
+use tokio::task;
 
 /// Represents a single DNS record row fetched from the database.
 #[derive(Clone, Debug)]
@@ -20,7 +25,11 @@ pub struct RecordRow {
 }
 
 fn ensure_trailing_dot(s: &str) -> String {
-    if s.ends_with('.') { s.to_string() } else { format!("{}.", s) }
+    if s.ends_with('.') {
+        s.to_string()
+    } else {
+        format!("{}.", s)
+    }
 }
 
 fn fqdn_for_record(name: &str, domain: &str) -> String {
@@ -95,7 +104,10 @@ impl PublishReport {
     }
     pub fn error_for(&self, domain: &str) -> Option<&str> {
         let d = domain.trim_end_matches('.').to_ascii_lowercase();
-        self.failed.iter().find(|(z, _)| *z == d).map(|(_, e)| e.as_str())
+        self.failed
+            .iter()
+            .find(|(z, _)| *z == d)
+            .map(|(_, e)| e.as_str())
     }
 }
 
@@ -113,7 +125,11 @@ fn effective_default_ns(nameservers: &[NameserverRow]) -> Vec<String> {
 
 /// First day-based serial: YYYYMMDD00.
 fn today_serial() -> u32 {
-    chrono::Utc::now().format("%Y%m%d00").to_string().parse().unwrap_or(1)
+    chrono::Utc::now()
+        .format("%Y%m%d00")
+        .to_string()
+        .parse()
+        .unwrap_or(1)
 }
 
 /// Rewrite the SOA line(s) so that the serial is `0` and fields are single-space
@@ -228,7 +244,11 @@ pub fn render_zone(
         let fq_name = Name::from_utf8(&fqdn)
             .with_context(|| format!("Invalid record name '{}' in zone {}", r.name, domain_base))?;
         if !origin.zone_of(&fq_name) {
-            return Err(anyhow!("record name '{}' is outside zone '{}'", r.name, domain_base));
+            return Err(anyhow!(
+                "record name '{}' is outside zone '{}'",
+                r.name,
+                domain_base
+            ));
         }
 
         // Build and validate record through Hickory DNS (from_db_fields calls validate internally)
@@ -253,7 +273,9 @@ pub fn render_zone(
         // CNAME may not coexist with other data at the same owner name
         // (RFC 1034 §3.6.2 / RFC 2181 §10.1). Hickory would otherwise serve a
         // zone with ambiguous answers.
-        let entry = owners.entry(fq_name.to_ascii().to_ascii_lowercase()).or_insert((0, 0));
+        let entry = owners
+            .entry(fq_name.to_ascii().to_ascii_lowercase())
+            .or_insert((0, 0));
         if r.rtype.trim().eq_ignore_ascii_case("CNAME") {
             entry.0 += 1;
         } else {
@@ -280,11 +302,15 @@ pub fn render_zone(
         if *cnames > 1 || (*cnames == 1 && *other > 0) {
             return Err(anyhow!(
                 "CNAME conflict at '{}' in zone {}: a CNAME cannot coexist with other records (or another CNAME)",
-                owner, domain_base
+                owner,
+                domain_base
             ));
         }
         if *cnames > 0 && *owner == origin.to_ascii().to_ascii_lowercase() {
-            return Err(anyhow!("a CNAME cannot be placed at the zone apex ({})", domain_base));
+            return Err(anyhow!(
+                "a CNAME cannot be placed at the zone apex ({})",
+                domain_base
+            ));
         }
     }
 
@@ -308,13 +334,24 @@ pub fn render_zone(
             let ip = ns_row.ip_address.trim();
             match ip.parse::<std::net::IpAddr>() {
                 Ok(std::net::IpAddr::V4(v4)) => {
-                    zone_contents.push_str(&format!("{} 3600 IN A {}\n", ensure_trailing_dot(&ns_hostname), v4));
+                    zone_contents.push_str(&format!(
+                        "{} 3600 IN A {}\n",
+                        ensure_trailing_dot(&ns_hostname),
+                        v4
+                    ));
                 }
                 Ok(std::net::IpAddr::V6(v6)) => {
-                    zone_contents.push_str(&format!("{} 3600 IN AAAA {}\n", ensure_trailing_dot(&ns_hostname), v6));
+                    zone_contents.push_str(&format!(
+                        "{} 3600 IN AAAA {}\n",
+                        ensure_trailing_dot(&ns_hostname),
+                        v6
+                    ));
                 }
                 Err(_) => {
-                    warn!("nameserver {} has an invalid IP address {:?}; glue omitted", ns_hostname, ip);
+                    warn!(
+                        "nameserver {} has an invalid IP address {:?}; glue omitted",
+                        ns_hostname, ip
+                    );
                 }
             }
         }
@@ -325,7 +362,11 @@ pub fn render_zone(
 
 /// Validate (render + parse with Hickory) what a zone would look like, without
 /// touching the disk. Used by the API to reject a change *before* it is saved.
-pub fn precheck_zone(domain: &str, recs: &[RecordRow], nameservers: &[NameserverRow]) -> anyhow::Result<()> {
+pub fn precheck_zone(
+    domain: &str,
+    recs: &[RecordRow],
+    nameservers: &[NameserverRow],
+) -> anyhow::Result<()> {
     let (text, _) = render_zone(domain, recs, nameservers, Some(1))?;
     let domain_dot = ensure_trailing_dot(&domain.trim_end_matches('.').to_ascii_lowercase());
     let origin = Name::from_utf8(&domain_dot)?;
@@ -353,7 +394,14 @@ pub fn generate_from_data(
     geo_rules_map: HashMap<String, Vec<GeoRuleRow>>,
     nameservers: Vec<NameserverRow>,
 ) -> anyhow::Result<PublishReport> {
-    generate_with_ecs(base_dir, zones, &HashSet::new(), records_map, geo_rules_map, nameservers)
+    generate_with_ecs(
+        base_dir,
+        zones,
+        &HashSet::new(),
+        records_map,
+        geo_rules_map,
+        nameservers,
+    )
 }
 
 /// Like [`generate_from_data`]; `ecs_zones` are the ids of zones that opted in
@@ -364,9 +412,17 @@ pub fn generate_with_ecs(
     ecs_zones: &HashSet<String>,
     records_map: HashMap<String, Vec<RecordRow>>, // key is zone_id
     geo_rules_map: HashMap<String, Vec<GeoRuleRow>>, // key is zone_id
-    nameservers: Vec<NameserverRow>, // nameservers from database
+    nameservers: Vec<NameserverRow>,              // nameservers from database
 ) -> anyhow::Result<PublishReport> {
-    generate_full(base_dir, zones, ecs_zones, &HashMap::new(), records_map, geo_rules_map, nameservers)
+    generate_full(
+        base_dir,
+        zones,
+        ecs_zones,
+        &HashMap::new(),
+        records_map,
+        geo_rules_map,
+        nameservers,
+    )
 }
 
 /// Like [`generate_with_ecs`]; `dnssec_keys` maps a zone id to its signing key
@@ -382,7 +438,8 @@ pub fn generate_full(
     nameservers: Vec<NameserverRow>,
 ) -> anyhow::Result<PublishReport> {
     let base_path = Path::new(base_dir);
-    std::fs::create_dir_all(base_path).with_context(|| format!("failed to create dir {}", base_dir))?;
+    std::fs::create_dir_all(base_path)
+        .with_context(|| format!("failed to create dir {}", base_dir))?;
 
     let mut report = PublishReport::default();
 
@@ -391,7 +448,10 @@ pub fn generate_full(
     let mut expected_files = HashSet::new();
     let mut seen_zone_files = HashSet::new();
     for (_id, domain, _enabled) in &zones {
-        expected_files.insert(format!("zone.{}", domain.trim_end_matches('.').to_ascii_lowercase()));
+        expected_files.insert(format!(
+            "zone.{}",
+            domain.trim_end_matches('.').to_ascii_lowercase()
+        ));
     }
 
     // Build TOML configuration
@@ -412,7 +472,9 @@ pub fn generate_full(
                 "skipping zone {}: another zone already maps to zone file {:?} (duplicate domain differing only by case or trailing dot?)",
                 domain, zone_path
             );
-            report.failed.push((domain_norm.clone(), "duplicate zone domain".to_string()));
+            report
+                .failed
+                .push((domain_norm.clone(), "duplicate zone domain".to_string()));
             continue;
         }
 
@@ -450,7 +512,10 @@ pub fn generate_full(
             SafeZoneFileWriter::write_validated(&zone_path, &text, Some(&origin)).with_context(|| {
                 format!("Zone file validation failed for {}: Hickory parser rejected zone structure", domain_norm)
             })?;
-            info!("Successfully wrote zone file: {:?} (serial {})", zone_path, serial);
+            info!(
+                "Successfully wrote zone file: {:?} (serial {})",
+                zone_path, serial
+            );
             Ok(true)
         })();
 
@@ -496,40 +561,31 @@ pub fn generate_full(
 
         let keys = dnssec_keys.get(zone_id).cloned().unwrap_or_default();
         let geo_on = *geodns_enabled && keys.is_empty();
-        toml_builder.add_zone(domain_norm.clone(), zone_path_str, geo_on, if geo_on { geo_rules } else { Vec::new() })?;
+        toml_builder.add_zone(
+            domain_norm.clone(),
+            zone_path_str,
+            geo_on,
+            if geo_on { geo_rules } else { Vec::new() },
+        )?;
         toml_builder.set_last_zone_ecs(ecs_zones.contains(zone_id) && geo_on);
         toml_builder.set_last_zone_keys(keys);
-    }
-
-    // Zone files that no longer belong to any zone are moved aside (not
-    // deleted) so an accidental removal can be undone; the server only serves
-    // zones named in named.toml, so a quarantined file is never served.
-    let orphan_dir = base_path.join(".orphaned");
-    for entry in fs::read_dir(base_path)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.starts_with("zone.") && !name.ends_with(".tmp") && !expected_files.contains(name) {
-                    debug!("Quarantining orphaned zone file: {}", name);
-                    let _ = fs::create_dir_all(&orphan_dir);
-                    let dest = orphan_dir.join(format!("{}.{}", name, chrono::Utc::now().format("%Y%m%d%H%M%S")));
-                    if fs::rename(entry.path(), &dest).is_err() {
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
     }
 
     // Build and write TOML configuration (only if it changed, so an
     // unchanged zone set does not make the DNS server reload for nothing).
     let toml_content = toml_builder.build()?;
     let named_path = base_path.join("named.toml");
-    if fs::read_to_string(&named_path).map(|c| c == toml_content).unwrap_or(false) {
+    if fs::read_to_string(&named_path)
+        .map(|c| c == toml_content)
+        .unwrap_or(false)
+    {
         debug!("named.toml unchanged");
     } else {
         let tmp_named = base_path.join("named.toml.tmp");
-        debug!("Writing TOML configuration to temporary file: {:?}", tmp_named);
+        debug!(
+            "Writing TOML configuration to temporary file: {:?}",
+            tmp_named
+        );
         // A stale temporary file (e.g. left behind by a previous run owned by a
         // different uid) would make the write fail. Remove it first so the
         // atomic tmp+rename pattern always works.
@@ -541,10 +597,40 @@ pub fn generate_full(
         sync_parent_dir(&named_path);
     }
 
+    // Only after the new configuration is live is it safe to quarantine zone
+    // files that no longer belong to any zone. If the TOML write above failed,
+    // the old files (still referenced by the old named.toml) stay untouched.
+    let orphan_dir = base_path.join(".orphaned");
+    for entry in fs::read_dir(base_path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("zone.")
+                    && !name.ends_with(".tmp")
+                    && !expected_files.contains(name)
+                {
+                    debug!("Quarantining orphaned zone file: {}", name);
+                    let _ = fs::create_dir_all(&orphan_dir);
+                    let dest = orphan_dir.join(format!(
+                        "{}.{}",
+                        name,
+                        chrono::Utc::now().format("%Y%m%d%H%M%S")
+                    ));
+                    if fs::rename(entry.path(), &dest).is_err() {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
     if report.failed.is_empty() {
         info!("Successfully generated zone files and configuration");
     } else {
-        warn!("generated zone files with {} failed zone(s)", report.failed.len());
+        warn!(
+            "generated zone files with {} failed zone(s)",
+            report.failed.len()
+        );
     }
     Ok(report)
 }
@@ -552,7 +638,7 @@ pub fn generate_full(
 /// Fetch every zone, record, geo rule and nameserver. Any database error is
 /// propagated: publishing from a partially-read (or empty) dataset would
 /// delete or replace valid zones.
-pub async fn load_nameservers(db: &Client) -> anyhow::Result<Vec<NameserverRow>> {
+pub async fn load_nameservers(db: &Pool) -> anyhow::Result<Vec<NameserverRow>> {
     let ns_rows = db
         .query(
             "SELECT hostname, ip_address, glue_ip, sort_order, enabled FROM nameservers ORDER BY sort_order, hostname",
@@ -572,7 +658,7 @@ pub async fn load_nameservers(db: &Client) -> anyhow::Result<Vec<NameserverRow>>
         .collect())
 }
 
-pub async fn load_zone_records(db: &Client, zone_id: &str) -> anyhow::Result<Vec<RecordRow>> {
+pub async fn load_zone_records(db: &Pool, zone_id: &str) -> anyhow::Result<Vec<RecordRow>> {
     let recs = db
         .query(
             "SELECT name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY created_at, id",
@@ -594,16 +680,20 @@ pub async fn load_zone_records(db: &Client, zone_id: &str) -> anyhow::Result<Vec
 
 /// Generate all zone files and the named configuration directory by querying the
 /// provided Postgres client.
-pub async fn generate_all(base_dir: &str, db: Arc<crate::db_pool::Pool>) -> anyhow::Result<PublishReport> {
+pub async fn generate_all(
+    base_dir: &str,
+    db: Arc<crate::db_pool::Pool>,
+) -> anyhow::Result<PublishReport> {
     let base = base_dir.to_string();
 
     let zones_rows = db
-        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs FROM zones WHERE COALESCE(status, 'active') = 'active' ORDER BY domain", &[])
+        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed FROM zones WHERE COALESCE(status, 'active') = 'active' ORDER BY domain", &[])
         .await
         .context("failed to read zones")?;
 
     let mut zones_vec = Vec::new();
     let mut ecs_zones: HashSet<String> = HashSet::new();
+    let mut signed_zones: HashSet<String> = HashSet::new();
     let mut records_map: HashMap<String, Vec<RecordRow>> = HashMap::new();
     let mut geo_rules_map: HashMap<String, Vec<GeoRuleRow>> = HashMap::new();
 
@@ -611,42 +701,103 @@ pub async fn generate_all(base_dir: &str, db: Arc<crate::db_pool::Pool>) -> anyh
         let zone_id: String = z.get("id");
         let domain: String = z.get("domain");
         let enabled: bool = z.get("geo");
-        if z.get::<_, bool>("ecs") { ecs_zones.insert(zone_id.clone()); }
+        let signed: bool = z.get("signed");
+        if signed && enabled {
+            anyhow::bail!(
+                "zone {} is both DNSSEC-signed and GeoDNS-enabled; refusing to publish an inconsistent configuration",
+                domain
+            );
+        }
+        if signed {
+            signed_zones.insert(zone_id.clone());
+        }
+        if z.get::<_, bool>("ecs") {
+            ecs_zones.insert(zone_id.clone());
+        }
         zones_vec.push((zone_id.clone(), domain, enabled));
-        records_map.insert(zone_id.clone(), load_zone_records(&db, &zone_id).await?);
+        records_map.insert(zone_id, Vec::new());
+    }
 
-        let geos = db
-            .query(
-                "SELECT match_type, match_value, target, priority, enabled, record_name, record_type FROM georules WHERE CAST(zone_id AS varchar) = $1 ORDER BY priority DESC, match_type, match_value, target, id",
-                &[&zone_id],
-            )
-            .await
-            .context("failed to read georules")?;
-        geo_rules_map.insert(
-            zone_id,
-            geos.into_iter()
-                .map(|g| GeoRuleRow {
-                    match_type: g.get("match_type"),
-                    match_value: g.get("match_value"),
-                    target: g.get("target"),
-                    priority: g.try_get("priority").unwrap_or(0),
-                    enabled: g.try_get("enabled").unwrap_or(true),
-                    record_name: g.try_get("record_name").unwrap_or(None),
-                    record_type: g.try_get("record_type").unwrap_or(None),
-                })
-                .collect(),
-        );
+    let record_rows = db
+        .query(
+            "SELECT CAST(r.zone_id AS varchar) AS zone_id, r.name, r.record_type, r.value, r.ttl, r.priority              FROM records r JOIN zones z ON z.id = r.zone_id              WHERE COALESCE(z.status, 'active') = 'active' ORDER BY r.zone_id, r.created_at, r.id",
+            &[],
+        )
+        .await
+        .context("failed to read records")?;
+    for r in record_rows {
+        let zone_id: String = r.get("zone_id");
+        if let Some(records) = records_map.get_mut(&zone_id) {
+            records.push(RecordRow {
+                name: r.get("name"),
+                rtype: r.get("record_type"),
+                value: r.get("value"),
+                ttl: r.try_get("ttl").unwrap_or(3600),
+                priority: r.try_get("priority").unwrap_or(0),
+            });
+        }
+    }
+
+    let geo_rows = db
+        .query(
+            "SELECT CAST(g.zone_id AS varchar) AS zone_id, g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type              FROM georules g JOIN zones z ON z.id = g.zone_id              WHERE COALESCE(z.status, 'active') = 'active'              ORDER BY g.zone_id, g.priority DESC, g.match_type, g.match_value, g.target, g.id",
+            &[],
+        )
+        .await
+        .context("failed to read georules")?;
+    for g in geo_rows {
+        let zone_id: String = g.get("zone_id");
+        if let Some(rules) = geo_rules_map.get_mut(&zone_id) {
+            rules.push(GeoRuleRow {
+                match_type: g.get("match_type"),
+                match_value: g.get("match_value"),
+                target: g.get("target"),
+                priority: g.try_get("priority").unwrap_or(0),
+                enabled: g.try_get("enabled").unwrap_or(true),
+                record_name: g.try_get("record_name").unwrap_or(None),
+                record_type: g.try_get("record_type").unwrap_or(None),
+            });
+        }
     }
 
     let nameservers = load_nameservers(&db).await?;
-    let dnssec_keys = crate::dnssec::load_key_paths(&db, &base).await.unwrap_or_else(|e| {
-        warn!("could not read DNSSEC keys (zones are published unsigned): {:#}", e);
-        HashMap::new()
-    });
+    // Fail closed: a key/database error must abort publication before any
+    // file is touched. Publishing a signed zone without its keys would make
+    // validators treat the zone as unsigned/bogus.
+    let dnssec_keys = crate::dnssec::load_key_paths(&db, &base)
+        .await
+        .context("failed to load DNSSEC key metadata")?;
+    for zone_id in &signed_zones {
+        let keys = dnssec_keys
+            .get(zone_id)
+            .filter(|keys| !keys.is_empty())
+            .ok_or_else(|| anyhow!("DNSSEC-enabled zone {} has no active signing key", zone_id))?;
+        for (path, _algorithm) in keys {
+            let contents = fs::read(path).with_context(|| {
+                format!(
+                    "cannot read DNSSEC key file {:?} for zone {}",
+                    path, zone_id
+                )
+            })?;
+            if contents.is_empty() {
+                anyhow::bail!("DNSSEC key file {:?} for zone {} is empty", path, zone_id);
+            }
+        }
+    }
 
     // blocking filesystem work off the async runtime
-    task::spawn_blocking(move || generate_full(&base, zones_vec, &ecs_zones, &dnssec_keys, records_map, geo_rules_map, nameservers))
-        .await?
+    task::spawn_blocking(move || {
+        generate_full(
+            &base,
+            zones_vec,
+            &ecs_zones,
+            &dnssec_keys,
+            records_map,
+            geo_rules_map,
+            nameservers,
+        )
+    })
+    .await?
 }
 
 // --------------------------------------------------------
@@ -672,8 +823,14 @@ mod tests {
         assert_eq!(fqdn_for_record("www.", "example.com"), "www.");
         assert_eq!(fqdn_for_record("sub", "example.com."), "sub.example.com.");
         // full hostnames containing the zone domain must not be doubled
-        assert_eq!(fqdn_for_record("ns1.example.com", "example.com"), "ns1.example.com.");
-        assert_eq!(fqdn_for_record("ns1.example.com", "example.com."), "ns1.example.com.");
+        assert_eq!(
+            fqdn_for_record("ns1.example.com", "example.com"),
+            "ns1.example.com."
+        );
+        assert_eq!(
+            fqdn_for_record("ns1.example.com", "example.com."),
+            "ns1.example.com."
+        );
     }
 
     #[test]
@@ -709,15 +866,13 @@ mod tests {
         let mut recs = HashMap::new();
         recs.insert(
             "id1".to_string(),
-            vec![
-                RecordRow {
-                    name: "@".into(),
-                    rtype: "A".into(),
-                    value: "1.2.3.4".into(),
-                    ttl: 3600,
-                    priority: 0,
-                },
-            ],
+            vec![RecordRow {
+                name: "@".into(),
+                rtype: "A".into(),
+                value: "1.2.3.4".into(),
+                ttl: 3600,
+                priority: 0,
+            }],
         );
         let mut geo = HashMap::new();
         geo.insert(
@@ -841,7 +996,7 @@ mod tests {
         // SOA line should have a numeric serial value
         let soa_line = contents.lines().find(|l| l.contains("SOA")).unwrap();
         let parts: Vec<&str> = soa_line.split_whitespace().collect();
-        assert!(parts.len() >= 7);  // fqdn ttl IN SOA mname rname serial...
+        assert!(parts.len() >= 7); // fqdn ttl IN SOA mname rname serial...
         // Serial is at position 6: fqdn(0) ttl(1) IN(2) SOA(3) mname(4) rname(5) serial(6)
         let serial = parts[6];
         assert!(serial.chars().all(|c| c.is_digit(10)));
@@ -926,7 +1081,9 @@ mod tests {
                 RecordRow {
                     name: "@".into(),
                     rtype: "SOA".into(),
-                    value: "ns1.example.com hostmaster.example.com 2026010101 3600 3600 604800 3600".into(),
+                    value:
+                        "ns1.example.com hostmaster.example.com 2026010101 3600 3600 604800 3600"
+                            .into(),
                     ttl: 3600,
                     priority: 0,
                 },
@@ -934,7 +1091,9 @@ mod tests {
                 RecordRow {
                     name: "@".into(),
                     rtype: "SOA".into(),
-                    value: "ns1.example.com. hostmaster.example.com. 2026010102 3600 3600 604800 3600".into(),
+                    value:
+                        "ns1.example.com. hostmaster.example.com. 2026010102 3600 3600 604800 3600"
+                            .into(),
                     ttl: 3600,
                     priority: 0,
                 },
@@ -948,7 +1107,11 @@ mod tests {
         let contents = fs::read_to_string(&zonefile).unwrap();
         // only one SOA line may ever be emitted (Hickory rejects duplicates)
         let soa_count = contents.lines().filter(|l| l.contains("IN SOA")).count();
-        assert_eq!(soa_count, 1, "expected exactly one SOA line, got:\n{}", contents);
+        assert_eq!(
+            soa_count, 1,
+            "expected exactly one SOA line, got:\n{}",
+            contents
+        );
     }
 
     #[test]
@@ -1004,11 +1167,21 @@ mod tests {
         assert!(!contents.contains("ns1.stale.com"));
         assert!(!contents.contains("ns2.stale.com"));
         // subdomain NS record is preserved
-        assert!(contents.contains("sub.example.com. 3600 IN NS ns3.stale.com."), "was:\n{}", contents);
+        assert!(
+            contents.contains("sub.example.com. 3600 IN NS ns3.stale.com."),
+            "was:\n{}",
+            contents
+        );
     }
 
     fn rec(name: &str, t: &str, v: &str) -> RecordRow {
-        RecordRow { name: name.into(), rtype: t.into(), value: v.into(), ttl: 300, priority: 0 }
+        RecordRow {
+            name: name.into(),
+            rtype: t.into(),
+            value: v.into(),
+            ttl: 300,
+            priority: 0,
+        }
     }
 
     fn one_zone(dir: &str, recs: Vec<RecordRow>) -> PublishReport {
@@ -1026,7 +1199,11 @@ mod tests {
         one_zone(b, vec![rec("www", "A", "192.0.2.1")]);
         let s1 = soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap();
         one_zone(b, vec![rec("www", "A", "192.0.2.1")]);
-        assert_eq!(soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap(), s1, "no change, no bump");
+        assert_eq!(
+            soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap(),
+            s1,
+            "no change, no bump"
+        );
         one_zone(b, vec![rec("www", "A", "192.0.2.2")]);
         let s2 = soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap();
         assert!(s2 > s1);
@@ -1042,10 +1219,18 @@ mod tests {
         let zf = dir.path().join("zone.example.com");
         // a zone published earlier with a far-future serial
         one_zone(b, vec![rec("www", "A", "192.0.2.1")]);
-        let text = fs::read_to_string(&zf).unwrap().replace(&soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap().to_string(), "4000000000");
+        let text = fs::read_to_string(&zf).unwrap().replace(
+            &soa_serial_in(&fs::read_to_string(&zf).unwrap())
+                .unwrap()
+                .to_string(),
+            "4000000000",
+        );
         fs::write(&zf, text).unwrap();
         one_zone(b, vec![rec("www", "A", "192.0.2.9")]);
-        assert_eq!(soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap(), 4000000001);
+        assert_eq!(
+            soa_serial_in(&fs::read_to_string(&zf).unwrap()).unwrap(),
+            4000000001
+        );
     }
 
     #[test]
@@ -1068,8 +1253,15 @@ mod tests {
         let report = generate_from_data(b, zones, m, HashMap::new(), vec![]).unwrap();
         assert_eq!(report.failed.len(), 1);
         assert_eq!(report.failed[0].0, "a.example");
-        assert_eq!(fs::read_to_string(dir.path().join("zone.a.example")).unwrap(), a_before);
-        assert!(fs::read_to_string(dir.path().join("zone.b.example")).unwrap().contains("192.0.2.22"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("zone.a.example")).unwrap(),
+            a_before
+        );
+        assert!(
+            fs::read_to_string(dir.path().join("zone.b.example"))
+                .unwrap()
+                .contains("192.0.2.22")
+        );
         let named = fs::read_to_string(dir.path().join("named.toml")).unwrap();
         assert!(named.contains("a.example") && named.contains("b.example"));
         assert!(!dir.path().join("zone.a.example.tmp").exists());
@@ -1081,47 +1273,117 @@ mod tests {
         let report = one_zone(dir.path().to_str().unwrap(), vec![rec("www", "A", "bogus")]);
         assert_eq!(report.failed.len(), 1);
         assert!(!dir.path().join("zone.example.com").exists());
-        assert!(!fs::read_to_string(dir.path().join("named.toml")).unwrap().contains("example.com"));
+        assert!(
+            !fs::read_to_string(dir.path().join("named.toml"))
+                .unwrap()
+                .contains("example.com")
+        );
     }
 
     #[test]
     fn orphaned_zone_files_are_quarantined_not_deleted() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("zone.gone.com"), "x").unwrap();
-        generate_from_data(dir.path().to_str().unwrap(), vec![], HashMap::new(), HashMap::new(), vec![]).unwrap();
+        generate_from_data(
+            dir.path().to_str().unwrap(),
+            vec![],
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        )
+        .unwrap();
         assert!(!dir.path().join("zone.gone.com").exists());
-        let kept: Vec<_> = fs::read_dir(dir.path().join(".orphaned")).unwrap().collect();
+        let kept: Vec<_> = fs::read_dir(dir.path().join(".orphaned"))
+            .unwrap()
+            .collect();
         assert_eq!(kept.len(), 1);
     }
 
     #[test]
     fn cname_conflicts_and_foreign_names_are_rejected() {
         let ns: Vec<NameserverRow> = vec![];
-        assert!(precheck_zone("example.com", &[rec("www", "CNAME", "a.example.com."), rec("www", "A", "192.0.2.1")], &ns).is_err());
-        assert!(precheck_zone("example.com", &[rec("www", "CNAME", "a.example.com."), rec("www", "CNAME", "b.example.com.")], &ns).is_err());
+        assert!(
+            precheck_zone(
+                "example.com",
+                &[
+                    rec("www", "CNAME", "a.example.com."),
+                    rec("www", "A", "192.0.2.1")
+                ],
+                &ns
+            )
+            .is_err()
+        );
+        assert!(
+            precheck_zone(
+                "example.com",
+                &[
+                    rec("www", "CNAME", "a.example.com."),
+                    rec("www", "CNAME", "b.example.com.")
+                ],
+                &ns
+            )
+            .is_err()
+        );
         assert!(precheck_zone("example.com", &[rec("@", "CNAME", "a.example.com.")], &ns).is_err());
-        assert!(precheck_zone("example.com", &[rec("x.other.org.", "A", "192.0.2.1")], &ns).is_err());
-        assert!(precheck_zone("example.com", &[rec("a", "CNAME", "b.example.org."), rec("b", "A", "192.0.2.1")], &ns).is_ok());
+        assert!(
+            precheck_zone("example.com", &[rec("x.other.org.", "A", "192.0.2.1")], &ns).is_err()
+        );
+        assert!(
+            precheck_zone(
+                "example.com",
+                &[
+                    rec("a", "CNAME", "b.example.org."),
+                    rec("b", "A", "192.0.2.1")
+                ],
+                &ns
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn ipv6_nameserver_gets_aaaa_glue_and_bad_ip_is_skipped() {
         let ns = vec![
-            NameserverRow { hostname: "ns1.example.com".into(), ip_address: "2001:db8::53".into(), glue_ip: None, sort_order: 0, enabled: true },
-            NameserverRow { hostname: "ns2.example.com".into(), ip_address: "garbage".into(), glue_ip: None, sort_order: 1, enabled: true },
+            NameserverRow {
+                hostname: "ns1.example.com".into(),
+                ip_address: "2001:db8::53".into(),
+                glue_ip: None,
+                sort_order: 0,
+                enabled: true,
+            },
+            NameserverRow {
+                hostname: "ns2.example.com".into(),
+                ip_address: "garbage".into(),
+                glue_ip: None,
+                sort_order: 1,
+                enabled: true,
+            },
         ];
         let (text, _) = render_zone("example.com", &[], &ns, Some(1)).unwrap();
-        assert!(text.contains("ns1.example.com. 3600 IN AAAA 2001:db8::53"), "{text}");
+        assert!(
+            text.contains("ns1.example.com. 3600 IN AAAA 2001:db8::53"),
+            "{text}"
+        );
         assert!(!text.contains("garbage"), "{text}");
         // MNAME of the default SOA is a real nameserver
-        assert!(text.contains("SOA ns1.example.com. hostmaster.example.com."), "{text}");
+        assert!(
+            text.contains("SOA ns1.example.com. hostmaster.example.com."),
+            "{text}"
+        );
     }
 
     #[test]
     fn mixed_case_domain_maps_to_one_lowercase_file() {
         let dir = tempdir().unwrap();
         let zones = vec![("id1".to_string(), "Example.COM".to_string(), false)];
-        generate_from_data(dir.path().to_str().unwrap(), zones, HashMap::new(), HashMap::new(), vec![]).unwrap();
+        generate_from_data(
+            dir.path().to_str().unwrap(),
+            zones,
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        )
+        .unwrap();
         assert!(dir.path().join("zone.example.com").is_file());
     }
 }
