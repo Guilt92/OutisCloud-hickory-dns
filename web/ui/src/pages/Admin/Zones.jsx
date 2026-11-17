@@ -4,12 +4,12 @@ import { motion } from 'framer-motion'
 import api from '../../api/client'
 import { Link } from 'react-router-dom'
 import { useAuthStore } from '../../store'
-import { Globe, Plus, Download, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
+import { Globe, Plus, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
 import BulkImport from '../../components/BulkImport'
 import ZoneTools from '../../components/ZoneTools'
 import TransferZone from '../../components/TransferZone'
 import Notifications from '../../components/Notifications'
-import { useFormValidation, validators, FormField, downloadTemplate } from '../../hooks/useFormValidation'
+import { useFormValidation, validators, FormField } from '../../hooks/useFormValidation'
 import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
 import { useConfirm, SkeletonRows } from '../../components/ui'
 
@@ -23,6 +23,8 @@ export default function Zones(){
   const zones = paged.items
   const loading = paged.loading
   const notify = React.useContext(Notifications)
+  const notifyRef = React.useRef(notify)
+  notifyRef.current = notify
   const { values, errors, bind, setFieldValue } = useFormValidation(
     { domain: '' },
     (vals) => ({ domain: validators.domain(vals.domain) })
@@ -55,7 +57,7 @@ export default function Zones(){
     })()
     return () => { cancelled = true }
   }, [zones])
-  React.useEffect(() => { if (paged.error) notify?.error(paged.error.response?.data?.error || paged.error.message || 'Failed to load zones') }, [paged.error])
+  React.useEffect(() => { if (paged.error) notifyRef.current?.error(paged.error.response?.data?.error || paged.error.message || 'Failed to load zones') }, [paged.error])
 
   React.useEffect(() => {
     const token = localStorage.getItem('token')
@@ -157,8 +159,8 @@ export default function Zones(){
       {/* Header */}
       <div className="section-header">
         <div className="flex items-center gap-3">
-          <div className="icon-box bg-primary-100 dark:bg-primary-900/30">
-            <Globe className="w-5 h-5 text-primary-600 dark:text-primary-400" />
+          <div className="icon-box">
+            <Globe className="w-5 h-5" />
           </div>
           <div>
             <h1 className="section-title">Zones</h1>
@@ -196,10 +198,10 @@ export default function Zones(){
                   GeoDNS
                 </label>
               </div>
-              <div className="flex items-center gap-2 pb-0.5">
+              <div className="flex flex-wrap items-center gap-2 pb-0.5">
                 <button
                   type="button"
-                  className="btn-primary"
+                  className="btn-primary whitespace-nowrap"
                   onClick={handleCreateClick}
                   disabled={creating}
                 >
@@ -303,10 +305,10 @@ export default function Zones(){
                                 <span key={i} className="text-xs text-muted font-mono">{ns}</span>
                               ))
                             ) : (
-                              <span className="text-xs text-gray-400 italic">No NS records</span>
+                              <span className="text-xs text-muted italic">No NS records</span>
                             )
                           ) : (
-                            <span className="text-xs text-gray-400 animate-pulse">Loading...</span>
+                            <span className="text-xs text-muted animate-pulse">Loading…</span>
                           )}
                         </div>
                       </td>
@@ -363,7 +365,7 @@ export default function Zones(){
                               <button onClick={() => startEdit(z)} aria-label={`Edit ${z.domain}`} className="btn-sm btn-ghost">
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
-                              <button onClick={() => deleteZone(z)} aria-label={`Delete ${z.domain}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                              <button onClick={() => deleteZone(z)} aria-label={`Delete ${z.domain}`} className="btn-sm text-danger-500 hover:bg-danger-500/[0.07] rounded-[14px] transition-colors">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </>
@@ -375,8 +377,8 @@ export default function Zones(){
                 ))
               ) : (
                 <tr>
-                  <td colSpan="6" className="text-center text-gray-400 dark:text-gray-500 py-12">
-                    <Globe className="w-12 h-12 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
+                  <td colSpan="6" className="text-center text-muted py-12">
+                    <Globe className="w-12 h-12 mx-auto mb-3 text-muted/40" />
                     <p className="font-medium text-muted mb-1">No zones found</p>
                     <p className="text-sm">Create a zone to get started.</p>
                   </td>

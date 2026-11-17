@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import api from '../../api/client'
 import Notifications from '../../components/Notifications'
 import { Globe, Plus, Trash2, RefreshCw, X, Check, Network, Edit3 } from 'lucide-react'
-import { useConfirm } from '../../components/ui'
+import { EmptyState, PageHeader, useConfirm } from '../../components/ui'
 
 export default function Nameservers(){
   const askConfirm = useConfirm()
@@ -19,24 +19,33 @@ export default function Nameservers(){
     enabled: true
   })
   const notify = React.useContext(Notifications)
+  const notifyRef = React.useRef(notify)
+  notifyRef.current = notify
 
-  const load = async () => {
+  const load = React.useCallback(async () => {
     setLoading(true)
     try {
       const r = await api.get('/api/v1/nameservers')
       setNameservers(r.data || [])
-    } catch (e) { 
+    } catch (e) {
       console.error(e)
-      notify?.error('Failed to load nameservers')
+      notifyRef.current?.error('Failed to load nameservers')
     }
     setLoading(false)
-  }
+  }, [])
 
-  React.useEffect(()=>{ 
+  React.useEffect(()=>{
     const token = localStorage.getItem('token')
     if(token) api.setToken(token)
-    load() 
-  }, [])
+    load()
+  }, [load])
+
+  React.useEffect(() => {
+    if (!showModal) return undefined
+    const onKey = (e) => { if (e.key === 'Escape') setShowModal(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showModal])
 
   const openCreate = () => {
     setForm({
@@ -105,36 +114,22 @@ export default function Nameservers(){
 
   return (
     <div className="page">
-      {/* Header */}
-      <motion.div
-        initial={{ opacity: 0, y: -8 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="section-header"
-      >
-        <div className="flex items-center gap-3">
-          <div className="icon-box">
-            <Globe className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="section-title">Authoritative Nameservers</h1>
-            <p className="section-desc">Configure the nameservers that serve your zones</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={load}
-            className="btn-secondary btn-sm"
-            disabled={loading}
-          >
+      <PageHeader
+        icon={Globe}
+        eyebrow="Infrastructure"
+        title="Authoritative nameservers"
+        description="Configure the nameservers that serve your zones."
+        actions={<>
+          <button onClick={load} className="btn-secondary" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
           <button onClick={openCreate} className="btn-primary">
             <Plus className="w-4 h-4" />
-            Add Nameserver
+            Add nameserver
           </button>
-        </div>
-      </motion.div>
+        </>}
+      />
 
       {/* Info card */}
       <motion.div
@@ -144,7 +139,7 @@ export default function Nameservers(){
         className="card p-4"
       >
         <p className="text-sm text-muted flex items-center gap-2">
-          <Network className="w-4 h-4 text-purple-500 flex-shrink-0" />
+          <Network className="w-4 h-4 text-muted flex-shrink-0" />
           These nameservers will be automatically added as NS records to all your zones. At least two are recommended for redundancy.
         </p>
       </motion.div>
@@ -157,15 +152,12 @@ export default function Nameservers(){
         className="card overflow-hidden"
       >
         {nameservers.length === 0 ? (
-          <div className="p-12 text-center">
-            <Globe className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-ink mb-1">No Nameservers Configured</h3>
-            <p className="text-muted mb-5">Add at least one nameserver to serve your zones</p>
-            <button onClick={openCreate} className="btn-primary">
-              <Plus className="w-4 h-4" />
-              Add Nameserver
-            </button>
-          </div>
+          <EmptyState
+            icon={Globe}
+            title="No nameservers configured"
+            description="Add at least one nameserver to serve your zones."
+            action={<button onClick={openCreate} className="btn-primary"><Plus className="w-4 h-4" />Add nameserver</button>}
+          />
         ) : (
           <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
@@ -189,13 +181,13 @@ export default function Nameservers(){
                     <td className="text-muted">{ns.sort_order || '-'}</td>
                     <td>
                       <div className="flex items-center gap-2">
-                        <Globe className="w-4 h-4 text-purple-500 flex-shrink-0" />
+                        <Globe className="w-4 h-4 text-muted flex-shrink-0" />
                         <span className="font-medium text-ink">{ns.hostname}</span>
                       </div>
                     </td>
                     <td>
                       <div className="flex items-center gap-2">
-                        <Network className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                        <Network className="w-4 h-4 text-muted flex-shrink-0" />
                         <span className="font-mono text-muted">{ns.ip_address}</span>
                       </div>
                     </td>
@@ -207,11 +199,11 @@ export default function Nameservers(){
                     </td>
                     <td className="text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => openEdit(ns)} aria-label={`Edit ${ns.hostname}`} className="btn-sm btn-ghost">
-                          <Edit3 className="w-3.5 h-3.5" />
+                        <button onClick={() => openEdit(ns)} aria-label={`Edit ${ns.hostname}`} className="btn-icon">
+                          <Edit3 className="w-4 h-4" />
                         </button>
-                        <button onClick={() => remove(ns)} aria-label={`Delete ${ns.hostname}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
-                          <Trash2 className="w-3.5 h-3.5" />
+                        <button onClick={() => remove(ns)} aria-label={`Delete ${ns.hostname}`} className="btn-icon text-danger-500 hover:bg-danger-500/[0.07] hover:text-danger-600">
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </td>
@@ -229,87 +221,80 @@ export default function Nameservers(){
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setShowModal(false)}
           >
             <motion.div 
+              role="dialog" aria-modal="true" aria-label={editingNs ? 'Edit nameserver' : 'Add nameserver'}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="card w-full max-w-lg"
+              className="card shadow-pop w-full max-w-lg"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between p-6 border-b border-line">
-                <h3 className="text-xl font-bold text-ink">
-                  {editingNs ? 'Edit Nameserver' : 'Add Nameserver'}
+                <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">
+                  {editingNs ? 'Edit nameserver' : 'Add nameserver'}
                 </h3>
-                <button onClick={() => setShowModal(false)} aria-label="Close dialog" className="p-2 hover:bg-ink/5 rounded-lg">
-                  <X className="w-5 h-5 text-gray-500" />
+                <button onClick={() => setShowModal(false)} aria-label="Close dialog" className="btn-icon">
+                  <X className="w-5 h-5" />
                 </button>
               </div>
 
               <div className="p-6 space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-ink/80 mb-1">Hostname *</label>
+                  <label className="form-label">Hostname <span className="text-danger-500">*</span></label>
                   <input 
-                    className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
+                    className="input"
                     placeholder="e.g., ns1.example.com" 
                     value={form.hostname} 
                     onChange={e=>setForm({...form, hostname: e.target.value})} 
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-ink/80 mb-1">IP Address *</label>
+                  <label className="form-label">IP address <span className="text-danger-500">*</span></label>
                   <input 
-                    className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
+                    className="input"
                     placeholder="e.g., 192.0.2.1" 
                     value={form.ip_address} 
                     onChange={e=>setForm({...form, ip_address: e.target.value})} 
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-ink/80 mb-1">Glue IP (optional)</label>
+                  <label className="form-label">Glue IP <span className="text-muted">(optional)</span></label>
                   <input 
-                    className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
+                    className="input"
                     placeholder="IP for glue record (if NS is under this zone)" 
                     value={form.glue_ip} 
                     onChange={e=>setForm({...form, glue_ip: e.target.value})} 
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-ink/80 mb-1">Sort Order</label>
+                  <label className="form-label">Sort order</label>
                   <input 
                     type="number"
-                    className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
+                    className="input"
                     placeholder="Display order" 
                     value={form.sort_order} 
                     onChange={e=>setForm({...form, sort_order: e.target.value})} 
                   />
                 </div>
-                <label className="flex items-center space-x-3 p-3 rounded-lg border border-line cursor-pointer hover:bg-ink/5">
+                <label className="flex items-center gap-3 p-3 rounded-[14px] border border-line cursor-pointer hover:bg-ink/[0.025]">
                   <input 
                     type="checkbox" 
                     checked={form.enabled} 
                     onChange={e=>setForm({...form, enabled: e.target.checked})}
-                    className="w-5 h-5 text-purple-600 rounded focus:ring-purple-500"
+                    className="w-4 h-4 rounded border-line"
                   />
-                  <span className="font-medium text-ink">Enable Nameserver</span>
+                  <span className="font-medium text-[13px] text-ink">Enable nameserver</span>
                 </label>
               </div>
 
               <div className="flex items-center justify-end space-x-3 p-6 border-t border-line bg-surface-2">
-                <button 
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-2 text-ink/80 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={save}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center space-x-2"
-                >
+                <button onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
+                <button onClick={save} className="btn-primary">
                   <Check className="w-4 h-4" />
-                  <span>{editingNs ? 'Update' : 'Create'}</span>
+                  <span>{editingNs ? 'Update nameserver' : 'Create nameserver'}</span>
                 </button>
               </div>
             </motion.div>

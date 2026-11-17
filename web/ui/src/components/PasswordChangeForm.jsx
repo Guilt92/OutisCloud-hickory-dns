@@ -86,8 +86,8 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
 
   const PasswordInput = ({ field, label, value, onChange, placeholder, required = true, disabled = false }) => (
     <div className="relative">
-      <label className="block text-sm font-medium text-ink/80 mb-1.5">
-        {label} {required && <span className="text-red-500">*</span>}
+      <label className="form-label">
+        {label} {required && <span className="text-danger-500" aria-hidden="true">*</span>}
       </label>
       <div className="relative">
         <input
@@ -96,7 +96,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           disabled={disabled}
-          className="w-full px-4 py-2.5 pr-10 rounded-lg border border-line bg-white dark:bg-gray-700 text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="input pr-10"
         />
         <button
           type="button"
@@ -122,10 +122,10 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
     >
       <div className="flex items-center gap-3 mb-6">
         <div className="icon-box">
-          <KeyRound className="w-5 h-5 text-white" />
+          <KeyRound className="w-5 h-5" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-ink">
+          <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">
             {isAdmin ? 'Reset User Password' : 'Change Password'}
           </h2>
           <p className="text-sm text-muted">
@@ -137,8 +137,8 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
       <form onSubmit={handleSubmit} className="space-y-4">
         {isAdmin && (
           <div>
-            <label className="block text-sm font-medium text-ink/80 mb-1.5">
-              User ID <span className="text-red-500">*</span>
+            <label className="form-label">
+              User ID <span className="text-danger-500" aria-hidden="true">*</span>
             </label>
             <input
               type="text"
@@ -146,7 +146,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
               onChange={(e) => setFormData((prev) => ({ ...prev, userIdForAdmin: e.target.value }))}
               placeholder="Enter user ID"
               required
-              className="w-full px-4 py-2.5 rounded-lg border border-line bg-white dark:bg-gray-700 text-ink focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+              className="input"
             />
           </div>
         )}
@@ -183,10 +183,10 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-danger-500/40"
+              className="flex items-center gap-2 p-3 rounded-[14px] bg-danger-500/[0.04] border border-danger-500/30"
             >
-              <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
-              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+              <AlertCircle className="w-4 h-4 text-danger-500 flex-shrink-0" />
+              <p className="text-sm text-danger-600 dark:text-danger-400">{error}</p>
             </motion.div>
           )}
         </AnimatePresence>
@@ -197,10 +197,10 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              className="flex items-center gap-2 p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"
+              className="flex items-center gap-2 p-3 rounded-[14px] bg-success-500/[0.04] border border-success-500/25"
             >
-              <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
-              <p className="text-sm text-green-600 dark:text-green-400">{message}</p>
+              <CheckCircle className="w-4 h-4 text-success-500 flex-shrink-0" />
+              <p className="text-sm text-success-700 dark:text-success-400">{message}</p>
             </motion.div>
           )}
         </AnimatePresence>
@@ -208,7 +208,7 @@ export default function PasswordChangeForm({ userId, isAdmin = false, onSuccess,
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg btn-primary font-medium hover:from-primary-600 hover:to-primary-700 focus:ring-4 focus:ring-primary-300 dark:focus:ring-primary-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          className="btn-primary w-full"
         >
           {isLoading ? (
             <>

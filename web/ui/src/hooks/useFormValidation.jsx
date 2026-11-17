@@ -76,9 +76,9 @@ export const validators = {
 export function FormField({ label, error, children }) {
   return (
     <div className="mb-3">
-      {label && <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</label>}
+      {label && <label className="form-label">{label}</label>}
       {children}
-      {error && <div className="text-red-500 text-sm mt-1">{error}</div>}
+      {error && <div role="alert" className="text-danger-500 text-sm mt-1.5">{error}</div>}
     </div>
   )
 }
@@ -118,23 +118,19 @@ export function useNotifications() {
 export function NotificationsDisplay({ notifications, onRemove }) {
   const getTypeStyles = (type) => {
     switch (type) {
-      case 'success':
-        return 'bg-green-500 text-white'
-      case 'error':
-        return 'bg-red-500 text-white'
-      case 'warning':
-        return 'bg-yellow-500 text-white'
-      default:
-        return 'bg-blue-500 text-white'
+      case 'success': return 'border-l-success-500'
+      case 'error': return 'border-l-danger-500'
+      case 'warning': return 'border-l-warning-500'
+      default: return 'border-l-ink'
     }
   }
 
   return (
-    <div className="fixed bottom-4 right-4 space-y-2 z-50">
+    <div className="fixed bottom-4 right-4 left-4 sm:left-auto space-y-2 z-50" aria-live="polite">
       {notifications.map((n) => (
-        <div key={n.id} className={`${getTypeStyles(n.type)} px-4 py-3 rounded shadow-lg flex items-center justify-between`}>
-          <span>{n.message}</span>
-          <button className="ml-4 font-bold" onClick={() => onRemove(n.id)}>×</button>
+        <div key={n.id} role={n.type === 'error' ? 'alert' : 'status'} className={`bg-surface border border-line border-l-2 ${getTypeStyles(n.type)} px-4 py-3 rounded-[14px] shadow-pop flex items-center justify-between gap-4 max-w-sm`}>
+          <span className="text-sm text-ink">{n.message}</span>
+          <button className="text-muted hover:text-ink text-lg leading-none" onClick={() => onRemove(n.id)} aria-label="Dismiss notification">×</button>
         </div>
       ))}
     </div>

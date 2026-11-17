@@ -4,7 +4,7 @@ import { Globe, FileText, Server, Radio, Users, RefreshCw, ArrowRight, Activity,
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import api from '../../api/client';
 import { useUIStore } from '../../store';
-import { PageHeader, StatCard, StatusBadge, EmptyState, FlowArt } from '../../components/ui';
+import { StatCard, StatusBadge, EmptyState, FlowArt } from '../../components/ui';
 
 const total = (res) => {
   const h = Number(res?.headers?.['x-total-count']);
@@ -58,22 +58,26 @@ export default function Dashboard() {
   if ((d.servers || []).length && serversUp < d.servers.length) attention.push({ tone: 'warn', text: `${d.servers.length - serversUp} DNS server${d.servers.length - serversUp > 1 ? 's' : ''} not responding`, to: '/admin/servers' });
   if (pending) attention.push({ tone: 'warn', text: `${pending} zone${pending > 1 ? 's' : ''} waiting for domain verification`, to: '/admin/zones' });
 
-  const grid = theme === 'dark' ? '#232836' : '#E2E2DA';
-  const tick = theme === 'dark' ? '#9AA3B5' : '#5F6677';
+  const grid = theme === 'dark' ? '#2a2a2a' : '#e5e5e5';
+  const tick = theme === 'dark' ? '#a3a3a3' : '#737373';
+  const chartInk = theme === 'dark' ? '#fafafa' : '#0a0a0a';
+  const chartSoft = theme === 'dark' ? '#737373' : '#a3a3a3';
+  const chartFaint = theme === 'dark' ? '#404040' : '#d4d4d4';
+  const tooltip = { background: theme === 'dark' ? '#171717' : '#ffffff', border: `1px solid ${grid}`, borderRadius: 12, fontSize: 12, color: chartInk };
   const agentBars = [
-    { name: 'In sync', value: enabledAgents.length - behind.length, fill: '#F5F020' },
-    { name: 'Behind', value: behind.length, fill: '#F59E0B' },
-    { name: 'Disabled', value: (d.agents || []).length - enabledAgents.length, fill: '#5B7CFA' },
+    { name: 'In sync', value: enabledAgents.length - behind.length, fill: chartInk },
+    { name: 'Behind', value: behind.length, fill: chartSoft },
+    { name: 'Disabled', value: (d.agents || []).length - enabledAgents.length, fill: chartFaint },
   ];
   const counters = d.queries?.state === 'ok' ? Object.entries(d.queries.counters || {}).map(([k, v]) => ({ name: k.replace(/^hickory_/, '').replace(/_total$/, ''), value: v })).sort((a, b) => b.value - a.value).slice(0, 6) : [];
 
   return (
     <div className="page" data-testid="admin-overview">
-      <div className="relative overflow-hidden rounded-2xl border border-line bg-surface p-6 sm:p-8">
-        <FlowArt className="absolute inset-0 w-full h-full opacity-60 dark:opacity-80" />
+      <div className="relative overflow-hidden rounded-[24px] border border-line bg-surface p-6 sm:p-8">
+        <FlowArt className="absolute inset-0 w-full h-full text-ink/[0.055]" />
         <div className="relative max-w-2xl">
           <p className="eyebrow mb-2">Operations</p>
-          <h1 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-ink">DNS infrastructure overview</h1>
+          <h1 className="font-display text-[30px] sm:text-[36px] leading-[1.08] font-semibold tracking-[-0.035em] text-ink">DNS infrastructure overview</h1>
           <p className="text-muted mt-2">Live state of publication, servers, agents and query traffic.</p>
           <div className="mt-5 flex flex-wrap gap-2">
             <Link to="/admin/zones" className="btn-primary">Manage zones <ArrowRight className="w-4 h-4" /></Link>
@@ -111,7 +115,7 @@ export default function Dashboard() {
         <div className="card xl:col-span-2">
           <div className="px-5 py-4 border-b border-line flex items-center justify-between">
             <h2 className="panel-title">Publication & servers</h2>
-            <Link to="/admin/servers" className="text-xs text-primary-700 dark:text-accent hover:underline">All servers</Link>
+            <Link to="/admin/servers" className="text-xs text-muted hover:text-ink hover:underline">All servers</Link>
           </div>
           <div className="p-5 grid sm:grid-cols-3 gap-4 border-b border-line text-sm">
             <div><p className="text-xs text-muted">Last publication</p>
@@ -137,7 +141,7 @@ export default function Dashboard() {
 
         {/* agents chart */}
         <div className="card">
-          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Agent synchronisation</h2><Link to="/admin/agents" className="text-xs text-primary-700 dark:text-accent hover:underline">Agents</Link></div>
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Agent synchronisation</h2><Link to="/admin/agents" className="text-xs text-muted hover:text-ink hover:underline">Agents</Link></div>
           <div className="p-5">
             {(d.agents || []).length === 0 ? <EmptyState icon={Radio} title="No agents" description="Agents replicate your zones to remote DNS servers." /> : (
               <div className="h-48" role="img" aria-label="Agents by synchronisation state">
@@ -145,7 +149,7 @@ export default function Dashboard() {
                   <BarChart data={agentBars} layout="vertical" margin={{ left: 8, right: 16 }}>
                     <XAxis type="number" allowDecimals={false} tick={{ fill: tick, fontSize: 11 }} stroke={grid} />
                     <YAxis type="category" dataKey="name" width={64} tick={{ fill: tick, fontSize: 12 }} stroke={grid} />
-                    <Tooltip cursor={{ fill: 'rgba(128,128,128,0.08)' }} contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
+                    <Tooltip cursor={{ fill: 'rgba(128,128,128,0.08)' }} contentStyle={tooltip} />
                     <Bar dataKey="value" radius={[0, 4, 4, 0]}>{agentBars.map((b) => <Cell key={b.name} fill={b.fill} />)}</Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -157,7 +161,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="card xl:col-span-2">
-          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Query traffic</h2><Link to="/admin/metrics" className="text-xs text-primary-700 dark:text-accent hover:underline">Analytics</Link></div>
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Query traffic</h2><Link to="/admin/metrics" className="text-xs text-muted hover:text-ink hover:underline">Analytics</Link></div>
           <div className="p-5">
             {d.queries?.state === 'ok' ? (
               <>
@@ -168,8 +172,8 @@ export default function Dashboard() {
                     <BarChart data={counters} margin={{ left: 0, right: 8 }}>
                       <XAxis dataKey="name" tick={{ fill: tick, fontSize: 10 }} stroke={grid} interval={0} />
                       <YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={48} />
-                      <Tooltip cursor={{ fill: 'rgba(128,128,128,0.08)' }} contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
-                      <Bar dataKey="value" fill="#F5F020" radius={[4, 4, 0, 0]} />
+                      <Tooltip cursor={{ fill: 'rgba(128,128,128,0.08)' }} contentStyle={tooltip} />
+                      <Bar dataKey="value" fill={chartInk} radius={[4, 4, 0, 0]} />
                     </BarChart></ResponsiveContainer></div>
                 )}
               </>
@@ -182,7 +186,7 @@ export default function Dashboard() {
         </div>
 
         <div className="card">
-          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Recent activity</h2><Link to="/admin/audit" className="text-xs text-primary-700 dark:text-accent hover:underline">Audit log</Link></div>
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Recent activity</h2><Link to="/admin/audit" className="text-xs text-muted hover:text-ink hover:underline">Audit log</Link></div>
           <ul className="divide-y divide-line">
             {(d.audit || []).length === 0 && <li><EmptyState icon={Activity} title="No activity yet" /></li>}
             {(d.audit || []).map((a) => (

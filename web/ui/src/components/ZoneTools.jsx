@@ -22,7 +22,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
     try { setMembers((await api.get(`/api/v1/zones/${zone.id}/members`)).data || []) } catch (e) { err(e) }
     try { setRevisions((await api.get(`/api/v1/zones/${zone.id}/revisions`)).data || []) } catch (e) { err(e) }
     if (zone.status === 'pending') { try { setVerification((await api.get(`/api/v1/zones/${zone.id}`)).data?.verification || null) } catch (e) { err(e) } }
-  }, [zone.id])
+  }, [zone.id, zone.status])
   React.useEffect(() => { load() }, [load])
 
   const share = async () => {
@@ -58,13 +58,13 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
           <button key={id} onClick={() => setTab(id)} className={`btn-sm ${tab === id ? 'btn-primary' : 'btn-ghost'}`}>{label}</button>
         ))}
       </div>
-      {msg && <div className={`mb-3 text-sm px-3 py-2 rounded-lg ${msg.bad ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>{msg.text}</div>}
+      {msg && <div role={msg.bad ? 'alert' : 'status'} className={`mb-3 text-sm px-3.5 py-2.5 rounded-[14px] border ${msg.bad ? 'border-danger-500/30 text-danger-600' : 'border-success-500/25 text-success-700'}`}>{msg.text}</div>}
 
       {tab === 'sharing' && (
         <div className="space-y-3">
           <table className="table"><thead><tr><th>User</th><th>Role</th><th /></tr></thead>
             <tbody>
-              {members.length === 0 && <tr><td colSpan="3" className="text-gray-400 text-sm">Not shared with anyone</td></tr>}
+              {members.length === 0 && <tr><td colSpan="3" className="text-muted text-sm">Not shared with anyone</td></tr>}
               {members.map(m => (
                 <tr key={m.user_id}><td>{m.username}</td><td>{m.role}</td>
                   <td className="text-right">{owner && <button className="btn-sm btn-ghost" disabled={busy} onClick={() => unshare(m)}>Remove</button>}</td></tr>
@@ -79,7 +79,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
                   <option value="viewer">Viewer (read only)</option><option value="editor">Editor (records + geo rules)</option></select></div>
               <button className="btn-primary" disabled={busy || !username.trim()} onClick={share}>Share</button>
             </div>
-          ) : <p className="text-sm text-gray-500">Only the zone owner can change sharing.</p>}
+          ) : <p className="text-sm text-muted">Only the zone owner can change sharing.</p>}
         </div>
       )}
 
@@ -89,13 +89,13 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
         <div className="space-y-2">
           <table className="table"><thead><tr><th>When</th><th>By</th><th>Change</th><th>Records</th><th /></tr></thead>
             <tbody>
-              {revisions.length === 0 && <tr><td colSpan="5" className="text-gray-400 text-sm">No revisions yet</td></tr>}
+              {revisions.length === 0 && <tr><td colSpan="5" className="text-muted text-sm">No revisions yet</td></tr>}
               {revisions.map(r => (
                 <tr key={r.id}><td>{new Date(r.created_at).toLocaleString()}</td><td>{r.user || '-'}</td><td>{r.reason}</td><td>{r.record_count}</td>
                   <td className="text-right">{owner && <button className="btn-sm btn-ghost" disabled={busy} onClick={() => restore(r)}>Restore</button>}</td></tr>
               ))}
             </tbody></table>
-          {!owner && <p className="text-sm text-gray-500">Only the zone owner can restore a revision.</p>}
+          {!owner && <p className="text-sm text-muted">Only the zone owner can restore a revision.</p>}
         </div>
       )}
 
@@ -103,7 +103,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
         <div className="space-y-3 text-sm">
           <p>This zone is <b>pending</b>: it is not served until you prove control of <b>{zone.domain}</b>.</p>
           <p>Publish this TXT record at your current DNS provider, then click Verify:</p>
-          <pre className="bg-gray-50 dark:bg-gray-900 p-3 rounded-lg text-xs overflow-x-auto">{verification ? `${verification.name}.  TXT  "${verification.value}"` : 'loading...'}</pre>
+          <pre className="bg-surface-2 border border-line p-3 rounded-[14px] text-xs overflow-x-auto font-mono">{verification ? `${verification.name}.  TXT  "${verification.value}"` : 'loading…'}</pre>
           <button className="btn-primary" disabled={busy} onClick={verify}>Verify domain</button>
         </div>
       )}

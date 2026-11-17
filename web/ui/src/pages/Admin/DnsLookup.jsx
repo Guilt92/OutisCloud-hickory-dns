@@ -74,8 +74,9 @@ export default function DnsLookup() {
         className="flex flex-col md:flex-row md:items-center md:justify-between gap-4"
       >
         <div>
-          <h1 className="text-2xl font-bold text-ink">DNS Lookup</h1>
-          <p className="text-muted">Real DNS queries (UDP/TCP) with TTLs and response codes. Enter an IP address for a PTR (reverse) lookup.</p>
+          <p className="eyebrow mb-1.5">DNS</p>
+          <h1 className="section-title">DNS lookup</h1>
+          <p className="section-desc">Real DNS queries over UDP/TCP with TTLs and response codes. Enter an IP address for a PTR (reverse) lookup.</p>
         </div>
       </motion.div>
 
@@ -88,32 +89,34 @@ export default function DnsLookup() {
       >
         <div className="flex flex-col md:flex-row gap-4">
           <div className="flex-1">
-            <label className="block text-sm font-semibold text-ink/80 mb-2">
-              Domain Name
+            <label className="form-label" htmlFor="lookup-domain">
+              Domain name
             </label>
             <div className="relative">
-              <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
               <input
+                id="lookup-domain"
                 type="text"
                 value={domain}
                 onChange={(e) => setDomain(e.target.value)}
                 onKeyDown={handleKeyPress}
                 placeholder="example.com or 192.0.2.1"
                 aria-label="Domain name or IP address"
-                className="w-full pl-12 pr-4 py-3 border border-line rounded-xl dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+                className="input pl-11 py-3"
               />
             </div>
           </div>
           
           <div className="md:w-40">
-            <label className="block text-sm font-semibold text-ink/80 mb-2">
-              Record Type
+            <label className="form-label" htmlFor="lookup-type">
+              Record type
             </label>
             <select
+              id="lookup-type"
               value={recordType}
               aria-label="Record type"
               onChange={(e) => setRecordType(e.target.value)}
-              className="w-full px-4 py-3 border border-line rounded-xl dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all"
+              className="select py-3"
             >
               {recordTypes.map(type => (
                 <option key={type} value={type}>{type}</option>
@@ -125,7 +128,7 @@ export default function DnsLookup() {
             <button
               onClick={performLookup}
               disabled={loading}
-              className="w-full md:w-auto px-6 py-3 btn-primary font-semibold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="btn-primary w-full md:w-auto py-3"
             >
               {loading ? (
                 <>
@@ -148,10 +151,11 @@ export default function DnsLookup() {
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="p-4 rounded-xl bg-red-50 dark:bg-red-900/20 border border-danger-500/40 flex items-start gap-3"
+          role="alert"
+          className="p-4 rounded-[14px] bg-danger-500/[0.04] border border-danger-500/30 flex items-start gap-3"
         >
-          <AlertCircle className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          <AlertCircle className="w-5 h-5 text-danger-500 mt-0.5 flex-shrink-0" />
+          <p className="text-sm text-danger-600 dark:text-danger-400">{error}</p>
         </motion.div>
       )}
 
@@ -164,8 +168,8 @@ export default function DnsLookup() {
         >
           <div className="p-6 border-b border-line flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold text-ink">
-                DNS Results
+              <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">
+                DNS results
               </h3>
               <p className="text-sm text-muted" data-testid="lookup-summary">
                 {results.domain} · {results.record_type} · <span data-testid="lookup-status" className={results.status === 'NOERROR' ? 'text-success-500 font-semibold' : 'text-danger-500 font-semibold'}>{results.status}</span>
@@ -174,9 +178,9 @@ export default function DnsLookup() {
             </div>
             <button
               onClick={copyResults}
-              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-muted hover:bg-ink/5 rounded-lg transition-colors"
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-muted hover:bg-ink/5 rounded-[12px] transition-colors"
             >
-              {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+              {copied ? <Check className="w-4 h-4 text-success-500" /> : <Copy className="w-4 h-4" />}
               {copied ? 'Copied!' : 'Copy'}
             </button>
           </div>
@@ -189,19 +193,17 @@ export default function DnsLookup() {
                   return (
                     <div 
                       key={index}
-                      className="flex items-center gap-4 p-4 rounded-xl bg-surface-2"
+                      className="flex items-center gap-4 p-4 rounded-[14px] bg-surface-2"
                     >
-                      <div className="w-10 h-10 rounded-lg bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center flex-shrink-0">
-                        <Icon className="w-5 h-5 text-primary-600 dark:text-primary-400" />
+                      <div className="icon-box">
+                        <Icon className="w-[18px] h-[18px]" />
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="font-semibold text-ink">
                             {record.name}
                           </span>
-                          <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 rounded">
-                            {record.type}
-                          </span>
+                          <span className="badge badge-info">{record.type}</span>
                           <span className="text-xs text-muted">
                             TTL: {record.ttl}
                           </span>
@@ -216,7 +218,7 @@ export default function DnsLookup() {
               </div>
             ) : (
               <div className="text-center py-8">
-                <AlertCircle className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+                <AlertCircle className="w-12 h-12 text-muted/40 mx-auto mb-3" />
                 <p className="text-muted" data-testid="lookup-empty">{results.note || `No ${results.record_type} records found for ${results.domain}`}</p>
               </div>
             )}
@@ -239,13 +241,13 @@ export default function DnsLookup() {
         transition={{ delay: 0.2 }}
         className="card p-6"
       >
-        <h3 className="text-lg font-semibold text-ink mb-4">Quick Examples</h3>
+        <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink mb-4">Quick examples</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {['google.com', 'cloudflare.com', 'github.com', 'example.com'].map((d) => (
             <button
               key={d}
               onClick={() => { setDomain(d); setRecordType('A'); }}
-              className="px-4 py-2 text-sm font-medium text-muted bg-surface-2 rounded-lg hover:bg-primary-100 dark:hover:bg-primary-900/30 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
+              className="px-4 py-2 text-sm font-medium text-muted bg-surface-2 border border-line rounded-[12px] hover:text-ink hover:border-muted/40 transition-colors"
             >
               {d}
             </button>

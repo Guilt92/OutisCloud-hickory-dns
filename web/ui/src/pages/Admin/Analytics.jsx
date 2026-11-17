@@ -38,8 +38,10 @@ export default function Analytics() {
     return () => clearInterval(id);
   }, [sample]);
 
-  const grid = theme === 'dark' ? '#232836' : '#E2E2DA';
-  const tick = theme === 'dark' ? '#9AA3B5' : '#5F6677';
+  const grid = theme === 'dark' ? '#2a2a2a' : '#e5e5e5';
+  const tick = theme === 'dark' ? '#a3a3a3' : '#737373';
+  const chartInk = theme === 'dark' ? '#fafafa' : '#0a0a0a';
+  const tooltip = { background: theme === 'dark' ? '#171717' : '#ffffff', border: `1px solid ${grid}`, borderRadius: 12, fontSize: 12, color: chartInk };
   const counters = state.phase === 'ok' ? Object.entries(state.counters || {}).sort((a, b) => b[1] - a[1]) : [];
 
   return (
@@ -68,11 +70,10 @@ export default function Analytics() {
               {series.length < 2 ? <EmptyState title="Collecting samples…" description="The rate appears after two samples." /> : (
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={series} margin={{ left: 0, right: 8 }}>
-                    <defs><linearGradient id="qps" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#F5F020" stopOpacity=".45" /><stop offset="1" stopColor="#F5F020" stopOpacity="0" /></linearGradient></defs>
                     <XAxis dataKey="t" tick={{ fill: tick, fontSize: 11 }} stroke={grid} minTickGap={32} />
                     <YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={44} />
-                    <Tooltip itemStyle={{ color: theme === 'dark' ? '#E6E8EE' : '#14161C' }} contentStyle={{ background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 }} />
-                    <Area type="monotone" dataKey="qps" stroke="#F5F020" strokeWidth={2} fill="url(#qps)" />
+                    <Tooltip itemStyle={{ color: chartInk }} contentStyle={tooltip} />
+                    <Area type="monotone" dataKey="qps" stroke={chartInk} strokeWidth={2} fill={chartInk} fillOpacity={0.06} />
                   </AreaChart>
                 </ResponsiveContainer>
               )}

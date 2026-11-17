@@ -1,9 +1,10 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Palette, User, Globe } from 'lucide-react';
+import { Palette, User, Globe, Sun, Moon, Settings as SettingsIcon } from 'lucide-react';
 import { useUIStore, useAuthStore } from '../store';
 import PasswordChangeForm from '../components/PasswordChangeForm';
 import MfaCard from '../components/MfaCard';
+import { PageHeader } from '../components/ui';
 
 export default function UserSettings() {
   const { theme, setTheme } = useUIStore();
@@ -11,13 +12,7 @@ export default function UserSettings() {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      <motion.div 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-      >
-        <h1 className="text-2xl font-bold text-ink">Settings</h1>
-        <p className="text-muted">Manage your account and preferences</p>
-      </motion.div>
+      <PageHeader title="Settings" description="Manage appearance, your account and security." icon={SettingsIcon} />
 
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
@@ -27,43 +22,30 @@ export default function UserSettings() {
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="icon-box">
-            <Palette className="w-5 h-5 text-white" />
+            <Palette className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-ink">Appearance</h2>
-            <p className="text-sm text-muted">Customize the look and feel</p>
+            <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">Appearance</h2>
+            <p className="text-sm text-muted">Customise the look and feel.</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <label className="block text-sm font-medium text-ink/80">Theme</label>
+          <span className="form-label">Theme</span>
           <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => setTheme('light')}
-              className={`flex items-center gap-3 p-4 rounded-xl border-2 transition-all ${
-                theme === 'light'
-                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                  : 'border-line hover:border-gray-300 dark:hover:border-gray-500'
-              }`}
-            >
-              <svg className={`w-5 h-5 ${theme === 'light' ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-              </svg>
-              <span className="font-medium text-ink">Light</span>
-            </button>
-            <button
-              onClick={() => setTheme('dark')}
-              className={`flex items-center gap-3 p-4 rounded-xl border-2 transition-all ${
-                theme === 'dark'
-                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                  : 'border-line hover:border-gray-300 dark:hover:border-gray-500'
-              }`}
-            >
-              <svg className={`w-5 h-5 ${theme === 'dark' ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-              </svg>
-              <span className="font-medium text-ink">Dark</span>
-            </button>
+            {[{ value: 'light', label: 'Light', icon: Sun }, { value: 'dark', label: 'Dark', icon: Moon }].map(({ value, label, icon: Icon }) => (
+              <button
+                key={value}
+                onClick={() => setTheme(value)}
+                aria-pressed={theme === value}
+                className={`flex items-center gap-3 p-4 rounded-[14px] border transition-colors ${
+                  theme === value ? 'border-ink bg-surface-2' : 'border-line hover:border-muted/40'
+                }`}
+              >
+                <Icon className={`w-5 h-5 ${theme === value ? 'text-ink' : 'text-muted'}`} />
+                <span className="font-medium text-ink">{label}</span>
+              </button>
+            ))}
           </div>
         </div>
       </motion.div>
@@ -76,16 +58,16 @@ export default function UserSettings() {
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="icon-box">
-            <User className="w-5 h-5 text-white" />
+            <User className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-ink">Profile</h2>
-            <p className="text-sm text-muted">Your account information</p>
+            <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">Profile</h2>
+            <p className="text-sm text-muted">Your account information.</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <div className="flex items-center gap-4 p-4 rounded-xl bg-surface-2">
+          <div className="flex items-center gap-4 p-4 rounded-[14px] bg-surface-2">
             <div className="w-12 h-12 rounded-full bg-accent text-on-accent flex items-center justify-center font-semibold text-xl font-bold">
               {user?.username?.charAt(0).toUpperCase() || 'U'}
             </div>
@@ -108,11 +90,11 @@ export default function UserSettings() {
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="icon-box">
-            <Globe className="w-5 h-5 text-white" />
+            <Globe className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-ink">About OutisCloud</h2>
-            <p className="text-sm text-muted">DNS Management Platform</p>
+            <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">About OutisCloud</h2>
+            <p className="text-sm text-muted">DNS management platform.</p>
           </div>
         </div>
 

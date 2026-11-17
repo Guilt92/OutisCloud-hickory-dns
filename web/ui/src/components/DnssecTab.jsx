@@ -29,14 +29,14 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
     setBusy(false)
   }
 
-  if (!info) return <p className="text-sm text-gray-500">{msg ? msg.text : 'Loading...'}</p>
+  if (!info) return <p className="text-sm text-muted">{msg ? msg.text : 'Loading…'}</p>
   const rolling = info.keys.length > 1
   return (
     <div className="space-y-3" data-testid="dnssec-tab">
-      {msg && <div className={`text-sm px-3 py-2 rounded-lg ${msg.bad ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>{msg.text}</div>}
+      {msg && <div role={msg.bad ? 'alert' : 'status'} className={`text-sm px-3.5 py-2.5 rounded-[14px] border ${msg.bad ? 'border-danger-500/30 text-danger-600' : 'border-success-500/25 text-success-700'}`}>{msg.text}</div>}
       <p className="text-sm text-muted">
         Status: <b>{info.enabled ? 'signed' : 'not signed'}</b>
-        {info.enabled && <span className="ml-2 text-xs text-gray-500">{info.next_steps}</span>}
+        {info.enabled && <span className="ml-2 text-xs text-muted">{info.next_steps}</span>}
       </p>
 
       {!info.enabled && canManage && (
@@ -51,18 +51,18 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
           <button className="btn-primary btn-sm" disabled={busy} onClick={() => act('enable', { algorithm }, 'DNSSEC enabled - publish the DS record at your registrar')}>Enable DNSSEC</button>
         </div>
       )}
-      {!info.enabled && <p className="text-xs text-gray-500">GeoDNS and DNSSEC cannot be combined on one zone: signed zones are served statically.</p>}
+      {!info.enabled && <p className="text-xs text-muted">GeoDNS and DNSSEC cannot be combined on one zone: signed zones are served statically.</p>}
 
       {info.keys.map(k => (
-        <div key={k.key_tag} className="border border-line rounded-lg p-3 text-xs space-y-1">
+        <div key={k.key_tag} className="border border-line rounded-[14px] p-3 text-xs space-y-1 bg-surface-2/60">
           <div><b>Key {k.key_tag}</b> · {k.algorithm} · {k.status === 'new' ? 'new (rollover)' : k.status}</div>
           {k.ds.map(d => (
             <div key={d.digest_type}>
-              <span className="text-gray-500">DS ({d.digest_name}):</span>
+              <span className="text-muted">DS ({d.digest_name}):</span>
               <code className="block break-all select-all" data-testid={`ds-${d.digest_type}`}>{d.text}</code>
             </div>
           ))}
-          <div><span className="text-gray-500">DNSKEY:</span><code className="block break-all select-all">{k.dnskey}</code></div>
+          <div><span className="text-muted">DNSKEY:</span><code className="block break-all select-all">{k.dnskey}</code></div>
           {rolling && canManage && <button className="btn-sm btn-ghost" disabled={busy} onClick={async () => { if (await askConfirm({ title: `Retire key ${k.key_tag}?`, message: 'Only do this after the DS for the other key is published and the old DS has expired from caches.', confirmLabel: 'Retire key' })) act('rollover/complete', { retire_key_tag: k.key_tag }, `Key ${k.key_tag} retired`) }}>Retire this key</button>}
         </div>
       ))}
@@ -76,7 +76,7 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
             <input type="checkbox" checked={confirmDs} onChange={e => setConfirmDs(e.target.checked)} />
             I have removed the DS record at the registrar and it has expired from caches
           </label>
-          <button className="btn-sm mt-2 text-red-600" disabled={busy || !confirmDs} onClick={async () => { if (await askConfirm({ title: 'Disable DNSSEC?', message: 'The zone will be served unsigned. Make sure the DS record is already removed at your registrar.', confirmLabel: 'Disable DNSSEC' })) act('disable', { confirm_ds_removed: true }, 'DNSSEC disabled') }}>Disable DNSSEC</button>
+          <button className="btn-sm mt-2 text-danger-500" disabled={busy || !confirmDs} onClick={async () => { if (await askConfirm({ title: 'Disable DNSSEC?', message: 'The zone will be served unsigned. Make sure the DS record is already removed at your registrar.', confirmLabel: 'Disable DNSSEC' })) act('disable', { confirm_ds_removed: true }, 'DNSSEC disabled') }}>Disable DNSSEC</button>
         </div>
       )}
     </div>

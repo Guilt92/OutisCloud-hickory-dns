@@ -48,7 +48,6 @@ export const useAuthStore = create(
       },
       
       logout: async () => {
-        const token = localStorage.getItem('token');
         set({ isLoading: true });
         
         try {
@@ -108,7 +107,6 @@ export const useAuthStore = create(
       isRegularUser: () => get().user?.role === 'user',
       
       initializeAuth: () => {
-        const state = get();
         const token = localStorage.getItem('token');
         const refreshToken = localStorage.getItem('refreshToken');
         const user = localStorage.getItem('user');
@@ -140,7 +138,7 @@ export const useAuthStore = create(
 );
 
 // Zones Store
-export const useZonesStore = create((set, get) => ({
+export const useZonesStore = create((set) => ({
   zones: [],
   selectedZone: null,
   isLoading: false,
@@ -167,7 +165,7 @@ export const useZonesStore = create((set, get) => ({
 
 // UI Store
 const initialTheme = () => {
-  try { return localStorage.getItem('outis-theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  try { return localStorage.getItem('outis-theme') === 'dark' ? 'dark' : 'light'; } catch (e) { return 'light'; }
 };
 
 export const useUIStore = create((set) => ({

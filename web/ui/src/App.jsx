@@ -55,7 +55,7 @@ function LoadingScreen() {
 }
 
 export default function App() {
-  const { isAuthenticated, user, isLoading, sessionExpired, sessionExpiredMessage } = useAuthStore();
+  const { isAuthenticated, user, isLoading, sessionExpired } = useAuthStore();
   const navigate = useNavigate();
   
   // Handle session expiration redirect

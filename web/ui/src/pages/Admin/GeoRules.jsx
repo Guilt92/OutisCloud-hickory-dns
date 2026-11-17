@@ -21,20 +21,17 @@ export default function GeoRules(){
   const [editingRule, setEditingRule] = React.useState(null)
   const [testIp, setTestIp] = React.useState('8.8.8.8')
   const [resolveResult, setResolveResult] = React.useState(null)
-  const [loading, setLoading] = React.useState(false)
   const [testing, setTesting] = React.useState(false)
 
   const load = async () => {
-    setLoading(true)
-    try { 
-      const r = await api.get('/api/v1/georules'); 
-      setRules(r.data || []) 
+    try {
+      const r = await api.get('/api/v1/georules');
+      setRules(r.data || [])
     } catch (e) { console.error(e) }
-    try { 
-      const z = await api.get('/api/v1/zones'); 
-      setZones(z.data || []) 
+    try {
+      const z = await api.get('/api/v1/zones');
+      setZones(z.data || [])
     } catch (e) { console.warn('zones load failed', e) }
-    setLoading(false)
   }
   React.useEffect(()=>{ 
     const t=localStorage.getItem('token')
@@ -116,8 +113,8 @@ export default function GeoRules(){
       >
         <div className="p-5">
           <div className="flex items-center gap-3 mb-5">
-            <div className="icon-box bg-green-100 dark:bg-green-900/30">
-              <Globe className="w-5 h-5 text-green-600 dark:text-green-400" />
+            <div className="icon-box">
+              <Globe className="w-5 h-5" />
             </div>
             <h1 className="section-title">GeoDNS Rules</h1>
           </div>
@@ -153,7 +150,7 @@ export default function GeoRules(){
             </div>
             <div className="flex items-end pb-0.5">
               <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
-                <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="w-4 h-4 rounded border-line text-green-600 focus:ring-green-500" />
+                <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="w-4 h-4 rounded border-line" />
                 Enabled
               </label>
             </div>
@@ -186,10 +183,10 @@ export default function GeoRules(){
         className="card p-5"
       >
         <div className="flex items-center gap-3 mb-4">
-          <div className="icon-box bg-blue-100 dark:bg-blue-900/30">
-            <Play className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+          <div className="icon-box">
+            <Play className="w-5 h-5" />
           </div>
-          <h3 className="text-lg font-bold text-ink">Test Resolution</h3>
+          <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">Test resolution</h3>
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
@@ -211,8 +208,8 @@ export default function GeoRules(){
               exit={{ opacity: 0, height: 0 }}
               className="mt-4"
             >
-              <div className="bg-gray-900 dark:bg-black rounded-lg p-4 overflow-x-auto border border-gray-800">
-                <pre className="text-green-400 text-sm font-mono">{JSON.stringify(resolveResult, null, 2)}</pre>
+              <div className="bg-[#0a0a0a] rounded-[14px] p-4 overflow-x-auto border border-[#2a2a2a]">
+                <pre className="text-[#fafafa] text-sm font-mono">{JSON.stringify(resolveResult, null, 2)}</pre>
               </div>
             </motion.div>
           )}
@@ -228,7 +225,7 @@ export default function GeoRules(){
       >
         {rules.length === 0 ? (
           <div className="p-12 text-center">
-            <Globe className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+            <Globe className="w-14 h-14 text-muted/40 mx-auto mb-3" />
             <p className="text-muted">No GeoDNS rules configured yet</p>
           </div>
         ) : (
@@ -260,14 +257,14 @@ export default function GeoRules(){
                     </td>
                     <td>
                       <div className="flex items-center gap-1.5">
-                        <MapPin className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+                        <MapPin className="w-4 h-4 text-muted flex-shrink-0" />
                         <span>{r.match_value}</span>
                       </div>
                     </td>
                     <td className="font-mono text-muted">{r.target}</td>
                     <td className="text-muted">{r.priority}</td>
                     <td>
-                      <input type="checkbox" aria-label={`Rule ${r.match_value} enabled`} checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-line text-green-600 focus:ring-green-500" />
+                      <input type="checkbox" aria-label={`Rule ${r.match_value} enabled`} checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-line" />
                     </td>
                     <td className="text-muted">
                       {r.record_name || '-'}{r.record_type ? `/${r.record_type}` : ''}
@@ -277,7 +274,7 @@ export default function GeoRules(){
                         <button onClick={()=>startEditRule(r)} aria-label={`Edit rule ${r.match_value}`} className="btn-sm btn-ghost">
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={()=>remove(r.id)} aria-label={`Delete rule ${r.match_value}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                        <button onClick={()=>remove(r.id)} aria-label={`Delete rule ${r.match_value}`} className="btn-sm text-danger-500 hover:bg-danger-500/[0.07] rounded-[14px] transition-colors">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>

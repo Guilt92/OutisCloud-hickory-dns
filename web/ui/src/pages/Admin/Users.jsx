@@ -1,13 +1,11 @@
 import React from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { Navigate } from 'react-router-dom'
 import api from '../../api/client'
 import Modal from '../../components/Modal'
 import SearchInput from '../../components/SearchInput'
 import { useAuthStore } from '../../store'
 import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
-import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Mail, User, Eye, Edit, ShieldCheck, ShieldOff, Lock } from 'lucide-react'
-import { useConfirm } from '../../components/ui'
+import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Eye, Edit, ShieldCheck } from 'lucide-react'
+import { PageHeader, useConfirm } from '../../components/ui'
 import Notifications from '../../components/Notifications'
 
 const ROLES = [
@@ -17,12 +15,12 @@ const ROLES = [
 ]
 
 const roleColors = {
-  admin: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400',
-  editor: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
-  viewer: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+  admin: 'bg-accent text-on-accent',
+  editor: 'bg-surface-2 text-ink border border-line',
+  viewer: 'bg-surface-2 text-muted border border-line',
 }
 
-export default function Users(){
+export default function Users() {
   const askConfirm = useConfirm()
   const notify = React.useContext(Notifications)
   const { user } = useAuthStore()
@@ -32,154 +30,86 @@ export default function Users(){
   const setQ = paged.setQuery
   const [open, setOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(null)
-  const [form, setForm] = React.useState({ username:'', email:'', role:'viewer', password:'' })
-  const loading = paged.loading
-  React.useEffect(()=>{ const t=localStorage.getItem('token'); if(t) api.setToken(t) }, [])
+  const [form, setForm] = React.useState({ username: '', email: '', role: 'viewer', password: '' })
+  React.useEffect(() => { const t = localStorage.getItem('token'); if (t) api.setToken(t) }, [])
 
-  // RBAC: Only admins can access user management
   if (!user || user.role !== 'admin') {
     return (
       <div className="p-8 text-center">
-        <Shield className="w-16 h-16 text-red-500 mx-auto mb-4" />
-        <h2 className="text-xl font-bold text-ink mb-2">Access Denied</h2>
+        <Shield className="w-16 h-16 text-muted mx-auto mb-4" />
+        <h2 className="section-title mb-2">Access denied</h2>
         <p className="text-muted">You don&apos;t have permission to manage users.</p>
       </div>
     )
   }
 
   const load = paged.reload
+  const openCreate = () => { setForm({ username: '', email: '', role: 'viewer', password: '' }); setEditing(null); setOpen(true) }
+  const openEdit = (u) => { setForm({ username: u.username, email: u.email || '', role: u.role || 'viewer', password: '' }); setEditing(u); setOpen(true) }
 
-  const openCreate = ()=>{ setForm({ username:'', email:'', role:'viewer', password:'' }); setEditing(null); setOpen(true) }
-  const openEdit = (u)=>{ setForm({ username:u.username, email:u.email || '', role:u.role || 'viewer', password:'' }); setEditing(u); setOpen(true) }
-
-  const save = async ()=>{
+  const save = async () => {
     try {
-      if (!form.username || form.username.length < 3) {
-        notify?.warning('Username must be at least 3 characters')
-        return
-      }
+      if (!form.username || form.username.length < 3) { notify?.warning('Username must be at least 3 characters'); return }
       if (editing) {
-        const updateData = { username: form.username, role: form.role }
-        await api.put(`/api/v1/users/${editing.id}`, updateData)
+        await api.put(`/api/v1/users/${editing.id}`, { username: form.username, role: form.role })
       } else {
-        if (!form.password || form.password.length < 8) {
-          notify?.warning('Password must be at least 8 characters')
-          return
-        }
+        if (!form.password || form.password.length < 8) { notify?.warning('Password must be at least 8 characters'); return }
         await api.post('/api/v1/users', { username: form.username, password: form.password, role: form.role })
       }
       setOpen(false)
       load()
-    } catch(e){ notify?.error('Save failed: ' + (e.response?.data?.error || e.message)) }
+    } catch (e) { notify?.error('Save failed: ' + (e.response?.data?.error || e.message)) }
   }
 
-  const remove = async (id)=>{ if(!(await askConfirm({ title: 'Delete user?', message: 'The account loses access immediately. Their zones are not deleted.', confirmLabel: 'Delete user' }))) return; try { await api.delete(`/api/v1/users/${id}`); load() } catch(e){ notify?.error('Delete failed') } }
-
-  const filtered = users
+  const remove = async (id) => {
+    if (!(await askConfirm({ title: 'Delete user?', message: 'The account loses access immediately. Their zones are not deleted.', confirmLabel: 'Delete user' }))) return
+    try { await api.delete(`/api/v1/users/${id}`); load() } catch { notify?.error('Delete failed') }
+  }
 
   return (
     <div className="space-y-6">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="bg-surface shadow-lg rounded-xl p-6 border border-line"
-      >
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg">
-              <UsersIcon className="w-6 h-6 text-purple-600 dark:text-purple-400" />
-            </div>
-            <div>
-              <h1 className="section-title">User Management</h1>
-              <p className="text-sm text-muted">Manage users and access levels</p>
-            </div>
-          </div>
-          <button 
-            onClick={openCreate}
-            className="btn-primary px-4 py-2 rounded-lg hover:from-purple-700 hover:to-purple-800 transition-all flex items-center space-x-2 font-medium"
-          >
-            <Plus className="w-5 h-5" />
-            <span>New User</span>
-          </button>
+      <PageHeader eyebrow="Administration" title="Users & roles" description="Manage people, permissions and account access." icon={UsersIcon}
+        actions={<button onClick={openCreate} className="btn-primary"><Plus className="w-4 h-4" />New user</button>} />
+
+      <div className="card overflow-hidden">
+        <div className="px-5 py-4 border-b border-line">
+          <div className="max-w-md"><SearchInput value={q} onChange={setQ} placeholder="Search users..." /></div>
         </div>
 
-        <div className="max-w-md">
-          <SearchInput value={q} onChange={setQ} placeholder="Search users..." />
-        </div>
-      </motion.div>
-
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="bg-surface shadow-lg rounded-xl border border-line overflow-hidden"
-      >
-        {filtered.length === 0 ? (
+        {users.length === 0 ? (
           <div className="p-12 text-center">
-            <UsersIcon className="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
-            <p className="text-muted">No users found</p>
+            <UsersIcon className="w-12 h-12 text-muted/40 mx-auto mb-3" />
+            <p className="text-muted">No users found.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
-            <table className="w-full">
-              <thead className="bg-surface-2">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">User</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Role</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider">Created</th>
-                  <th className="px-6 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wider">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {filtered.map((u, i) => (
-                  <motion.tr 
-                    key={u.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="hover:bg-ink/5"
-                  >
-                    <td className="px-6 py-4">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-10 h-10 rounded-full bg-accent text-on-accent flex items-center justify-center font-semibold font-semibold">
-                          {u.username?.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-ink">{u.username}</p>
-                          <p className="text-xs text-muted">{u.email || 'No email'}</p>
-                        </div>
+          <div className="table-container" tabIndex={0} role="region" aria-label="Scrollable table">
+            <table>
+              <thead><tr><th>User</th><th>Role</th><th>Created</th><th className="text-right">Actions</th></tr></thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id}>
+                    <td>
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-accent text-on-accent flex items-center justify-center text-sm font-semibold flex-shrink-0">{u.username?.charAt(0).toUpperCase()}</div>
+                        <div className="min-w-0"><p className="text-[13px] font-medium text-ink truncate">{u.username}</p><p className="text-xs text-muted truncate">{u.email || 'No email'}</p></div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-medium ${roleColors[u.role] || roleColors.viewer}`}>
+                    <td>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${roleColors[u.role] || roleColors.viewer}`}>
                         {u.role === 'admin' && <ShieldCheck className="w-3 h-3" />}
                         {u.role === 'editor' && <Edit className="w-3 h-3" />}
                         {u.role === 'viewer' && <Eye className="w-3 h-3" />}
                         <span className="capitalize">{u.role || 'viewer'}</span>
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-muted">
-                      {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end space-x-2">
-                        <button 
-                          onClick={()=>openEdit(u)}
-                          aria-label={`Edit ${u.username}`}
-                          className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 p-1 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={()=>remove(u.id)}
-                          aria-label={`Delete ${u.username}`}
-                          className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                    <td className="text-muted">{u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '-'}</td>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => openEdit(u)} aria-label={`Edit ${u.username}`} className="btn-icon"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => remove(u.id)} aria-label={`Delete ${u.username}`} className="btn-icon text-danger-500 hover:bg-danger-500/[0.07] hover:text-danger-500"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
-                  </motion.tr>
+                  </tr>
                 ))}
               </tbody>
             </table>
@@ -189,91 +119,37 @@ export default function Users(){
           <span>{paged.total} user{paged.total !== 1 ? 's' : ''}</span>
           <PaginationControls pagination={paged.pagination} />
         </div>
-      </motion.div>
+      </div>
 
-      <AnimatePresence>
-        {open && (
-          <Modal title={editing ? 'Edit User' : 'Create User'} open={open} onClose={()=>setOpen(false)}>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="space-y-4"
-            >
-              <div>
-                <label className="block text-sm font-medium text-ink/80 mb-1">Username</label>
-                <input 
-                  className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
-                  placeholder="username" 
-                  value={form.username} 
-                  onChange={e=>setForm({...form, username:e.target.value})} 
-                />
-              </div>
-              {!editing && (
-                <div>
-                  <label className="block text-sm font-medium text-ink/80 mb-1">Password</label>
-                  <input 
-                    type="password"
-                    className="w-full border border-line dark:bg-gray-700 dark:text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent" 
-                    placeholder="min 8 characters" 
-                    value={form.password} 
-                    onChange={e=>setForm({...form, password:e.target.value})} 
-                  />
-                </div>
-              )}
-              <div>
-                <label className="block text-sm font-medium text-ink/80 mb-2">Role</label>
-                <div className="grid grid-cols-1 gap-2">
-                  {ROLES.map((role) => {
-                    const Icon = role.icon
-                    return (
-                      <label
-                        key={role.value}
-                        className={`flex items-center p-3 rounded-lg border-2 cursor-pointer transition-all ${
-                          form.role === role.value
-                            ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
-                            : 'border-line hover:border-gray-300 dark:hover:border-gray-500'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="role"
-                          value={role.value}
-                          checked={form.role === role.value}
-                          onChange={(e) => setForm({ ...form, role: e.target.value })}
-                          className="sr-only"
-                        />
-                        <Icon className={`w-5 h-5 mr-3 ${form.role === role.value ? 'text-purple-600 dark:text-purple-400' : 'text-gray-400'}`} />
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-ink">{role.label}</p>
-                          <p className="text-xs text-muted">{role.description}</p>
-                        </div>
-                        {form.role === role.value && (
-                          <ShieldCheck className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                        )}
-                      </label>
-                    )
-                  })}
-                </div>
-              </div>
-              <div className="flex justify-end space-x-3 pt-4">
-                <button 
-                  className="px-4 py-2 text-gray-700 bg-surface-2 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" 
-                  onClick={()=>setOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button 
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors" 
-                  onClick={save}
-                >
-                  {editing ? 'Update' : 'Create'}
-                </button>
-              </div>
-            </motion.div>
-          </Modal>
-        )}
-      </AnimatePresence>
+      <Modal title={editing ? 'Edit user' : 'Create user'} open={open} onClose={() => setOpen(false)}>
+        <div className="space-y-4">
+          <div><label htmlFor="user-name" className="form-label">Username</label><input id="user-name" className="input" placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></div>
+          {!editing && (
+            <div><label htmlFor="user-password" className="form-label">Password</label><input id="user-password" type="password" className="input" placeholder="Minimum 8 characters" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
+          )}
+          <fieldset>
+            <legend className="form-label">Role</legend>
+            <div className="grid grid-cols-1 gap-2">
+              {ROLES.map((role) => {
+                const Icon = role.icon
+                const selected = form.role === role.value
+                return (
+                  <label key={role.value} className={`flex items-center p-3 rounded-[14px] border cursor-pointer transition-colors ${selected ? 'border-ink bg-surface-2' : 'border-line hover:border-muted/40'}`}>
+                    <input type="radio" name="role" value={role.value} checked={selected} onChange={(e) => setForm({ ...form, role: e.target.value })} className="sr-only" />
+                    <Icon className={`w-[18px] h-[18px] mr-3 ${selected ? 'text-ink' : 'text-muted'}`} />
+                    <div className="flex-1"><p className="text-[13px] font-medium text-ink">{role.label}</p><p className="text-xs text-muted">{role.description}</p></div>
+                    {selected && <ShieldCheck className="w-[18px] h-[18px] text-ink" />}
+                  </label>
+                )
+              })}
+            </div>
+          </fieldset>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>Cancel</button>
+            <button type="button" className="btn-primary" onClick={save}>{editing ? 'Update user' : 'Create user'}</button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

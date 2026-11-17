@@ -53,7 +53,7 @@ export default function TransferZone({ zone, onClose, onDone }) {
           <div className="card px-3 py-2"><span className="block text-xs text-muted">Destination</span><span className="font-medium text-ink">{target ? target.name : '—'}</span></div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-ink/80 mb-1" htmlFor="transfer-dest">Destination tenant</label>
+          <label className="form-label" htmlFor="transfer-dest">Destination tenant</label>
           <select id="transfer-dest" className="select w-full" value={dest} onChange={(e) => setDest(e.target.value)} disabled={!tenants}>
             <option value="">{tenants ? 'Select a tenant…' : 'Loading…'}</option>
             {options.map((t) => (

@@ -60,14 +60,13 @@ function NavItem({ to, icon: Icon, label, exact, onNavigate }) {
       end={!!exact}
       onClick={onNavigate}
       className={({ isActive }) => clsx(
-        'group relative flex items-center gap-3 pl-3 pr-2 py-2 rounded-lg text-sm font-medium transition-colors',
-        isActive ? 'bg-ink/[0.07] text-ink' : 'text-muted hover:text-ink hover:bg-ink/[0.04]'
+        'group flex items-center gap-3 px-3 py-2.5 rounded-[14px] text-[13px] font-medium transition-colors',
+        isActive ? 'bg-accent text-on-accent' : 'text-muted hover:text-ink hover:bg-ink/[0.045]'
       )}
     >
       {({ isActive }) => (
         <>
-          {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r bg-accent" aria-hidden="true" />}
-          <Icon className={clsx('w-[18px] h-[18px] flex-shrink-0', isActive ? 'text-primary-700 dark:text-accent' : 'text-muted group-hover:text-ink')} />
+          <Icon className={clsx('w-[17px] h-[17px] flex-shrink-0', isActive ? 'text-on-accent' : 'text-muted group-hover:text-ink')} />
           <span className="flex-1 truncate">{label}</span>
         </>
       )}
@@ -78,13 +77,16 @@ function NavItem({ to, icon: Icon, label, exact, onNavigate }) {
 function Breadcrumbs() {
   const { pathname } = useLocation();
   const parts = pathname.split('/').filter(Boolean);
-  const crumbs = parts.filter((p) => CRUMBS[p]).map((p) => CRUMBS[p]);
-  const dedup = crumbs.filter((c, i) => crumbs.indexOf(c) === i);
+  const labels = parts.filter((p) => CRUMBS[p]).map((p) => CRUMBS[p]);
+  const dedup = labels.filter((c, i) => labels.indexOf(c) === i);
   return (
-    <nav aria-label="Breadcrumb" className="hidden sm:flex items-center gap-1.5 text-sm text-muted min-w-0">
+    <nav aria-label="Breadcrumb" className="hidden sm:flex items-center gap-2 text-[13px] text-muted min-w-0">
       <span>{parts[0] === 'admin' ? 'Admin' : 'Workspace'}</span>
-      {dedup.slice(parts[0] === 'admin' || parts[0] === 'user' ? 0 : 0).filter((c) => c !== 'Overview' || dedup.length === 1).map((c, i) => (
-        <React.Fragment key={c + i}><span aria-hidden="true">/</span><span className={i === dedup.length - 1 ? 'text-ink font-medium truncate' : ''}>{c}</span></React.Fragment>
+      {dedup.filter((c) => c !== 'Overview' || dedup.length === 1).map((c, i, arr) => (
+        <React.Fragment key={c + i}>
+          <span aria-hidden="true" className="text-muted/50">/</span>
+          <span className={i === arr.length - 1 ? 'text-ink font-medium truncate' : 'truncate'}>{c}</span>
+        </React.Fragment>
       ))}
     </nav>
   );
@@ -139,7 +141,7 @@ export default function Layout({ children }) {
       <aside
         aria-label="Primary"
         className={clsx(
-          'fixed top-0 left-0 z-40 h-full w-64 flex flex-col bg-surface border-r border-line transition-transform duration-200 lg:translate-x-0',
+          'fixed top-0 left-0 z-40 h-full w-[264px] flex flex-col bg-surface border-r border-line transition-transform duration-200 lg:translate-x-0',
           menuOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
@@ -148,10 +150,10 @@ export default function Layout({ children }) {
           <button className="btn-icon lg:hidden" onClick={() => setMenuOpen(false)} aria-label="Close menu"><X className="w-5 h-5" /></button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4 space-y-5">
+        <nav className="flex-1 overflow-y-auto scrollbar-thin px-3 py-5 space-y-6">
           {nav.map((group, gi) => (
             <div key={gi}>
-              {group.title && <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">{group.title}</p>}
+              {group.title && <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted">{group.title}</p>}
               <div className="space-y-0.5">
                 {group.items.map((it) => <NavItem key={it.to} {...it} onNavigate={() => setMenuOpen(false)} />)}
               </div>
@@ -165,10 +167,10 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      {menuOpen && <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+      {menuOpen && <div className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
 
       {/* Top bar */}
-      <header className="sticky top-0 z-20 lg:ml-64 h-16 flex items-center gap-3 px-4 lg:px-8 border-b border-line bg-app/80 backdrop-blur-md">
+      <header className="sticky top-0 z-20 lg:ml-[264px] h-16 flex items-center gap-3 px-4 sm:px-6 lg:px-8 border-b border-line bg-surface/80 backdrop-blur-xl">
         <button className="btn-icon lg:hidden" onClick={() => setMenuOpen(true)} aria-label="Open menu" aria-expanded={menuOpen}><Menu className="w-5 h-5" /></button>
         <div className="lg:hidden"><Brand compact /></div>
         <Breadcrumbs />
@@ -177,30 +179,30 @@ export default function Layout({ children }) {
         <div className="relative" ref={userMenuRef}>
           <button
             onClick={() => setUserMenuOpen((v) => !v)}
-            className="flex items-center gap-2.5 pl-1 pr-2 py-1 rounded-lg hover:bg-ink/5 transition-colors"
+            className="flex items-center gap-2.5 pl-1 pr-2 py-1 rounded-[14px] hover:bg-ink/5 transition-colors"
             aria-haspopup="menu" aria-expanded={userMenuOpen} data-testid="user-menu"
           >
             <span className="w-8 h-8 rounded-full bg-accent text-on-accent flex items-center justify-center text-sm font-semibold">
               {user?.username?.charAt(0).toUpperCase() || 'U'}
             </span>
             <span className="hidden sm:block text-left leading-tight">
-              <span className="block text-sm font-medium text-ink">{user?.username || 'User'}</span>
+              <span className="block text-[13px] font-medium text-ink">{user?.username || 'User'}</span>
               <span className="block text-[11px] text-muted capitalize">{user?.role || 'user'}</span>
             </span>
             <ChevronDown className="w-4 h-4 text-muted" />
           </button>
           {userMenuOpen && (
             <div role="menu" className="absolute right-0 top-full mt-2 w-56 card shadow-pop py-1.5 animate-fade-in z-50">
-              <Link role="menuitem" to={settingsPath} className="flex items-center gap-2 px-4 py-2 text-sm text-ink hover:bg-ink/5"><User className="w-4 h-4 text-muted" />Account & security</Link>
+              <Link role="menuitem" to={settingsPath} className="flex items-center gap-2 px-4 py-2.5 text-sm text-ink hover:bg-ink/5"><User className="w-4 h-4 text-muted" />Account & security</Link>
               <hr className="my-1.5 border-line" />
-              <button role="menuitem" onClick={handleLogout} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-danger-500 hover:bg-danger-500/10"><LogOut className="w-4 h-4" />Sign out</button>
+              <button role="menuitem" onClick={handleLogout} className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-500/[0.07]"><LogOut className="w-4 h-4" />Sign out</button>
             </div>
           )}
         </div>
       </header>
 
-      <main id="main" className="lg:ml-64">
-        <div className="px-4 py-6 lg:px-8 lg:py-8 max-w-[1400px]">{children}</div>
+      <main id="main" className="lg:ml-[264px]">
+        <div className="px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1280px] mx-auto">{children}</div>
       </main>
     </div>
   );

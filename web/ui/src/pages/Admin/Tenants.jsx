@@ -97,12 +97,12 @@ export default function Tenants() {
       <Modal title={edit?.id ? 'Edit tenant' : 'New tenant'} open={!!edit} onClose={() => setEdit(null)}>
         {edit && (
           <form onSubmit={save} className="space-y-4">
-            <div><label className="block text-sm font-medium text-ink/80 mb-1" htmlFor="t-name">Name *</label>
+            <div><label className="form-label" htmlFor="t-name">Name <span className="text-danger-500">*</span></label>
               <input id="t-name" className="input" value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} maxLength={64} /></div>
             <div className="grid sm:grid-cols-2 gap-4">
-              <div><label className="block text-sm font-medium text-ink/80 mb-1" htmlFor="t-zones">Max zones</label>
+              <div><label className="form-label" htmlFor="t-zones">Max zones</label>
                 <input id="t-zones" className="input" type="number" min="0" placeholder="unlimited" value={edit.max_zones} onChange={(e) => setEdit({ ...edit, max_zones: e.target.value })} /></div>
-              <div><label className="block text-sm font-medium text-ink/80 mb-1" htmlFor="t-records">Max records</label>
+              <div><label className="form-label" htmlFor="t-records">Max records</label>
                 <input id="t-records" className="input" type="number" min="0" placeholder="unlimited" value={edit.max_records} onChange={(e) => setEdit({ ...edit, max_records: e.target.value })} /></div>
             </div>
             <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setEdit(null)}>Cancel</button><button className="btn-primary" type="submit">Save</button></div>
@@ -113,12 +113,14 @@ export default function Tenants() {
       <Modal title={members ? `Members · ${members.tenant.name}` : 'Members'} open={!!members} onClose={() => setMembers(null)}>
         {members && (
           <div className="space-y-5">
-            <table className="table" data-testid="members-table"><thead><tr><th>User</th><th>Role</th><th className="text-right">Remove</th></tr></thead>
-              <tbody>{members.list.map((m) => (
-                <tr key={m.user_id}><td>{m.username}</td>
-                  <td><select className="select input-sm" aria-label={`Role of ${m.username}`} value={m.role} onChange={(e) => changeRole(m, e.target.value)}><option value="owner">owner</option><option value="editor">editor</option><option value="viewer">viewer</option></select></td>
-                  <td className="text-right"><button className="btn-icon text-danger-500" aria-label={`Remove ${m.username}`} onClick={() => removeMember(m)}><Trash2 className="w-4 h-4" /></button></td></tr>
-              ))}</tbody></table>
+            <div className="overflow-x-auto">
+              <table className="table" data-testid="members-table"><thead><tr><th>User</th><th>Role</th><th className="text-right">Remove</th></tr></thead>
+                <tbody>{members.list.map((m) => (
+                  <tr key={m.user_id}><td>{m.username}</td>
+                    <td><select className="select" aria-label={`Role of ${m.username}`} value={m.role} onChange={(e) => changeRole(m, e.target.value)}><option value="owner">owner</option><option value="editor">editor</option><option value="viewer">viewer</option></select></td>
+                    <td className="text-right"><button className="btn-icon text-danger-500" aria-label={`Remove ${m.username}`} onClick={() => removeMember(m)}><Trash2 className="w-4 h-4" /></button></td></tr>
+                ))}</tbody></table>
+            </div>
             <form onSubmit={addMember} className="flex flex-wrap items-end gap-2">
               <div className="flex-1 min-w-[160px]"><label className="block text-xs text-muted mb-1" htmlFor="m-user">Username</label><input id="m-user" className="input" value={newMember.username} onChange={(e) => setNewMember({ ...newMember, username: e.target.value })} /></div>
               <div><label className="block text-xs text-muted mb-1" htmlFor="m-role">Role</label><select id="m-role" className="select" value={newMember.role} onChange={(e) => setNewMember({ ...newMember, role: e.target.value })}><option value="viewer">viewer</option><option value="editor">editor</option><option value="owner">owner</option></select></div>

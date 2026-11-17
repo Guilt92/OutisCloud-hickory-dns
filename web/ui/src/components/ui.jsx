@@ -11,51 +11,50 @@ import { useUIStore } from '../store'
    --------------------------------------------------------------------------- */
 
 /** Original mark: two data streams crossing, drawn as flowing lines. */
-export function LogoMark({ className = 'w-8 h-8' }) {
+export function LogoMark({ className = 'w-8 h-8', inverted = false }) {
   return (
     <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
-      <rect width="64" height="64" rx="14" className="fill-[#0B0D12]" />
-      <path d="M10 40c8 0 10-16 18-16s10 16 18 16 6-9 8-9" fill="none" stroke="#F5F020" strokeWidth="5" strokeLinecap="round" />
-      <path d="M10 28c8 0 10-10 18-10s10 10 18 10 6-6 8-6" fill="none" stroke="#5B7CFA" strokeWidth="3" strokeLinecap="round" opacity=".85" />
+      <rect width="64" height="64" rx="16" className={inverted ? 'fill-white' : 'fill-ink'} />
+      <path d="M10 40c8 0 10-16 18-16s10 16 18 16 6-9 8-9" fill="none" strokeWidth="5" strokeLinecap="round"
+        className={inverted ? 'stroke-ink' : 'stroke-surface'} />
+      <path d="M10 28c8 0 10-10 18-10s10 10 18 10 6-6 8-6" fill="none" strokeWidth="3" strokeLinecap="round"
+        className={inverted ? 'stroke-ink/45' : 'stroke-surface/55'} />
     </svg>
   )
 }
 
-export function Brand({ compact = false }) {
+export function Brand({ compact = false, inverted = false }) {
   return (
     <span className="inline-flex items-center gap-2.5">
-      <LogoMark />
-      {!compact && <span className="font-display text-lg font-semibold tracking-tight text-ink">Outis<span className="text-primary-700 dark:text-accent">Cloud</span></span>}
+      <LogoMark inverted={inverted} />
+      {!compact && (
+        <span className={clsx('font-display text-[17px] font-semibold tracking-[-0.03em]', inverted ? 'text-white' : 'text-ink')}>
+          Outis<span className={inverted ? 'text-white/55' : 'text-muted'}>Cloud</span>
+        </span>
+      )}
     </span>
   )
 }
 
-/** Decorative "data in motion" lines. Pure SVG, no data implied. */
+/** Decorative "data in motion" blueprint lines. Pure SVG, no data implied. */
 export function FlowArt({ className = '' }) {
   const lines = Array.from({ length: 9 }, (_, i) => i)
   return (
     <svg viewBox="0 0 800 400" preserveAspectRatio="xMidYMid slice" className={clsx('pointer-events-none', className)} aria-hidden="true">
-      <defs>
-        <linearGradient id="flow-a" x1="0" x2="1">
-          <stop offset="0" stopColor="#F5F020" stopOpacity="0" />
-          <stop offset=".5" stopColor="#F5F020" stopOpacity=".85" />
-          <stop offset="1" stopColor="#5B7CFA" stopOpacity="0" />
-        </linearGradient>
-        <linearGradient id="flow-b" x1="0" x2="1">
-          <stop offset="0" stopColor="#9B6BFF" stopOpacity="0" />
-          <stop offset=".6" stopColor="#5B7CFA" stopOpacity=".6" />
-          <stop offset="1" stopColor="#F5F020" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {lines.map((i) => {
-        const y = 60 + i * 34
-        const amp = 26 + (i % 4) * 12
-        const d = `M-20 ${y} C 140 ${y - amp}, 260 ${y + amp}, 400 ${y} S 660 ${y - amp}, 820 ${y + amp / 2}`
-        return (
-          <path key={i} d={d} fill="none" stroke={i % 3 === 0 ? 'url(#flow-b)' : 'url(#flow-a)'} strokeWidth={i % 3 === 0 ? 1 : 1.6}
-            strokeDasharray={i % 2 ? '2 14' : '90 40'} className="animate-flow" style={{ animationDuration: `${12 + i * 2}s` }} opacity={0.35 + (i % 4) * 0.15} />
-        )
-      })}
+      <g fill="none" stroke="currentColor" strokeLinecap="round">
+        {lines.map((i) => {
+          const y = 60 + i * 34
+          const amp = 26 + (i % 4) * 12
+          const d = `M-20 ${y} C 140 ${y - amp}, 260 ${y + amp}, 400 ${y} S 660 ${y - amp}, 820 ${y + amp / 2}`
+          return (
+            <path key={i} d={d} strokeWidth={i % 3 === 0 ? 0.9 : 1.25}
+              strokeDasharray={i % 2 ? '2 14' : '90 40'} className="animate-flow"
+              style={{ animationDuration: `${12 + i * 2}s` }} opacity={0.18 + (i % 4) * 0.07} />
+          )
+        })}
+        <circle cx="612" cy="118" r="86" opacity="0.13" />
+        <circle cx="612" cy="118" r="126" opacity="0.08" />
+      </g>
     </svg>
   )
 }
@@ -77,20 +76,20 @@ export function ThemeSync() {
   React.useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
     const m = document.querySelector('meta[name="theme-color"]')
-    if (m) m.setAttribute('content', theme === 'dark' ? '#0B0D12' : '#F6F6F2')
+    if (m) m.setAttribute('content', theme === 'dark' ? '#0a0a0a' : '#f5f5f5')
   }, [theme])
   return null
 }
 
 export function PageHeader({ eyebrow, title, description, actions, icon: Icon }) {
   return (
-    <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-6">
-      <div className="flex items-start gap-3 min-w-0">
-        {Icon && <div className="icon-box mt-0.5"><Icon className="w-5 h-5" /></div>}
+    <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-5 mb-7">
+      <div className="flex items-start gap-3.5 min-w-0">
+        {Icon && <div className="icon-box mt-0.5"><Icon className="w-[19px] h-[19px]" /></div>}
         <div className="min-w-0">
-          {eyebrow && <p className="eyebrow mb-1">{eyebrow}</p>}
+          {eyebrow && <p className="eyebrow mb-1.5">{eyebrow}</p>}
           <h1 className="section-title">{title}</h1>
-          {description && <p className="section-desc max-w-2xl">{description}</p>}
+          {description && <p className="section-desc">{description}</p>}
         </div>
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -101,17 +100,17 @@ export function PageHeader({ eyebrow, title, description, actions, icon: Icon })
 export function StatCard({ icon: Icon, label, value, hint, tone = 'neutral', to, loading }) {
   const toneDot = { neutral: '', ok: 'dot-ok', warn: 'dot-warn', bad: 'dot-bad' }[tone]
   const body = (
-    <div className="card p-5 h-full transition-colors hover:border-muted/50" data-testid={`stat-${String(label).toLowerCase().replace(/\s+/g, '-')}`}>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-medium text-muted">{label}</span>
-        {Icon && <Icon className="w-4 h-4 text-muted" />}
+    <div className="card p-5 h-full transition-colors hover:border-muted/40" data-testid={`stat-${String(label).toLowerCase().replace(/\s+/g, '-')}`}>
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">{label}</span>
+        {Icon && <Icon className="w-4 h-4 text-muted/70" />}
       </div>
-      {loading ? <div className="skeleton h-8 w-20" /> : (
-        <p className="font-display text-3xl font-semibold tracking-tight text-ink tabular-nums flex items-center gap-2">
+      {loading ? <div className="skeleton h-8 w-20 mt-5" /> : (
+        <p className="mt-5 font-display text-[31px] leading-none font-semibold tracking-[-0.035em] text-ink tabular-nums flex items-center gap-2">
           {toneDot && <span className={toneDot} />}{value}
         </p>
       )}
-      {hint && <p className="text-xs text-muted mt-1.5">{hint}</p>}
+      {hint && <p className="text-xs text-muted mt-2">{hint}</p>}
     </div>
   )
   return to ? <Link to={to} className="block">{body}</Link> : body
@@ -130,21 +129,21 @@ export function StatusBadge({ status, children }) {
 export function EmptyState({ icon: Icon = Inbox, title, description, action }) {
   return (
     <div className="py-14 px-6 text-center" data-testid="empty-state">
-      <div className="mx-auto mb-4 w-12 h-12 rounded-2xl border border-line bg-surface-2 flex items-center justify-center"><Icon className="w-5 h-5 text-muted" /></div>
+      <div className="mx-auto mb-4 w-12 h-12 rounded-[14px] border border-line bg-surface-2 flex items-center justify-center"><Icon className="w-5 h-5 text-muted" /></div>
       <p className="font-display font-semibold text-ink">{title}</p>
-      {description && <p className="text-sm text-muted mt-1 max-w-sm mx-auto">{description}</p>}
-      {action && <div className="mt-4">{action}</div>}
+      {description && <p className="text-sm text-muted mt-1.5 max-w-sm mx-auto">{description}</p>}
+      {action && <div className="mt-5">{action}</div>}
     </div>
   )
 }
 
 export function ErrorState({ title = 'Something went wrong', description, onRetry }) {
   return (
-    <div className="card p-6 flex items-start gap-3 border-danger-500/40" role="alert">
+    <div className="card p-6 flex items-start gap-3 border-danger-500/30" role="alert">
       <AlertTriangle className="w-5 h-5 text-danger-500 mt-0.5" />
       <div className="flex-1">
         <p className="font-display font-semibold text-ink">{title}</p>
-        {description && <p className="text-sm text-muted mt-0.5">{description}</p>}
+        {description && <p className="text-sm text-muted mt-1">{description}</p>}
       </div>
       {onRetry && <button className="btn-secondary btn-sm" onClick={onRetry}>Retry</button>}
     </div>
@@ -175,17 +174,17 @@ export function ConfirmProvider({ children }) {
     <ConfirmContext.Provider value={confirm}>
       {children}
       {state && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => close(false)}>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/45 backdrop-blur-sm animate-fade-in" onClick={() => close(false)}>
           <div role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" data-testid="confirm-dialog"
             className="card w-full max-w-md p-6 shadow-pop animate-slide-in" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start gap-3">
-              {state.danger !== false && <div className="w-9 h-9 rounded-lg bg-danger-500/10 border border-danger-500/30 flex items-center justify-center"><AlertTriangle className="w-4 h-4 text-danger-500" /></div>}
+            <div className="flex items-start gap-3.5">
+              {state.danger !== false && <div className="w-9 h-9 rounded-[14px] bg-danger-500/[0.07] border border-danger-500/20 flex items-center justify-center"><AlertTriangle className="w-4 h-4 text-danger-500" /></div>}
               <div>
                 <h3 id="confirm-title" className="font-display text-lg font-semibold text-ink">{state.title || 'Are you sure?'}</h3>
                 {state.message && <p className="text-sm text-muted mt-1.5">{state.message}</p>}
               </div>
             </div>
-            <div className="flex justify-end gap-2 mt-6">
+            <div className="flex justify-end gap-2 mt-7">
               <button className="btn-secondary" onClick={() => close(false)} autoFocus>{state.cancelLabel || 'Cancel'}</button>
               <button className={state.danger === false ? 'btn-primary' : 'btn-danger'} onClick={() => close(true)} data-testid="confirm-yes">{state.confirmLabel || 'Confirm'}</button>
             </div>

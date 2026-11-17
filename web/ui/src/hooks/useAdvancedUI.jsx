@@ -180,12 +180,12 @@ export function SortableHeader({ field, label, sortConfig, onSort, className = '
   return (
     <th
       onClick={() => onSort(field)}
-      className={`px-6 py-3 text-left text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${className}`}
+      className={`px-4 py-3 text-left text-[11px] font-semibold text-muted uppercase tracking-[0.12em] cursor-pointer hover:text-ink hover:bg-surface-2 transition-colors ${className}`}
     >
       <div className="flex items-center gap-2">
         {label}
         {isActive && (
-          <span className="text-blue-600 dark:text-blue-400">
+          <span className="text-ink" aria-hidden="true">
             {isSortAsc ? '↑' : '↓'}
           </span>
         )}
@@ -202,7 +202,8 @@ export function DebouncedSearchInput({ value, onChange, placeholder, className =
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 transition-all ${className}`}
+      aria-label={placeholder || 'Search'}
+      className={`input ${className}`}
     />
   );
 }
@@ -213,7 +214,7 @@ export function SkeletonRow({ columns = 5 }) {
     <tr className="animate-pulse">
       {Array.from({ length: columns }).map((_, i) => (
         <td key={i} className="px-6 py-4 whitespace-nowrap">
-          <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4"></div>
+          <div className="skeleton h-4 rounded w-3/4"></div>
         </td>
       ))}
     </tr>
@@ -258,8 +259,6 @@ export function FadeIn({ children, duration = 300, className = '' }) {
 
 // Slide animation wrapper
 export function SlideIn({ children, direction = 'left', duration = 300, className = '' }) {
-  const translateX = direction === 'left' ? '-100%' : '100%';
-  
   return (
     <div
       className={className}

@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Moon, Sun, Palette, User, Globe } from 'lucide-react';
+import { Moon, Sun, Palette, User, Globe, Settings as SettingsIcon } from 'lucide-react';
 import { useUIStore, useAuthStore } from '../../store';
 import PasswordChangeForm from '../../components/PasswordChangeForm';
 import MfaCard from '../../components/MfaCard';
+import { PageHeader } from '../../components/ui';
 
 const themes = [
   { value: 'light', label: 'Light', icon: Sun },
@@ -23,14 +24,7 @@ export default function Settings() {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      {/* Header */}
-      <motion.div 
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-      >
-        <h1 className="text-2xl font-bold text-ink">Settings</h1>
-        <p className="text-muted">Manage your account and preferences</p>
-      </motion.div>
+      <PageHeader eyebrow="Administration" title="Settings" description="Manage appearance, your account and security." icon={SettingsIcon} />
 
       {/* Appearance */}
       <motion.div 
@@ -41,16 +35,16 @@ export default function Settings() {
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="icon-box">
-            <Palette className="w-5 h-5 text-white" />
+            <Palette className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-ink">Appearance</h2>
-            <p className="text-sm text-muted">Customize the look and feel</p>
+            <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">Appearance</h2>
+            <p className="text-sm text-muted">Customise the look and feel.</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <label className="block text-sm font-medium text-ink/80">Theme</label>
+          <span className="form-label">Theme</span>
           <div className="grid grid-cols-2 gap-3">
             {themes.map((t) => {
               const Icon = t.icon;
@@ -58,13 +52,14 @@ export default function Settings() {
                 <button
                   key={t.value}
                   onClick={() => handleThemeChange(t.value)}
-                  className={`flex items-center gap-3 p-4 rounded-xl border-2 transition-all ${
+                  aria-pressed={theme === t.value}
+                  className={`flex items-center gap-3 p-4 rounded-[14px] border transition-colors ${
                     theme === t.value
-                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                      : 'border-line hover:border-gray-300 dark:hover:border-gray-500'
+                      ? 'border-ink bg-surface-2'
+                      : 'border-line hover:border-muted/40'
                   }`}
                 >
-                  <Icon className={`w-5 h-5 ${theme === t.value ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'}`} />
+                  <Icon className={`w-5 h-5 ${theme === t.value ? 'text-ink' : 'text-muted'}`} />
                   <span className="font-medium text-ink">{t.label}</span>
                 </button>
               );
@@ -74,9 +69,10 @@ export default function Settings() {
             <motion.p 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="text-sm text-green-600 dark:text-green-400"
+              role="status"
+              className="text-sm text-success-600 dark:text-success-400"
             >
-              ✓ Settings saved
+              Settings saved
             </motion.p>
           )}
         </div>
@@ -91,16 +87,16 @@ export default function Settings() {
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="icon-box">
-            <User className="w-5 h-5 text-white" />
+            <User className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-ink">Profile</h2>
-            <p className="text-sm text-muted">Your account information</p>
+            <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">Profile</h2>
+            <p className="text-sm text-muted">Your account information.</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <div className="flex items-center gap-4 p-4 rounded-xl bg-surface-2">
+          <div className="flex items-center gap-4 p-4 rounded-[14px] bg-surface-2">
             <div className="w-12 h-12 rounded-full bg-accent text-on-accent flex items-center justify-center font-semibold text-xl font-bold">
               {user?.username?.charAt(0).toUpperCase() || 'U'}
             </div>
@@ -142,11 +138,11 @@ export default function Settings() {
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="icon-box">
-            <Globe className="w-5 h-5 text-white" />
+            <Globe className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-ink">About OutisCloud</h2>
-            <p className="text-sm text-muted">DNS Management Platform</p>
+            <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">About OutisCloud</h2>
+            <p className="text-sm text-muted">DNS management platform.</p>
           </div>
         </div>
 

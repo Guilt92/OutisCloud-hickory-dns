@@ -27,7 +27,7 @@ export default function ConfigPush(){
       >
         <div className="flex items-center gap-3">
           <div className="icon-box">
-            <Upload className="w-5 h-5 text-white" />
+            <Upload className="w-5 h-5" />
           </div>
           <div>
             <h1 className="section-title">Push Configuration</h1>
@@ -43,8 +43,8 @@ export default function ConfigPush(){
       >
         <div className="p-5 space-y-4">
           <div className="flex items-center gap-3 pb-3 border-b border-line">
-            <Server className="w-5 h-5 text-indigo-500" />
-            <span className="font-medium text-ink">Agent & Zone Configuration</span>
+            <Server className="w-5 h-5 text-muted" />
+            <span className="font-medium text-ink">Agent &amp; zone configuration</span>
           </div>
           <div className="space-y-3">
             <div>
@@ -54,7 +54,7 @@ export default function ConfigPush(){
                 <option value="all">All enabled agents</option>
                 {agents.map(a => <option key={a.id} value={a.id} disabled={!a.enabled}>{a.name} ({a.addr}){a.enabled ? '' : ' - disabled'}</option>)}
               </select>
-              <p className="text-xs text-gray-500 mt-1">Agents pull the signed configuration bundle; this asks them to do it on their next heartbeat.</p>
+              <p className="text-xs text-muted mt-1.5">Agents pull the signed configuration bundle; this asks them to do it on their next heartbeat.</p>
             </div>
             <button className="btn-primary w-full mt-1" onClick={push} disabled={!agentId}>
               <ArrowRight className="w-4 h-4" />
@@ -64,7 +64,7 @@ export default function ConfigPush(){
           {result && (
             <div className="mt-4 pt-4 border-t border-line">
               <p className="text-sm font-medium text-ink/80 mb-2">Result</p>
-              <pre className="bg-gray-50 dark:bg-gray-900 text-ink p-3 rounded-lg text-xs font-mono overflow-x-auto border border-line">{JSON.stringify(result, null, 2)}</pre>
+              <pre className="bg-surface-2 text-ink p-3 rounded-[14px] text-xs font-mono overflow-x-auto border border-line">{JSON.stringify(result, null, 2)}</pre>
             </div>
           )}
         </div>

@@ -6,11 +6,6 @@ import { useAuthStore } from '../store';
 import { StatCard, EmptyState, FlowArt, StatusBadge } from '../components/ui';
 import { QuotaBar } from '../components/Quota';
 
-const total = (res) => {
-  const h = Number(res?.headers?.['x-total-count']);
-  return Number.isFinite(h) ? h : (Array.isArray(res?.data) ? res.data.length : 0);
-};
-
 // Customer overview: only the customer's own zones (the API enforces tenancy), nothing about infrastructure.
 export default function UserOverview() {
   const { user } = useAuthStore();
@@ -32,11 +27,11 @@ export default function UserOverview() {
 
   return (
     <div className="page" data-testid="user-overview">
-      <div className="relative overflow-hidden rounded-2xl border border-line bg-surface p-6 sm:p-8">
-        <FlowArt className="absolute inset-0 w-full h-full opacity-50 dark:opacity-70" />
+      <div className="relative overflow-hidden rounded-[24px] border border-line bg-surface p-6 sm:p-8">
+        <FlowArt className="absolute inset-0 w-full h-full text-ink/[0.055]" />
         <div className="relative max-w-xl">
           <p className="eyebrow mb-2">Welcome back</p>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-ink">Hello, {user?.username}</h1>
+          <h1 className="font-display text-[30px] sm:text-[36px] leading-[1.08] font-semibold tracking-[-0.035em] text-ink">Hello, {user?.username}</h1>
           <p className="text-muted mt-2">Manage your domains and DNS records.</p>
           <div className="mt-5 flex flex-wrap gap-2">
             <Link to="/user/zones" className="btn-primary">{canWrite ? <><Plus className="w-4 h-4" />Add or manage zones</> : <>View zones <ArrowRight className="w-4 h-4" /></>}</Link>
@@ -53,7 +48,7 @@ export default function UserOverview() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="card xl:col-span-2">
-          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Your zones</h2><Link to="/user/zones" className="text-xs text-primary-700 dark:text-accent hover:underline">View all</Link></div>
+          <div className="px-5 py-4 border-b border-line flex items-center justify-between"><h2 className="panel-title">Your zones</h2><Link to="/user/zones" className="text-xs text-muted hover:text-ink hover:underline">View all</Link></div>
           {d.error ? <EmptyState title="Could not load your zones" description="Please try again in a moment." /> :
             !d.loading && recent.length === 0 ? <EmptyState icon={Globe} title="No zones yet" description="Add your first domain to start serving DNS." action={canWrite && <Link to="/user/zones" className="btn-primary btn-sm">Add a zone</Link>} /> : (
               <ul className="divide-y divide-line">
@@ -78,8 +73,8 @@ export default function UserOverview() {
           {(d.tenants || []).map((t) => (
             <div key={t.id} className="card p-5 space-y-3" data-testid="quota-card">
               <h2 className="panel-title">Plan & usage <span className="text-xs text-muted font-normal">· {t.name}</span></h2>
-              <QuotaBar label="Zones" used={t.zones} limit={t.max_zones} />
-              <QuotaBar label="Records" used={t.records} limit={t.max_records} />
+              <div data-testid="quota-zones"><QuotaBar label="Zones" used={t.zones} limit={t.max_zones} /></div>
+              <div data-testid="quota-records"><QuotaBar label="Records" used={t.records} limit={t.max_records} /></div>
             </div>
           ))}
           <div className="card p-5">

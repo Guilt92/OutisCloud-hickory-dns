@@ -1,4 +1,4 @@
-// Redesign QA: every route for every role, both themes, three viewports.
+// Redesign QA: every route for every role, both themes, ten viewports.
 // Checks: renders a heading, no console/page errors, no horizontal overflow, theme switching works on every
 // route and persists, role separation (customers never see admin navigation; /admin redirects), keyboard-reachable
 // destructive confirmation dialog. Screenshots go to $SHOTS (default ./qa-shots).
@@ -12,13 +12,13 @@ const SHOTS = process.env.SHOTS || path.join(process.cwd(), 'qa-shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 const results = [];
 const ok = (n, c, x = '') => { results.push(c); console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  -- ' + x : '')); };
-const VIEWPORTS = [['desktop', 1280, 800], ['tablet', 820, 1100], ['mobile', 390, 800]];
+const VIEWPORTS = [['w1920', 1920, 1080], ['w1440', 1440, 900], ['desktop', 1280, 800], ['w1024', 1024, 768], ['tablet', 820, 1100], ['w768', 768, 1024], ['w430', 430, 932], ['mobile', 390, 800], ['w375', 375, 812], ['w360', 360, 800]];
 const ADMIN_ROUTES = ['/admin', '/admin/metrics', '/admin/zones', '/admin/nameservers', '/admin/georules', '/admin/dns-lookup', '/admin/servers', '/admin/agents', '/admin/config', '/admin/users', '/admin/audit', '/admin/settings'];
 const USER_ROUTES = ['/user', '/user/zones', '/user/dns-lookup', '/user/settings', '/user/help'];
 async function api(m, p, tok, body) { const r = await fetch(API + p, { method: m, headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = null; try { j = await r.json(); } catch (e) {} return [r.status, j]; }
 async function login(page, u, p) {
   await page.goto(BASE + '/login'); await page.fill('input[placeholder="Enter your username"]', u); await page.fill('input[placeholder="Enter your password"]', p);
-  await page.click('button[type="submit"]'); await page.waitForURL(/\/(admin|user)/, { timeout: 10000 }).catch(() => {});
+  await page.click('button[type="submit"]'); await page.waitForURL(/\/(admin|user)/, { timeout: 10000 });
 }
 function watch(page, errs) {
   page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (!/favicon|Failed to load resource.*(401|403|404|503)/.test(t)) errs.push('console: ' + t.slice(0, 160)); } });
@@ -37,12 +37,12 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
   for (const [name, w, h] of VIEWPORTS) {
     const ctx = await browser.newContext({ viewport: { width: w, height: h } }); const page = await ctx.newPage(); const errs = []; watch(page, errs);
     await page.goto(BASE + '/login'); await page.waitForSelector('[data-testid="login-page"]');
-    ok(`login (${name}): dark is the default theme`, await page.evaluate(() => document.documentElement.classList.contains('dark')));
-    await page.screenshot({ path: path.join(SHOTS, `login-dark-${name}.png`) });
+    ok(`login (${name}): light is the default theme`, !(await page.evaluate(() => document.documentElement.classList.contains('dark'))));
+    await page.screenshot({ path: path.join(SHOTS, `login-light-${name}.png`) });
     ok(`login (${name}): no horizontal overflow`, (await overflow(page)) <= 1, String(await overflow(page)));
     await page.click('[data-testid="theme-toggle"]'); await page.waitForTimeout(200);
-    ok(`login (${name}): theme toggle switches to light`, !(await page.evaluate(() => document.documentElement.classList.contains('dark'))));
-    await page.screenshot({ path: path.join(SHOTS, `login-light-${name}.png`) });
+    ok(`login (${name}): theme toggle switches to dark`, await page.evaluate(() => document.documentElement.classList.contains('dark')));
+    await page.screenshot({ path: path.join(SHOTS, `login-dark-${name}.png`) });
     ok(`login (${name}): no console errors`, errs.length === 0, errs.join(' | '));
     await ctx.close();
   }
@@ -58,7 +58,8 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
         const isDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
         const h1 = await page.locator('h1').first().textContent().catch(() => '');
         const ov = await overflow(page);
-        const good = isDark === (theme === 'dark') && !!h1 && ov <= 1;
+        const atRoute = new URL(page.url()).pathname === r;
+        const good = atRoute && isDark === (theme === 'dark') && !!h1 && ov <= 1;
         if (!good || (name === 'desktop')) await page.screenshot({ path: path.join(SHOTS, `admin${r.replace(/\//g, '-')}-${theme}-${name}.png`), fullPage: false });
         ok(`admin ${r} [${theme}/${name}] renders (h1="${(h1 || '').trim().slice(0, 30)}", overflow ${ov})`, good);
       }
@@ -124,8 +125,9 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
         for (const r of USER_ROUTES) {
           await page.goto(BASE + r); await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {}); await page.waitForTimeout(450);
           const ov = await overflow(page); const h1 = await page.locator('h1').first().textContent().catch(() => '');
+          const atRoute = new URL(page.url()).pathname === r;
           if (who === 'ui_editor' && name === 'desktop') await page.screenshot({ path: path.join(SHOTS, `user${r.replace(/\//g, '-')}-${theme}-${name}.png`) });
-          ok(`${who} ${r} [${theme}/${name}] renders (overflow ${ov})`, !!h1 && ov <= 1);
+          ok(`${who} ${r} [${theme}/${name}] renders (overflow ${ov})`, atRoute && !!h1 && ov <= 1);
         }
       }
       if (name === 'desktop') {

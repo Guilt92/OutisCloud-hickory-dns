@@ -7,7 +7,7 @@ const typeStyles = {
   success: 'border-success-500/50 [&_svg:first-child]:text-success-500',
   error: 'border-danger-500/50 [&_svg:first-child]:text-danger-500',
   warning: 'border-warning-500/50 [&_svg:first-child]:text-warning-500',
-  info: 'border-accent/50 [&_svg:first-child]:text-primary-700 dark:[&_svg:first-child]:text-accent',
+  info: 'border-line [&_svg:first-child]:text-ink',
 }
 
 const typeIcons = {
@@ -20,7 +20,7 @@ const typeIcons = {
 function NotificationItem({ m, onRemove }){
   const Icon = typeIcons[m.type] || Info
   return (
-    <div role="status" className={`flex items-start gap-3 px-4 py-3 rounded-xl border bg-surface text-ink shadow-pop animate-slide-in ${typeStyles[m.type] || typeStyles.info}`}>
+    <div role={m.type === 'error' ? 'alert' : 'status'} className={`flex items-start gap-3 px-4 py-3 rounded-[14px] border bg-surface text-ink shadow-pop animate-slide-in ${typeStyles[m.type] || typeStyles.info}`}>
       <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" />
       <p className="text-sm flex-1 break-words">{m.text}</p>
       <button

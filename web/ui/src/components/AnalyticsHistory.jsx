@@ -46,10 +46,11 @@ export default function AnalyticsHistory({ scope }) {
 
   useEffect(() => { setState((s) => (s.phase === 'ok' ? s : { phase: 'loading' })); load(); const id = setInterval(load, 60000); return () => clearInterval(id); }, [load]);
 
-  const grid = theme === 'dark' ? '#232836' : '#E2E2DA';
-  const tick = theme === 'dark' ? '#9AA3B5' : '#5F6677';
-  const tipItem = { color: theme === 'dark' ? '#E6E8EE' : '#14161C' };
-  const tip = { background: theme === 'dark' ? '#181C25' : '#fff', border: `1px solid ${grid}`, borderRadius: 8, fontSize: 12 };
+  const grid = theme === 'dark' ? '#2a2a2a' : '#e5e5e5';
+  const tick = theme === 'dark' ? '#a3a3a3' : '#737373';
+  const chartInk = theme === 'dark' ? '#fafafa' : '#0a0a0a';
+  const tipItem = { color: chartInk };
+  const tip = { background: theme === 'dark' ? '#171717' : '#ffffff', border: `1px solid ${grid}`, borderRadius: 12, fontSize: 12, color: chartInk };
   const tn = state.tn; const gl = state.gl;
   const rows = (tn?.series || []).map((p) => ({ t: fmtTs(p.ts, range), queries: p.queries, failed: p.failed }));
   const globalRows = (gl?.series || []).map((p) => ({ t: fmtTs(p.ts, range), requests: p.requests }));
@@ -59,7 +60,9 @@ export default function AnalyticsHistory({ scope }) {
   const qtypes = bd.qtypes || [];
   const countries = bd.countries || [];
   const maxCountry = Math.max(1, ...countries.map((c) => c.queries));
-  const palette = ['#F5F020', '#5B7CFA', '#9B6BFF', '#22C55E', '#F59E0B', '#EF4444', '#14B8A6', '#EC4899'];
+  const palette = theme === 'dark'
+    ? ['#fafafa', '#d4d4d4', '#a3a3a3', '#737373', '#525252', '#404040', '#e5e5e5', '#8a8a8a']
+    : ['#0a0a0a', '#404040', '#737373', '#a3a3a3', '#d4d4d4', '#171717', '#8a8a8a', '#525252'];
 
   return (
     <section aria-label="Query history" data-testid="analytics-history" className="space-y-6">
@@ -117,12 +120,11 @@ export default function AnalyticsHistory({ scope }) {
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={rows} margin={{ left: 0, right: 8 }}>
-                    <defs><linearGradient id="qh" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#F5F020" stopOpacity=".45" /><stop offset="1" stopColor="#F5F020" stopOpacity="0" /></linearGradient></defs>
-                    <XAxis dataKey="t" tick={{ fill: tick, fontSize: 11 }} stroke={grid} minTickGap={32} />
-                    <YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={48} />
-                    <Tooltip contentStyle={tip} itemStyle={tipItem} />
-                    <Area type="monotone" dataKey="queries" stroke="#F5F020" strokeWidth={2} fill="url(#qh)" />
-                    <Area type="monotone" dataKey="failed" stroke="#EF4444" strokeWidth={1.5} fill="none" />
+                    <XAxis dataKey="t" tick={{ fill: tick, fontSize: 11 }} stroke={grid} minTickGap={24} />
+                    <YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={44} />
+                    <Tooltip itemStyle={tipItem} contentStyle={tip} />
+                    <Area type="monotone" dataKey="queries" stroke={chartInk} strokeWidth={2} fill={chartInk} fillOpacity={0.06} />
+                    <Area type="monotone" dataKey="failed" stroke={theme === 'dark' ? '#737373' : '#a3a3a3'} strokeWidth={1.5} fill="none" />
                   </AreaChart>
                 </ResponsiveContainer>
               )}
@@ -134,7 +136,7 @@ export default function AnalyticsHistory({ scope }) {
               <div className="px-5 py-4 border-b border-line"><h2 className="panel-title">All requests (global counter)</h2></div>
               <div className="p-5 h-52"><ResponsiveContainer width="100%" height="100%"><LineChart data={globalRows}>
                 <XAxis dataKey="t" tick={{ fill: tick, fontSize: 11 }} stroke={grid} minTickGap={32} /><YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={48} /><Tooltip contentStyle={tip} itemStyle={tipItem} />
-                <Line type="monotone" dataKey="requests" stroke="#5B7CFA" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div>
+                <Line type="monotone" dataKey="requests" stroke={chartInk} strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div>
             </div>
           )}
 
@@ -172,7 +174,7 @@ export default function AnalyticsHistory({ scope }) {
                     {countries.map((c, i) => (
                       <li key={(c.code || c.kind) + i} className="text-sm">
                         <div className="flex justify-between"><span className="text-ink">{c.code ? <><span className="font-mono">{c.code}</span></> : c.label}</span><span className="tabular-nums text-muted">{c.queries.toLocaleString()}</span></div>
-                        <div className="h-1.5 rounded-full bg-ink/10 overflow-hidden mt-1" aria-hidden="true"><div className={`h-full ${c.code ? 'bg-accent' : 'bg-secondary-500'}`} style={{ width: `${Math.max(2, (c.queries / maxCountry) * 100)}%` }} /></div>
+                        <div className="h-1.5 rounded-full bg-ink/10 overflow-hidden mt-1" aria-hidden="true"><div className={`h-full ${c.code ? 'bg-accent' : 'bg-muted'}`} style={{ width: `${Math.max(2, (c.queries / maxCountry) * 100)}%` }} /></div>
                       </li>
                     ))}
                   </ul>
@@ -194,7 +196,7 @@ export default function AnalyticsHistory({ scope }) {
                 {usage.length < 2 ? <EmptyState title="Collecting usage snapshots…" description="One snapshot is stored per hour." /> : (
                   <ResponsiveContainer width="100%" height="100%"><LineChart data={usage}>
                     <XAxis dataKey="t" tick={{ fill: tick, fontSize: 11 }} stroke={grid} minTickGap={32} /><YAxis tick={{ fill: tick, fontSize: 11 }} stroke={grid} width={40} /><Tooltip contentStyle={tip} itemStyle={tipItem} />
-                    <Line type="monotone" dataKey="zones" stroke="#F5F020" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="records" stroke="#9B6BFF" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer>
+                    <Line type="monotone" dataKey="zones" stroke={chartInk} strokeWidth={2} dot={false} /><Line type="monotone" dataKey="records" stroke={theme === 'dark' ? '#737373' : '#a3a3a3'} strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer>
                 )}
               </div>
             </div>

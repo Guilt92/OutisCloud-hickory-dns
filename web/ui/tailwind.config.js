@@ -1,7 +1,8 @@
 /** OutisCloud design system — Tailwind binding.
- *  Colours come from CSS variables (src/index.css) so every utility (including the legacy
- *  `gray-*` / `dark:` ones used across the pages) follows the active theme.
- *  Brand: electric yellow on deep ink; restrained blue and violet as secondary accents. */
+ *  Clinical Blueprint on Frosted Paper: monochrome ink on paper, one ember
+ *  accent reserved for destructive/error states. Colours come from CSS
+ *  variables (src/index.css) so utilities and legacy `primary-*` / `gray-*`
+ *  classes follow the active theme without carrying decorative colour. */
 const v = (name) => `rgb(var(--${name}) / <alpha-value>)`;
 const scale = (prefix, steps) => Object.fromEntries(steps.map((s) => [s, v(`${prefix}-${s}`)]));
 const STEPS = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
@@ -13,17 +14,13 @@ export default {
   theme: {
     extend: {
       colors: {
-        // brand accent (theme aware: bright yellow fills, readable ink-yellow text in light mode)
         primary: scale('p', STEPS),
-        // neutrals: ink-tinted, used as surfaces / borders / text in both themes
         gray: scale('g', STEPS),
-        // secondary accents (restrained)
-        secondary: { 400: '#7C93FF', 500: '#5B7CFA', 600: '#4663E0' },
-        violet: { 400: '#B18CFF', 500: '#9B6BFF', 600: '#7F4DE6' },
+        secondary: { 400: '#a3a3a3', 500: '#737373', 600: '#171717' },
+        violet: { 400: '#a3a3a3', 500: '#737373', 600: '#171717' },
         success: scale('ok', [50, 100, 200, 300, 400, 500, 600, 700, 800, 900]),
         warning: scale('wn', [50, 100, 200, 300, 400, 500, 600, 700, 800, 900]),
         danger: scale('er', [50, 100, 200, 300, 400, 500, 600, 700, 800, 900]),
-        // semantic surfaces
         app: v('bg'),
         surface: v('surface'),
         'surface-2': v('surface-2'),
@@ -34,15 +31,17 @@ export default {
         'on-accent': v('on-accent'),
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-        display: ['"Space Grotesk"', 'Inter', 'system-ui', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        sans: ['Geist', 'Inter', 'Vazirmatn', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+        display: ['Geist', 'Inter', 'Vazirmatn', 'system-ui', 'sans-serif'],
+        mono: ['"Geist Mono"', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
-      borderRadius: { xl: '0.75rem', '2xl': '1rem' },
+      borderRadius: {
+        sm: '6px', md: '10px', lg: '14px', xl: '18px', '2xl': '24px', '3xl': '24px',
+      },
       boxShadow: {
-        card: '0 1px 0 0 rgb(var(--line) / 0.6), 0 8px 24px -12px rgb(0 0 0 / var(--shadow-a))',
-        pop: '0 16px 48px -16px rgb(0 0 0 / 0.55)',
-        glow: '0 0 0 1px rgb(var(--accent) / 0.45), 0 0 32px -6px rgb(var(--accent) / 0.35)',
+        card: '0 1px 2px 0 rgb(0 0 0 / 0.025), 0 16px 40px -32px rgb(0 0 0 / var(--shadow-a))',
+        pop: '0 24px 64px -24px rgb(0 0 0 / 0.32), 0 4px 16px -8px rgb(0 0 0 / 0.12)',
+        glow: '0 0 0 1px rgb(var(--ink) / 0.10)',
       },
       animation: {
         'fade-in': 'fadeIn 0.18s ease-out',

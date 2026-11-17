@@ -24,6 +24,8 @@ export default function Records(){
   const [error, setError] = React.useState('')
   const loading = paged.loading
   const notify = React.useContext(Notifications)
+  const notifyRef = React.useRef(notify)
+  notifyRef.current = notify
   const { user } = useAuthStore()
   const [access, setAccess] = React.useState('')
   // read-only for viewer accounts and for zones shared as viewer
@@ -35,7 +37,7 @@ export default function Records(){
     const token = localStorage.getItem('token')
     if (token) api.setToken(token)
   }, [zoneId])
-  React.useEffect(() => { if (paged.error) notify?.error('Failed to load records: ' + (paged.error.response?.data?.error || paged.error.message)) }, [paged.error])
+  React.useEffect(() => { if (paged.error) notifyRef.current?.error('Failed to load records: ' + (paged.error.response?.data?.error || paged.error.message)) }, [paged.error])
 
   const resetForm = () => {
     setName(''); setType('A'); setValue(''); setTtl(3600); setPriority(0); setEditing(null); setError('');
@@ -129,11 +131,11 @@ export default function Records(){
       >
         <div className="flex items-center gap-3">
           <div className="icon-box">
-            <FileText className="w-5 h-5 text-white" />
+            <FileText className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="section-title">DNS Records</h1>
-            <p className="section-desc">Zone: {zoneId?.substring(0,8)}...</p>
+            <h1 className="section-title">DNS records</h1>
+            <p className="section-desc">Zone: {zoneId?.substring(0, 8)}…</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -195,7 +197,7 @@ export default function Records(){
                 exit={{ opacity: 0, height: 0 }}
                 className="mt-4"
               >
-                <div className="bg-danger-500/10 text-danger-600 dark:text-danger-400 px-4 py-2 rounded-lg text-sm border border-danger-500/40">{error}</div>
+                <div className="bg-danger-500/10 text-danger-600 dark:text-danger-400 px-4 py-2 rounded-[14px] text-sm border border-danger-500/40">{error}</div>
               </motion.div>
             )}
           </AnimatePresence>
@@ -211,7 +213,7 @@ export default function Records(){
       </motion.div>
       )}
 
-      <input className="input" placeholder="Search records by name, value or type..." value={paged.query} onChange={e => paged.setQuery(e.target.value)} />
+      <input className="input" aria-label="Search records by name, value or type" placeholder="Search records by name, value or type…" value={paged.query} onChange={e => paged.setQuery(e.target.value)} />
 
       {/* Table */}
       <motion.div
@@ -222,8 +224,8 @@ export default function Records(){
       >
         {records.length === 0 ? (
           <div className="p-12 text-center">
-            <FileText className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
-            <p className="text-muted">No records in this zone yet</p>
+            <FileText className="w-14 h-14 text-muted/40 mx-auto mb-3" />
+            <p className="text-muted">No records in this zone yet.</p>
           </div>
         ) : (
           <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
@@ -248,15 +250,7 @@ export default function Records(){
                   >
                     <td className="font-medium text-ink">{r.name || '@'}</td>
                     <td>
-                      <span className={`badge ${
-                        ['A','AAAA'].includes(r.record_type) ? 'badge-info' :
-                        ['CNAME'].includes(r.record_type) ? 'badge-warning' :
-                        ['MX'].includes(r.record_type) ? 'badge-danger' :
-                        ['TXT'].includes(r.record_type) ? 'badge-success' :
-                        'badge-default'
-                      }`}>
-                        {r.record_type}
-                      </span>
+                      <span className="badge badge-default font-mono">{r.record_type}</span>
                     </td>
                     <td className="font-mono text-muted max-w-xs truncate">{r.value}</td>
                     <td className="text-muted">{r.ttl}</td>
@@ -276,7 +270,7 @@ export default function Records(){
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => remove(r.id)} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                        <button onClick={() => remove(r.id)} aria-label={`Delete record ${r.name || '@'}`} className="btn-sm text-danger-500 hover:bg-danger-500/[0.07] rounded-[14px] transition-colors">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>}

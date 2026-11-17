@@ -4,147 +4,148 @@
 
 /* ==========================================================================
    OutisCloud design system
+   Clinical Blueprint on Frosted Paper.
    Tokens are space-separated RGB triplets so Tailwind opacity modifiers work.
-   Dark is the primary theme; light is a full equal, not an inversion afterthought.
+   Light is the primary theme; dark is a monochrome counterpart, not an
+   inverted afterthought.
    ========================================================================== */
 :root {
   color-scheme: light;
-  /* neutrals (static ramp; pages pick the right step with `dark:` variants) */
-  --g-50: 247 247 244; --g-100: 239 239 233; --g-200: 226 226 218; --g-300: 207 208 200;
-  --g-400: 154 160 174; --g-500: 107 114 131; --g-600: 75 82 99; --g-700: 38 43 58;
-  --g-800: 21 25 34; --g-900: 12 14 19; --g-950: 7 8 11;
-  /* brand accent: yellow fills, deep ink-yellow for text on light surfaces */
-  --p-50: 255 253 224; --p-100: 254 251 184; --p-200: 251 246 122; --p-300: 245 240 32;
-  --p-400: 245 240 32; --p-500: 245 240 32; --p-600: 122 106 0; --p-700: 94 82 0;
-  --p-800: 70 61 0; --p-900: 51 44 0; --p-950: 31 27 0;
-  /* status */
-  --ok-50: 240 253 244; --ok-100: 220 252 231; --ok-200: 187 247 208; --ok-300: 134 239 172; --ok-400: 74 222 128;
-  --ok-500: 34 197 94; --ok-600: 22 163 74; --ok-700: 21 128 61; --ok-800: 22 101 52; --ok-900: 20 83 45;
-  --wn-50: 255 251 235; --wn-100: 254 243 199; --wn-200: 253 230 138; --wn-300: 252 211 77; --wn-400: 251 191 36;
-  --wn-500: 245 158 11; --wn-600: 217 119 6; --wn-700: 180 83 9; --wn-800: 146 64 14; --wn-900: 120 53 15;
-  --er-50: 254 242 242; --er-100: 254 226 226; --er-200: 254 202 202; --er-300: 252 165 165; --er-400: 248 113 113;
-  --er-500: 239 68 68; --er-600: 220 38 38; --er-700: 185 28 28; --er-800: 153 27 27; --er-900: 127 29 29;
+  /* neutral ramp (static; semantic surfaces below pick the right step) */
+  --g-50: 250 250 250; --g-100: 245 245 245; --g-200: 229 229 229; --g-300: 212 212 212;
+  --g-400: 163 163 163; --g-500: 115 115 115; --g-600: 82 82 82; --g-700: 38 38 38;
+  --g-800: 23 23 23; --g-900: 10 10 10; --g-950: 0 0 0;
+  /* primary is intentionally monochrome: legacy primary-* utilities resolve
+     to ink/neutral so no decorative brand colour survives the redesign */
+  --p-50: 250 250 250; --p-100: 245 245 245; --p-200: 229 229 229; --p-300: 212 212 212;
+  --p-400: 163 163 163; --p-500: 115 115 115; --p-600: 10 10 10; --p-700: 10 10 10;
+  --p-800: 10 10 10; --p-900: 10 10 10; --p-950: 0 0 0;
+  /* status: only the small semantic marks carry colour; red is reserved for
+     destructive/error states */
+  --ok-50: 240 253 244; --ok-100: 220 252 231; --ok-200: 187 247 208; --ok-300: 134 239 172;
+  --ok-400: 74 222 128; --ok-500: 34 197 94; --ok-600: 22 163 74; --ok-700: 21 128 61;
+  --ok-800: 22 101 52; --ok-900: 20 83 45;
+  --wn-50: 255 251 235; --wn-100: 254 243 199; --wn-200: 253 230 138; --wn-300: 252 211 77;
+  --wn-400: 251 191 36; --wn-500: 245 158 11; --wn-600: 217 119 6; --wn-700: 180 83 9;
+  --wn-800: 146 64 14; --wn-900: 120 53 15;
+  --er-50: 254 242 242; --er-100: 254 226 226; --er-200: 254 202 202; --er-300: 252 165 165;
+  --er-400: 248 113 113; --er-500: 231 0 11; --er-600: 200 0 10; --er-700: 170 0 8;
+  --er-800: 140 0 7; --er-900: 110 0 6;
   /* semantic surfaces */
-  --bg: 246 246 242; --surface: 255 255 255; --surface-2: 250 250 246; --line: 226 226 218;
-  --ink: 20 22 28; --muted: 95 102 119; --accent: 245 240 32; --on-accent: 18 16 0;
-  --shadow-a: 0.10;
-  --hero-glow-1: 245 240 32 / 0.16; --hero-glow-2: 91 124 250 / 0.10;
+  --bg: 245 245 245; --surface: 255 255 255; --surface-2: 250 250 250; --line: 229 229 229;
+  --ink: 10 10 10; --muted: 100 100 100; --accent: 10 10 10; --on-accent: 255 255 255;
+  --shadow-a: 0.05;
 }
 
 .dark {
   color-scheme: dark;
-  --p-50: 253 252 224; --p-100: 253 252 176; --p-200: 250 247 128; --p-300: 247 243 79; --p-400: 245 240 32;
-  --p-500: 245 240 32; --p-600: 245 240 32; --p-700: 214 209 12; --p-800: 142 138 16; --p-900: 58 57 17; --p-950: 33 32 10;
-  --bg: 11 13 18; --surface: 18 21 28; --surface-2: 24 28 37; --line: 35 40 54;
-  --ink: 242 244 248; --muted: 154 163 181; --accent: 245 240 32; --on-accent: 18 16 0;
-  --shadow-a: 0.55;
-  --hero-glow-1: 245 240 32 / 0.10; --hero-glow-2: 91 124 250 / 0.14;
+  /* Legacy gray/primary utilities keep their usual light-to-dark ordering so
+     that existing `dark:*` variants remain legible. Semantic surfaces below
+     carry the actual design-system colours. */
+  --g-50: 250 250 250; --g-100: 245 245 245; --g-200: 229 229 229; --g-300: 212 212 212;
+  --g-400: 163 163 163; --g-500: 115 115 115; --g-600: 82 82 82; --g-700: 38 38 38;
+  --g-800: 23 23 23; --g-900: 10 10 10; --g-950: 0 0 0;
+  --p-50: 250 250 250; --p-100: 245 245 245; --p-200: 229 229 229; --p-300: 212 212 212;
+  --p-400: 163 163 163; --p-500: 115 115 115; --p-600: 10 10 10; --p-700: 10 10 10;
+  --p-800: 10 10 10; --p-900: 10 10 10; --p-950: 0 0 0;
+  --bg: 10 10 10; --surface: 23 23 23; --surface-2: 31 31 31; --line: 42 42 42;
+  --ink: 250 250 250; --muted: 163 163 163; --accent: 250 250 250; --on-accent: 10 10 10;
+  --shadow-a: 0.45;
 }
 
 @layer base {
-  html { @apply antialiased; font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
-  body {
-    @apply font-sans text-ink bg-app;
-    background-image:
-      radial-gradient(900px 420px at 85% -10%, rgb(var(--hero-glow-2)), transparent 60%),
-      radial-gradient(700px 360px at 8% -12%, rgb(var(--hero-glow-1)), transparent 60%);
-    background-attachment: fixed;
-  }
-  h1, h2, h3 { @apply font-display tracking-tight; }
+  html { @apply antialiased; font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01"; }
+  body { @apply font-sans text-ink bg-app; }
+  h1, h2, h3 { @apply font-display tracking-[-0.025em]; }
   input[type='checkbox'], input[type='radio'] { accent-color: rgb(var(--accent)); }
   :focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; border-radius: 6px; }
-  ::selection { background: rgb(var(--accent) / 0.35); }
+  ::selection { background: rgb(var(--accent) / 0.16); }
   a { @apply transition-colors; }
 }
 
 @layer components {
   /* ---------- buttons ---------- */
-  .btn { @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed select-none; }
-  .btn-primary { @apply btn bg-accent text-on-accent font-semibold hover:brightness-95 active:brightness-90 shadow-sm; }
-  .btn-secondary { @apply btn bg-surface-2 text-ink border border-line hover:border-muted/60; }
+  .btn { @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-[18px] font-medium text-sm transition-colors duration-150 disabled:opacity-45 disabled:cursor-not-allowed select-none; }
+  .btn-primary { @apply btn bg-accent text-on-accent font-semibold hover:bg-accent/90 active:bg-accent; }
+  .btn-secondary { @apply btn bg-surface text-ink border border-line hover:bg-surface-2; }
   .btn-danger { @apply btn bg-danger-600 text-white hover:bg-danger-700; }
-  .btn-success { @apply btn bg-success-600 text-white hover:bg-success-700; }
+  .btn-success { @apply btn bg-accent text-on-accent font-semibold hover:bg-accent/90; }
   .btn-ghost { @apply btn bg-transparent text-muted hover:text-ink hover:bg-ink/5; }
-  .btn-sm { @apply px-3 py-1.5 text-xs; }
-  .btn-lg { @apply px-6 py-3 text-base; }
-  .btn-icon { @apply inline-flex items-center justify-center w-9 h-9 rounded-lg text-muted hover:text-ink hover:bg-ink/5 transition-colors; }
+  .btn-sm { @apply px-3 py-1.5 text-xs rounded-[14px]; }
+  .btn-lg { @apply px-6 py-3 text-base rounded-[18px]; }
+  .btn-icon { @apply inline-flex items-center justify-center w-9 h-9 rounded-[14px] text-muted hover:text-ink hover:bg-ink/5 transition-colors; }
 
   /* ---------- form controls ---------- */
   .input, .select, textarea.input {
-    @apply block w-full px-3.5 py-2.5 rounded-lg border border-line bg-surface text-ink placeholder:text-muted/70 text-sm transition-colors
-           focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30;
+    @apply block w-full px-3.5 py-2.5 rounded-[18px] border border-line bg-surface text-ink placeholder:text-muted/65 text-sm transition-colors
+           focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10;
   }
   .dark .input, .dark .select { @apply bg-surface-2; }
-  .input-error { @apply border-danger-500 focus:border-danger-500 focus:ring-danger-500/30; }
-  .input-sm { @apply px-3 py-2 text-xs; }
+  .input-error { @apply border-danger-500 focus:border-danger-500 focus:ring-danger-500/20; }
+  .input-sm { @apply px-3 py-2 text-xs rounded-[14px]; }
   .select {
     @apply appearance-none bg-no-repeat pr-10;
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239aa3b5' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23737373' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
     background-position: right 0.75rem center; background-size: 1.25rem;
   }
-  .form-label { @apply block text-xs font-medium text-muted mb-1.5; }
+  .form-label { @apply block text-xs font-medium text-ink/70 mb-1.5; }
   .form-grid { @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4; }
-  .form-actions { @apply flex items-center gap-3 pt-4 border-t border-line; }
+  .form-actions { @apply flex flex-wrap items-center gap-3 pt-4 border-t border-line; }
 
   /* ---------- surfaces ---------- */
-  .card { @apply bg-surface rounded-xl border border-line shadow-card; }
-  .card-hover { @apply card transition-colors hover:border-muted/50; }
+  .card { @apply bg-surface rounded-[24px] border border-line shadow-card; }
+  .card-hover { @apply card transition-colors hover:border-muted/40; }
   .panel-title { @apply font-display text-sm font-semibold text-ink; }
   .hairline { @apply border-line; }
 
   /* ---------- tables ---------- */
-  .table-container { @apply overflow-x-auto rounded-xl border border-line; }
+  .table-container { @apply overflow-x-auto rounded-[24px] border border-line; }
   .table { @apply w-full text-sm; }
-  .table th { @apply px-4 py-3 text-left text-[11px] font-semibold text-muted uppercase tracking-wider bg-surface-2 border-b border-line; }
-  .table td { @apply px-4 py-3.5 whitespace-nowrap text-ink/90; }
-  .table tbody tr { @apply border-b border-line/70 hover:bg-ink/[0.03] transition-colors; }
-  .table tbody tr:last-child { @apply border-b-0; }
+  .table-container > table { @apply w-full text-sm; }
+  .table th, .table-container > table th { @apply px-4 py-3 text-left text-[11px] font-semibold text-muted uppercase tracking-[0.08em] bg-surface-2 border-b border-line whitespace-nowrap; }
+  .table td, .table-container > table td { @apply px-4 py-3.5 text-ink/90; }
+  .table tbody tr, .table-container > table tbody tr { @apply border-b border-line/70 hover:bg-ink/[0.025] transition-colors; }
+  .table tbody tr:last-child, .table-container > table tbody tr:last-child { @apply border-b-0; }
 
   /* ---------- badges / status ---------- */
-  .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border; }
-  .badge-primary, .badge-info { @apply badge bg-accent/15 text-primary-700 border-accent/30 dark:text-primary-300; }
-  .badge-success { @apply badge bg-success-500/10 text-success-700 border-success-500/25 dark:text-success-400; }
-  .badge-warning { @apply badge bg-warning-500/10 text-warning-700 border-warning-500/25 dark:text-warning-400; }
-  .badge-danger { @apply badge bg-danger-500/10 text-danger-700 border-danger-500/25 dark:text-danger-400; }
-  .badge-default { @apply badge bg-ink/5 text-muted border-line; }
+  .badge { @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-[18px] text-[11px] font-medium border; }
+  .badge-primary, .badge-info { @apply badge bg-ink/[0.045] text-ink border-line; }
+  .badge-success { @apply badge bg-success-500/[0.07] text-success-700 border-success-500/20 dark:text-success-400; }
+  .badge-warning { @apply badge bg-warning-500/[0.08] text-warning-700 border-warning-500/25 dark:text-warning-400; }
+  .badge-danger { @apply badge bg-danger-500/[0.07] text-danger-600 border-danger-500/25 dark:text-danger-400; }
+  .badge-default { @apply badge bg-surface-2 text-muted border-line; }
   .dot { @apply inline-block w-2 h-2 rounded-full; }
-  .dot-ok { @apply dot bg-success-500; box-shadow: 0 0 0 3px rgb(var(--ok-500) / 0.18); }
-  .dot-warn { @apply dot bg-warning-500; box-shadow: 0 0 0 3px rgb(var(--wn-500) / 0.18); }
-  .dot-bad { @apply dot bg-danger-500; box-shadow: 0 0 0 3px rgb(var(--er-500) / 0.18); }
+  .dot-ok { @apply dot bg-success-500; }
+  .dot-warn { @apply dot bg-warning-500; }
+  .dot-bad { @apply dot bg-danger-500; }
   .dot-off { @apply dot bg-muted/50; }
 
   /* ---------- page furniture ---------- */
   .page { @apply space-y-6; }
-  .section-header { @apply flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6; }
-  .section-title { @apply font-display text-2xl font-semibold text-ink tracking-tight; }
-  .section-desc { @apply text-sm text-muted mt-1; }
-  .eyebrow { @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-primary-700 dark:text-primary-400; }
-  /* icon chips: uniform, regardless of the gradient utilities legacy markup still carries */
-  .icon-box { @apply w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0; background: rgb(var(--accent) / 0.14) !important; border: 1px solid rgb(var(--accent) / 0.30); }
-  .icon-box svg { color: rgb(var(--p-600)) !important; }
-  .dark .icon-box svg { color: rgb(var(--accent)) !important; }
-  .tabs { @apply inline-flex gap-1 p-1 rounded-lg bg-surface-2 border border-line; }
-  .tab { @apply px-3.5 py-1.5 rounded-md text-sm font-medium text-muted hover:text-ink transition-colors; }
-  .tab-active { @apply bg-accent text-on-accent shadow-sm hover:text-on-accent; }
-  .kbd { @apply font-mono text-[11px] px-1.5 py-0.5 rounded border border-line bg-surface-2 text-muted; }
+  .section-header { @apply flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-6; }
+  .section-title { @apply font-display text-[26px] sm:text-[30px] leading-[1.1] font-semibold text-ink tracking-[-0.03em]; }
+  .section-desc { @apply text-sm text-muted mt-1.5 max-w-2xl; }
+  .eyebrow { @apply text-[11px] font-medium uppercase tracking-[0.16em] text-muted; }
+  .icon-box { @apply w-10 h-10 rounded-[14px] flex items-center justify-center flex-shrink-0 bg-surface-2 border border-line; }
+  .icon-box svg { color: rgb(var(--ink)); }
+  .tabs { @apply inline-flex gap-1 p-1 rounded-[18px] bg-surface-2 border border-line; }
+  .tab { @apply px-3.5 py-1.5 rounded-[14px] text-sm font-medium text-muted hover:text-ink transition-colors; }
+  .tab-active { @apply bg-accent text-on-accent hover:text-on-accent; }
+  .kbd { @apply font-mono text-[11px] px-1.5 py-0.5 rounded-md border border-line bg-surface-2 text-muted; }
 
   /* ---------- loading ---------- */
-  .skeleton { @apply rounded-md bg-ink/[0.07] animate-pulse; }
+  .skeleton { @apply rounded-md bg-ink/[0.06] animate-pulse; }
 
   .animate-fade-in { animation: fadeIn 0.18s ease-out; }
   .animate-slide-in { animation: slideIn 0.24s ease-out; }
 }
 
 @layer utilities {
-  .dark .text-gray-400, .dark .text-gray-500 { color: rgb(var(--muted)); }  /* legacy utilities: keep text AA on dark surfaces */
   .scrollbar-thin { scrollbar-width: thin; scrollbar-color: rgb(var(--g-500) / 0.5) transparent; }
   .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
   .scrollbar-thin::-webkit-scrollbar-thumb { background-color: rgb(var(--g-500) / 0.5); border-radius: 3px; }
-  .text-gradient-accent { background: linear-gradient(90deg, rgb(var(--accent)), #fff 60%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .text-gradient-accent { color: rgb(var(--ink)); }
 }
-
-/* the legacy markup colours some solid fills with white text; keep text legible on the yellow accent */
-.dark [class*="bg-primary-5"][class*="text-white"], .dark [class*="bg-primary-6"][class*="text-white"] { color: rgb(var(--on-accent)) !important; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }

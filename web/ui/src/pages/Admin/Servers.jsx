@@ -1,7 +1,7 @@
 import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../../api/client'
-import { Server, MapPin, Plus, Trash2, RefreshCw, Play, Square, Shield, Clock, FileText, Settings, X, Check, AlertTriangle } from 'lucide-react'
+import { Server, MapPin, Plus, Trash2, RefreshCw, Shield, Clock, FileText, Settings, X, Check, AlertTriangle } from 'lucide-react'
 import { useConfirm } from '../../components/ui'
 import Notifications from '../../components/Notifications'
 
@@ -95,7 +95,7 @@ export default function Servers(){
       >
         <div className="flex items-center gap-3">
           <div className="icon-box">
-            <Server className="w-5 h-5 text-white" />
+            <Server className="w-5 h-5" />
           </div>
           <div>
             <h1 className="section-title">DNS Server Management</h1>
@@ -116,7 +116,7 @@ export default function Servers(){
 
       {servers.length === 0 ? (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card p-12 text-center">
-          <Server className="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <Server className="w-14 h-14 text-muted/40 mx-auto mb-3" />
           <h3 className="text-lg font-semibold text-ink mb-1">No DNS Servers Configured</h3>
           <p className="text-muted mb-5">Add your first DNS server to start serving zone data</p>
           <button onClick={openCreate} className="btn-primary">
@@ -137,7 +137,7 @@ export default function Servers(){
               <div className="p-5">
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex items-center gap-3">
-                    <div className={`w-3 h-3 rounded-full ${getStatus(server) === 'running' ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`}></div>
+                    <span className={`dot ${getStatus(server) === 'running' ? 'bg-success-500' : 'bg-muted/40'}`} aria-hidden="true" />
                     <div>
                       <h3 className="text-lg font-bold text-ink">{server.name}</h3>
                       <p className="text-sm text-muted">{server.address}:{server.port || 53}</p>
@@ -150,30 +150,30 @@ export default function Servers(){
 
                 <div className="grid grid-cols-2 gap-3 mb-4">
                   <div className="flex items-center gap-2 text-sm text-muted">
-                    <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                    <MapPin className="w-4 h-4 text-muted flex-shrink-0" />
                     <span>{server.region || 'No region'}</span>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted">
-                    <Clock className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                    <Clock className="w-4 h-4 text-muted flex-shrink-0" />
                     <span>Cache: {server.min_cache_ttl || 60}s - {server.max_cache_ttl || 3600}s</span>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted">
-                    {server.dnssec ? <Shield className="w-4 h-4 text-green-500 flex-shrink-0" /> : <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0" />}
+                    {server.dnssec ? <Shield className="w-4 h-4 text-success-500 flex-shrink-0" /> : <AlertTriangle className="w-4 h-4 text-warning-500 flex-shrink-0" />}
                     <span>{server.dnssec ? 'DNSSEC Enabled' : 'DNSSEC Disabled'}</span>
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted">
-                    <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                    <FileText className="w-4 h-4 text-muted flex-shrink-0" />
                     <span>{server.enable_logging !== false ? 'Logging On' : 'Logging Off'}</span>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 pt-4 border-t border-line">
-                  <span className="text-xs text-gray-400 dark:text-gray-500 flex-1">Process runs externally; manage config only</span>
+                  <span className="text-xs text-muted flex-1">Process runs externally; manage config only</span>
                   <button onClick={() => openEdit(server)} aria-label={`Configure ${server.name}`} className="btn-secondary btn-sm">
                     <Settings className="w-3.5 h-3.5" />
                     Config
                   </button>
-                  <button onClick={() => remove(server.id)} aria-label={`Delete ${server.name}`} className="btn-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg">
+                  <button onClick={() => remove(server.id)} aria-label={`Delete ${server.name}`} className="btn-sm text-danger-500 hover:bg-danger-500/[0.07] rounded-[14px]">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -189,14 +189,15 @@ export default function Servers(){
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setShowModal(false)}
           >
             <motion.div
+              role="dialog" aria-modal="true" aria-label={editingServer ? 'Edit server' : 'Add DNS server'}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="card w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+              className="card shadow-pop w-full max-w-2xl max-h-[90vh] overflow-y-auto"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between px-6 py-5 border-b border-line">
@@ -248,12 +249,12 @@ export default function Servers(){
                       { key: 'dnssec', label: 'Enable DNSSEC', desc: 'Sign zone data with DNSSEC' },
                       { key: 'enable_logging', label: 'Enable Query Logging', desc: 'Log all DNS queries received' },
                     ].map(item => (
-                      <label key={item.key} className="flex items-center gap-3 p-3 rounded-lg border border-line cursor-pointer hover:bg-ink/5 transition-colors">
+                      <label key={item.key} className="flex items-center gap-3 p-3 rounded-[14px] border border-line cursor-pointer hover:bg-ink/5 transition-colors">
                         <input
                           type="checkbox"
                           checked={form[item.key]}
                           onChange={e=>setForm({...form, [item.key]: e.target.checked})}
-                          className="w-4 h-4 rounded border-line text-blue-600 focus:ring-blue-500"
+                          className="w-4 h-4 rounded border-line"
                         />
                         <div>
                           <span className="font-medium text-sm text-ink">{item.label}</span>
