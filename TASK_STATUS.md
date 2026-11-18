@@ -302,17 +302,17 @@ To finish remote validation, a genuinely non-production host must be identified 
 
 ---
 
-## 10. Git status and commit plan
+## 10. Git status and commit state
 
-- Current history: `a6bcf9ad5` on top of `7ec82cf0f`; branch `main` is ahead and **has not been pushed**.
-- This follow-up changes only:
+- Base before this follow-up: `a6bcf9ad5` on top of `7ec82cf0f`; branch `main` has not been pushed.
+- The platform-QA/analytics follow-up is committed locally as one clean commit with only:
   - `crates/control_api/src/tenants.rs` — reject unknown analytics ranges.
   - `crates/control_api/src/api_tests.rs` — range/interval tests and bounded overview query-count assertions.
   - `web/ui/tests/platform_qa.cjs` — repeatable fixtures, hot-reload update/delete checks, quota/member/transfer coverage, performance measurement, browser cleanup.
   - `TASK_STATUS.md` — this report.
 - Explicitly not staged: `.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `deploy/dns/.orphaned/`, `WORK_PROGRESS.md`, the task prompt file.
-- Plan: one clean local follow-up commit with only the four files above; **no amend and no push**.
-- Before commit: verify `git diff --check`, inspect the staged diff, and confirm no secret or generated runtime file is included.
+- The follow-up commit was created locally with **no amend and no push**; this report is included in that commit. A docs-only correction records the final repository state.
+- Before committing, `git diff --check` passed, the staged diff was inspected, and no secret or generated runtime file was included.
 
 ---
 
