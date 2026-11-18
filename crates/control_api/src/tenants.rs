@@ -1282,15 +1282,18 @@ pub async fn rollup_analytics(db: &Pool) -> Result<u64, tokio_postgres::Error> {
     Ok(moved)
 }
 
-/// range -> (window, bucket seconds)
-fn range_params(r: Option<&str>) -> (i64, i64) {
+/// range -> (window, bucket seconds). Unknown ranges are rejected instead of silently
+/// pretending the caller asked for 24 hours.
+fn range_params(r: Option<&str>) -> Result<(i64, i64), HttpResponse> {
     match r.unwrap_or("24h") {
-        "1h" => (3600, 60),
-        "6h" => (6 * 3600, 300),
-        "7d" => (7 * 86400, 3600),
-        "30d" => (30 * 86400, 6 * 3600),
-        "90d" => (90 * 86400, 86400),
-        _ => (86400, 900),
+        "1h" => Ok((3600, 60)),
+        "6h" => Ok((6 * 3600, 300)),
+        "24h" => Ok((86400, 900)),
+        "7d" => Ok((7 * 86400, 3600)),
+        "30d" => Ok((30 * 86400, 6 * 3600)),
+        "90d" => Ok((90 * 86400, 86400)),
+        _ => Err(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "range must be 1h, 6h, 24h, 7d, 30d or 90d"}))),
     }
 }
 
@@ -1304,7 +1307,7 @@ pub struct AnalyticsQuery {
 
 /// `interval=auto|1m|5m|15m|1h|6h|1d` overrides the default bucket of the range (at most 2,000 buckets per response).
 fn bucket_for(q: &AnalyticsQuery) -> Result<(i64, i64), HttpResponse> {
-    let (win, auto) = range_params(q.range.as_deref());
+    let (win, auto) = range_params(q.range.as_deref())?;
     let bucket =
         match q.interval.as_deref() {
             None | Some("") | Some("auto") => auto,

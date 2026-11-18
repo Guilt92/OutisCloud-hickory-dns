@@ -4991,15 +4991,27 @@ async fn overview_is_one_accurate_tenant_scoped_query_and_scales() {
     // scale: 3,000 zones x 10 records in one tenant-less admin view plus a big customer
     env.state.db.batch_execute("INSERT INTO zones (id, domain, owner, tenant_id) SELECT gen_random_uuid(), 'bulk' || g || '.example', NULL, NULL FROM generate_series(1, 3000) g").await.unwrap();
     env.state.db.batch_execute("INSERT INTO records (id, zone_id, name, record_type, value, ttl) SELECT gen_random_uuid(), z.id, 'h' || g, 'A', '192.0.2.' || (g % 250 + 1), 300 FROM zones z, generate_series(1, 10) g WHERE z.domain LIKE 'bulk%'").await.unwrap();
+    let queries_before = env.state.db.query_count();
     let t0 = std::time::Instant::now();
     let (st, ov, raw) = call!(app, get, "/api/v1/overview", Some(&tadmin), None);
     let admin_ms = t0.elapsed().as_millis();
+    let overview_queries = env.state.db.query_count() - queries_before;
     assert_eq!(st, 200, "{}", &raw[..200.min(raw.len())]);
+    assert_eq!(
+        overview_queries, 2,
+        "admin overview must stay one auth lookup plus one data query regardless of zone count"
+    );
     assert!(ov["zones_total"].as_i64().unwrap() >= 3003);
     assert!(ov["records_total"].as_i64().unwrap() >= 30000);
     let t0 = std::time::Instant::now();
+    let cust_before = env.state.db.query_count();
     let (_, ov2, _) = call!(app, get, "/api/v1/overview", Some(&ta), None);
     let cust_ms = t0.elapsed().as_millis();
+    let customer_queries = env.state.db.query_count() - cust_before;
+    assert_eq!(
+        customer_queries, 3,
+        "customer overview must stay one auth lookup plus two bounded data queries"
+    );
     assert_eq!(
         ov2["zones_total"], 2,
         "bulk platform zones never leak into a customer's overview"
@@ -5124,6 +5136,25 @@ async fn analytics_are_persistent_tenant_scoped_and_retained_configurably() {
         None
     );
     assert_eq!(f["total_queries"], 74);
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=forever",
+        Some(&ta),
+        None
+    );
+    assert_eq!(
+        st, 400,
+        "unknown ranges must be rejected, not silently defaulted"
+    );
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/analytics/tenant?range=1h&interval=2m",
+        Some(&ta),
+        None
+    );
+    assert_eq!(st, 400, "unknown intervals must be rejected");
     // history survives deleting the zone (no foreign key) and is purged by the configurable retention
     env.state
         .db

@@ -14,6 +14,21 @@ const ok = (n, c, x = '') => { c ? pass++ : fail++; console.log((c ? 'PASS ' : '
 async function api(m, p, tok, body) { const r = await fetch(API + p, { method: m, headers: { 'content-type': 'application/json', ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = null; try { j = await r.json(); } catch (e) {} return [r.status, j, r.headers]; }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const psql = (sql) => execFileSync('docker', ['exec', process.env.PG_CONTAINER, 'psql', '-U', 'postgres', '-d', process.env.PG_DB, '-qtAc', sql]).toString().trim();
+const TEST_DOMAINS = ['geo-qa.example', 'bulk-qa.example', 'lkp.test', 'child.lkp.test', 'alice-qa.example', 'carol-qa.example', 'alice-two.example', 'alice-three.example', 'alice-four.example', 'alice-api-bypass.example', 'viewer-should-fail.example', 'xfer-one.example', 'xfer-two.example'];
+const domainList = TEST_DOMAINS.map((d) => `'${d}'`).join(',');
+function cleanupTestData() {
+  try {
+    psql(`DELETE FROM zone_query_samples WHERE domain IN (${domainList}) OR domain LIKE 'perf%'`);
+    psql(`DELETE FROM zone_qtype_samples WHERE domain IN (${domainList}) OR domain LIKE 'perf%'`);
+    psql(`DELETE FROM zone_country_samples WHERE domain IN (${domainList}) OR domain LIKE 'perf%'`);
+    psql(`DELETE FROM tenant_usage_samples WHERE tenant_id IN (SELECT id FROM tenants WHERE name IN ('Acme Corp', 'Transfer Target') OR name LIKE 'personal-qa\_%')`);
+    psql(`DELETE FROM zones WHERE domain IN (${domainList}) OR domain LIKE 'perf%.example'`);
+    psql("DELETE FROM tenants WHERE name IN ('Acme Corp', 'Transfer Target') OR name LIKE 'personal-qa\_%'");
+    psql("DELETE FROM users WHERE username IN ('qa_alice', 'qa_carol', 'qa_viewer2')");
+    psql("DELETE FROM nameservers WHERE hostname LIKE 'qa-ns1%'");
+    psql("DELETE FROM servers WHERE name LIKE 'qa-server-1%'");
+  } catch (e) { console.error('cleanup:', e.message); }
+}
 async function login(page, u, p) {
   await page.goto(BASE + '/login'); await page.fill('input[placeholder="Enter your username"]', u); await page.fill('input[placeholder="Enter your password"]', p);
   await page.click('button[type="submit"]'); await page.waitForURL(/\/(admin|user)/, { timeout: 10000 }).catch(() => {});
@@ -21,9 +36,19 @@ async function login(page, u, p) {
 const body = (page) => page.textContent('body');
 const confirmYes = async (page) => { await page.click('[data-testid="confirm-yes"]'); };
 async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v; } catch (e) {} await sleep(step); } return null; }
+const percentile = (values, p) => { const a = [...values].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.max(0, Math.ceil((p / 100) * a.length) - 1))]; };
+function apiMemoryKb() {
+  try {
+    const pids = execFileSync('pgrep', ['-x', 'control_api']).toString().trim().split(/\s+/).filter(Boolean);
+    const rss = pids.map((pid) => Number(execFileSync('ps', ['-o', 'rss=', '-p', pid]).toString().trim())).filter(Number.isFinite);
+    return rss.length ? Math.max(...rss) : null;
+  } catch (e) { return null; }
+}
 
 (async () => {
+  cleanupTestData();
   const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+  try {
   const [, lg] = await api('POST', '/api/v1/auth/login', null, { username: ADMIN[0], password: ADMIN[1] });
   const AT = lg.token;
   const mkUser = async (name, role) => { await api('POST', '/api/v1/users', AT, { username: name, password: 'Customer-Pw-12345', role }); const [, l] = await api('POST', '/api/v1/auth/login', null, { username: name, password: 'Customer-Pw-12345' }); return l.token; };
@@ -84,11 +109,11 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   const csv = path.join(os.tmpdir(), 'qa-bulk.csv'); fs.writeFileSync(csv, 'name,record_type,value,ttl,priority\nwww,A,192.0.2.1,300,\nmail,A,192.0.2.2,300,\n@,MX,mail.bulk-qa.example.,300,10\n@,TXT,v=spf1 mx -all,300,\n');
   await page.setInputFiles('input[type=file]', csv); await page.click('button:has-text("Import")'); await page.waitForTimeout(2500);
   ok('bulk import: success toast with the number of records', /Imported 4 record/.test(await body(page)));
-  const [, brecs] = await api('GET', `/api/v1/zones/${bulkZone}/records`, AT); ok('bulk import: records are in the API', brecs.length >= 4 && brecs.some((r) => r.record_type === 'MX'));
-  const before = brecs.length; fs.writeFileSync(csv, 'name,record_type,value,ttl,priority\nok1,A,192.0.2.9,300,\nbad,A,not-an-ip,300,\n');
+  const [, brecs] = await api('GET', `/api/v1/zones/${bulkZone}/records`, AT); const bulkRecs = Array.isArray(brecs) ? brecs : []; ok('bulk import: records are in the API', bulkRecs.length >= 4 && bulkRecs.some((r) => r.record_type === 'MX'));
+  const before = bulkRecs.length; fs.writeFileSync(csv, 'name,record_type,value,ttl,priority\nok1,A,192.0.2.9,300,\nbad,A,not-an-ip,300,\n');
   await page.setInputFiles('input[type=file]', csv); await page.click('button:has-text("Import")'); await page.waitForTimeout(2000);
-  const [, brecs2] = await api('GET', `/api/v1/zones/${bulkZone}/records`, AT);
-  ok('bulk import: an invalid row rejects the whole file (fail-fast, nothing half-imported)', brecs2.length === before && /failed|invalid/i.test(await body(page)), `${before} -> ${brecs2.length}`);
+  const [, brecs2] = await api('GET', `/api/v1/zones/${bulkZone}/records`, AT); const bulkAfter = Array.isArray(brecs2) ? brecs2 : [];
+  ok('bulk import: an invalid row rejects the whole file (fail-fast, nothing half-imported)', bulkAfter.length === before && /failed|invalid/i.test(await body(page)), `${before} -> ${bulkAfter.length}`);
 
   // ===== 5. DNS Lookup in the browser: every advertised type against the REAL DNS server
   const mk = async (d) => { const [, z] = await api('POST', '/api/v1/zones', AT, { domain: d, geodns_enabled: false }); return z.id || z.data?.id; };
@@ -128,6 +153,14 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   ok('lookup UI: NODATA explained honestly', /no MX records/.test(await page.textContent('[data-testid="lookup-empty"]').catch(() => '')));
   await page.fill('input[aria-label="Domain name or IP address"]', ''); await page.click('button:has-text("Lookup")'); await page.waitForTimeout(300);
   ok('lookup UI: empty input is rejected client-side', /enter a domain/i.test(await body(page)));
+  // hot reload must also publish updates and deletions, not just new zones
+  const [, lookupRecs] = await api('GET', `/api/v1/zones/${C}/records`, AT); const wwwA = lookupRecs.find((r) => r.name === 'www' && r.record_type === 'A');
+  await api('PUT', `/api/v1/zones/${C}/records/${wwwA.id}`, AT, { name: 'www', record_type: 'A', value: '192.0.2.99', ttl: 311 });
+  const updated = await waitFor(async () => { const [st, j] = await api('POST', '/api/v1/dns/lookup', AT, { domain: 'www.child.lkp.test', record_type: 'A' }); return st === 200 && j.records.length === 1 && j.records[0].value === '192.0.2.99' && j.records[0].ttl === 311 && j; }, 20000);
+  ok('lookup: record updates are published by hot reload', !!updated, updated ? JSON.stringify(updated.records[0]) : 'timeout');
+  await api('DELETE', `/api/v1/zones/${C}/records/${wwwA.id}`, AT);
+  const deleted = await waitFor(async () => { const [st, j] = await api('POST', '/api/v1/dns/lookup', AT, { domain: 'www.child.lkp.test', record_type: 'A' }); return st === 200 && j.records.length === 0 && j; }, 20000);
+  ok('lookup: record deletions are published by hot reload', !!deleted);
 
   // ===== 6. Customers, tenants, quotas, isolation
   const alice = await mkUser('qa_alice', 'editor'), carol = await mkUser('qa_carol', 'editor'); const viewer = await mkUser('qa_viewer2', 'viewer');
@@ -165,6 +198,19 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   ok('quota: third zone refused with a clear message', /Quota reached/.test(quotaToast) && !(await body(apg)).includes('alice-three.example'), quotaToast);
   await apg.goto(BASE + '/user'); await apg.waitForSelector('[data-testid="quota-zones"]'); await apg.waitForTimeout(600);
   ok('quota card now shows 2 / 2', /2 \/ 2/.test(await apg.textContent('[data-testid="quota-zones"]')));
+  const [bypass] = await api('POST', '/api/v1/zones', alice, { domain: 'alice-api-bypass.example' });
+  ok('quota: API creation is refused too (no UI-only bypass)', bypass === 403);
+  const [, aliceZones] = await api('GET', '/api/v1/zones', alice); const aliceZone = aliceZones.data.find((z) => z.domain === 'alice-qa.example');
+  const usedRecords = Number(psql(`SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id JOIN tenants t ON t.id = z.tenant_id WHERE t.name = 'personal-qa_alice'`));
+  await api('PUT', `/api/v1/tenants/${at.id}`, AT, { name: at.name, max_zones: 2, max_records: usedRecords + 1 });
+  const [rec1] = await api('POST', `/api/v1/zones/${aliceZone.id}/records`, alice, { name: 'quota-one', record_type: 'A', value: '192.0.2.1', ttl: 300 });
+  const [rec2] = await api('POST', `/api/v1/zones/${aliceZone.id}/records`, alice, { name: 'quota-two', record_type: 'A', value: '192.0.2.2', ttl: 300 });
+  ok('quota: records quota is enforced with a clear 403', (rec1 === 200 || rec1 === 201) && rec2 === 403, `${rec1} / ${rec2}, quota ${usedRecords + 1}`);
+  await api('PUT', `/api/v1/tenants/${at.id}`, AT, { name: at.name, max_zones: 2, max_records: null });
+  const aliceTwo = aliceZones.data.find((z) => z.domain === 'alice-two.example');
+  const [del] = await api('DELETE', `/api/v1/zones/${aliceTwo.id}`, alice);
+  const [recreate] = await api('POST', '/api/v1/zones', alice, { domain: 'alice-four.example' });
+  ok('quota: deleting a zone releases its quota slot', del === 200 && recreate === 201);
   // isolation in the browser
   const [, cz] = await api('GET', '/api/v1/zones', carol); const carolZone = cz.data.find((z) => z.domain === 'carol-qa.example').id;
   await apg.goto(BASE + `/user/zones/${carolZone}/records`); await apg.waitForTimeout(1500);
@@ -208,6 +254,8 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   const [gs, gl] = await api('GET', '/api/v1/analytics/global?range=1h', AT);
   ok('analytics (admin): global request counter includes unattributed requests', gs === 200 && gl.total > aApi.total_queries, `${gl.total}`);
   ok('analytics (API): customers cannot read the global view', (await api('GET', '/api/v1/analytics/global', alice))[0] === 403);
+  ok('analytics (API): an unsupported interval is rejected', (await api('GET', '/api/v1/analytics/tenant?range=1h&interval=2m', alice))[0] === 400);
+  ok('analytics (API): an unsupported range is rejected', (await api('GET', '/api/v1/analytics/tenant?range=forever', alice))[0] === 400);
 
   // ===== 8. Viewer and authorization checks in the browser
   const vctx = await browser.newContext(); const vpg = await vctx.newPage(); await login(vpg, 'qa_viewer2', 'Customer-Pw-12345');
@@ -225,20 +273,37 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
   reqs.length = 0; const cctx = await browser.newContext({ viewport: { width: 1360, height: 900 } }); const cpg = await cctx.newPage(); spy(cpg); await login(cpg, 'qa_alice', 'Customer-Pw-12345');
   await cpg.goto(BASE + '/user'); await cpg.waitForSelector('[data-testid="user-overview"]'); await cpg.waitForTimeout(2000);
   ok('customer overview: ZERO per-zone /records requests', reqs.filter((u) => /\/zones\/[0-9a-f-]{36}\/records/.test(u)).length === 0 && reqs.filter((u) => u.includes('/api/v1/overview')).length >= 1);
+  const perfStart = Date.now();
   psql("INSERT INTO zones (id, domain, owner, tenant_id) SELECT gen_random_uuid(), 'perf' || g || '.example', NULL, NULL FROM generate_series(1, 5000) g");
   psql("INSERT INTO records (id, zone_id, name, record_type, value, ttl) SELECT gen_random_uuid(), z.id, 'h' || g, 'A', '192.0.2.' || (g % 250 + 1), 300 FROM zones z, generate_series(1, 8) g WHERE z.domain LIKE 'perf%'");
-  const t0 = Date.now(); const [ps, pj] = await api('GET', '/api/v1/overview?limit=0', AT); const apiMs = Date.now() - t0;
-  ok('performance: admin overview API over 5,000+ zones / 40,000+ records', ps === 200 && pj.zones_total >= 5000 && pj.records_total >= 40000 && apiMs < 2500, `${pj.zones_total} zones, ${pj.records_total} records, ${apiMs} ms`);
-  const t1 = Date.now(); await opg.goto(BASE + '/admin'); await opg.waitForFunction(() => /5,?0\d\d/.test(document.querySelector('[data-testid="admin-overview"]')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  const uiMs = Date.now() - t1; ok('performance: admin overview page renders 5,000+ zones quickly', uiMs < 5000, `${uiMs} ms`);
-  const t2 = Date.now(); const [, small] = await api('GET', '/api/v1/overview', alice); const custMs = Date.now() - t2;
-  ok('performance: customer overview stays fast and scoped while 5,000 other zones exist', small.zones_total === 2 && custMs < 500, `${small.zones_total} zones, ${custMs} ms`);
-  psql("DELETE FROM records WHERE zone_id IN (SELECT id FROM zones WHERE domain LIKE 'perf%'); DELETE FROM zones WHERE domain LIKE 'perf%'");
+  await api('GET', '/api/v1/overview?limit=0', AT); // warmup
+  const apiTimes = []; let ps = 0, pj = null;
+  const memBefore = apiMemoryKb();
+  for (let i = 0; i < 20; i++) { const t = Date.now(); [ps, pj] = await api('GET', '/api/v1/overview?limit=0', AT); apiTimes.push(Date.now() - t); }
+  const memAfter = apiMemoryKb();
+  const apiAvg = Math.round(apiTimes.reduce((a, b) => a + b, 0) / apiTimes.length), apiP95 = percentile(apiTimes, 95), apiP99 = percentile(apiTimes, 99), apiMax = Math.max(...apiTimes);
+  const memDelta = memBefore != null && memAfter != null ? memAfter - memBefore : null;
+  ok('performance: admin overview API over 5,000+ zones / 40,000+ records (20 requests)', ps === 200 && pj.zones_total >= 5000 && pj.records_total >= 40000 && apiP95 < 2500, `${pj.zones_total} zones, ${pj.records_total} records, avg ${apiAvg} ms, p95 ${apiP95} ms, p99 ${apiP99} ms, max ${apiMax} ms, RSS ${memBefore}->${memAfter} KiB (delta ${memDelta})`);
+  const uiTimes = [];
+  for (let i = 0; i < 3; i++) {
+    const t = Date.now(); await opg.goto(BASE + '/admin'); await opg.waitForFunction(() => /5,?0\d\d/.test(document.querySelector('[data-testid="admin-overview"]')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
+    uiTimes.push(Date.now() - t);
+  }
+  ok('performance: admin overview page renders 5,000+ zones quickly (3 loads)', Math.max(...uiTimes) < 5000, `avg ${Math.round(uiTimes.reduce((a, b) => a + b, 0) / uiTimes.length)} ms, max ${Math.max(...uiTimes)} ms`);
+  const custTimes = []; let small = null;
+  for (let i = 0; i < 5; i++) { const t = Date.now(); [, small] = await api('GET', '/api/v1/overview', alice); custTimes.push(Date.now() - t); }
+  const custP95 = percentile(custTimes, 95);
+  ok('performance: customer overview stays fast and scoped while 5,000 other zones exist', small.zones_total === 2 && custP95 < 500, `${small.zones_total} zones, p95 ${custP95} ms, max ${Math.max(...custTimes)} ms`);
+  psql("DELETE FROM records WHERE zone_id IN (SELECT id FROM zones WHERE domain LIKE 'perf%.example'); DELETE FROM zones WHERE domain LIKE 'perf%.example'");
+  ok('performance: 5,000-zone fixtures cleaned up', Number(psql("SELECT count(*) FROM zones WHERE domain LIKE 'perf%.example'")) === 0, `${Date.now() - perfStart} ms total`);
 
   // ===== 10. Zone transfer between tenants (admin workflow)
   {
     const [, nt] = await api('POST', '/api/v1/tenants', AT, { name: 'Transfer Target', max_zones: 1, max_records: null });
-    for (const d of ['xfer-one.example', 'xfer-two.example']) { await api('POST', '/api/v1/zones', AT, { domain: d, geodns_enabled: false }); }
+    const xferIds = {};
+    for (const d of ['xfer-one.example', 'xfer-two.example']) { const [, z] = await api('POST', '/api/v1/zones', AT, { domain: d, geodns_enabled: false }); xferIds[d] = z.id || z.data?.id; }
+    await api('POST', `/api/v1/zones/${xferIds['xfer-one.example']}/records`, AT, { name: 'www', record_type: 'A', value: '192.0.2.200', ttl: 300 });
+    await api('POST', '/api/v1/georules', AT, { zone_id: xferIds['xfer-one.example'], match_type: 'country', match_value: 'US', target: '192.0.2.201', record_name: 'www', record_type: 'A', priority: 1, enabled: true });
     const search = async (d) => { await page.goto(BASE + '/admin/zones'); await page.fill('input[placeholder="Search zones by domain..."]', d); await page.waitForSelector(`[data-testid="zone-tenant-${d}"]`, { timeout: 10000 }); };
     await search('xfer-one.example');
     ok('transfer: admin sees the current tenant of a zone', /Platform zone/.test(await page.textContent('[data-testid="zone-tenant-xfer-one.example"]')));
@@ -259,6 +324,18 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
     ok('transfer: success notification', /moved to Transfer Target/.test(okToast), okToast);
     await search('xfer-one.example');
     ok('transfer: list shows the new tenant', /Tenant: Transfer Target/.test(await page.textContent('[data-testid="zone-tenant-xfer-one.example"]')));
+    const [, movedRecs] = await api('GET', `/api/v1/zones/${xferIds['xfer-one.example']}/records`, AT);
+    const [, movedRules] = await api('GET', '/api/v1/georules', AT);
+    ok('transfer: records and GeoDNS rules moved with the zone', Array.isArray(movedRecs) && movedRecs.some((r) => r.name === 'www' && r.value === '192.0.2.200') && movedRules.some((r) => r.zone_id === xferIds['xfer-one.example']));
+    // tenant members: viewer can read the new tenant's zone but cannot modify it
+    const [memberAdd] = await api('PUT', `/api/v1/tenants/${nt.id}/members`, AT, { username: 'qa_viewer2', role: 'viewer' });
+    const [memberRead] = await api('GET', `/api/v1/zones/${xferIds['xfer-one.example']}/records`, viewer);
+    const [memberWrite] = await api('POST', `/api/v1/zones/${xferIds['xfer-one.example']}/records`, viewer, { name: 'nope', record_type: 'A', value: '192.0.2.9', ttl: 300 });
+    const [, members] = await api('GET', `/api/v1/tenants/${nt.id}/members`, AT);
+    const viewerMember = members.find((m) => m.username === 'qa_viewer2');
+    const [memberRemove] = await api('DELETE', `/api/v1/tenants/${nt.id}/members/${viewerMember.user_id}`, AT);
+    ok('membership: viewer can read but not write tenant zones', memberAdd === 200 && memberRead === 200 && memberWrite === 403 && memberRemove === 200);
+    ok('tenants: a tenant that still owns zones cannot be deleted', (await api('DELETE', `/api/v1/tenants/${nt.id}`, AT))[0] === 409);
     // quota failure: the target tenant allows only one zone
     await search('xfer-two.example');
     await page.click('button[aria-label="Transfer xfer-two.example"]'); await page.waitForSelector('[data-testid="transfer-form"]');
@@ -277,6 +354,11 @@ async function waitFor(fn, ms = 15000, step = 500) { const t = Date.now(); while
     ok('transfer: recorded in the audit log with source and destination', JSON.stringify(au).includes('Transfer Target') && JSON.stringify(au).includes('xfer-one.example'));
   }
 
-  await browser.close();
-  console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
-})().catch((e) => { console.error('FATAL', e); process.exit(2); });
+  console.log(`\n${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0;
+  } catch (e) {
+    console.error('FATAL', e); process.exitCode = 2;
+  } finally {
+    await browser.close().catch(() => {});
+    cleanupTestData();
+  }
+})();
