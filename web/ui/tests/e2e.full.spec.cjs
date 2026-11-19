@@ -265,23 +265,3 @@ test.describe('Dark Mode', () => {
     expect(stillDark).toBe(true)
   })
 })
-
-test.describe('Bulk Import', () => {
-  test('bulk import zones via CSV', async ({ page, request }) => {
-    const token = await loginViaAPI(request, 'admin', 'admin123')
-    await setTokenInPage(page, token)
-    
-    await page.goto('http://localhost:3000/admin/zones')
-    await page.waitForSelector('input[type="file"]')
-    
-    // Create sample CSV
-    const csvPath = path.join(__dirname, 'fixtures', 'zones.csv')
-    await page.locator('input[type="file"]').setInputFiles(csvPath)
-    
-    // Click import
-    await page.click('button:has-text("Import")')
-    
-    // Should show success (wait for a bulk entry to appear)
-    await page.waitForSelector('text=example-bulk', { timeout: 10000 })
-  })
-})

@@ -170,7 +170,7 @@ test.describe('Servers Management', () => {
     await page.waitForSelector('text=Servers', { timeout: 10000 })
   })
 
-  test('start/stop server', async ({ page, request }) => {
+  test('server configuration page loads', async ({ page, request }) => {
     const token = await loginViaAPI(request)
     await setTokenInPage(page, token)
     

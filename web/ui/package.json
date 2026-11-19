@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext js,jsx",
+    "test:routes": "node tests/route-contract.cjs",
     "e2e:install": "npx playwright install",
     "test:e2e": "npx playwright test --config=tests/playwright.config.cjs"
   },

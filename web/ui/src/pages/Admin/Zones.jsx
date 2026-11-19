@@ -5,7 +5,6 @@ import api from '../../api/client'
 import { Link } from 'react-router-dom'
 import { useAuthStore } from '../../store'
 import { Globe, Plus, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
-import BulkImport from '../../components/BulkImport'
 import ZoneTools from '../../components/ZoneTools'
 import TransferZone from '../../components/TransferZone'
 import Notifications from '../../components/Notifications'
@@ -32,7 +31,6 @@ export default function Zones(){
   const [geodnsEnabled, setGeodnsEnabled] = React.useState(false)
   const [editingZone, setEditingZone] = React.useState(null)
   const [editDomain, setEditDomain] = React.useState('')
-  const [editType, setEditType] = React.useState('primary')
   const [editGeodns, setEditGeodns] = React.useState(false)
   const [zoneNameservers, setZoneNameservers] = React.useState({})
   const [creating, setCreating] = React.useState(false)
@@ -93,14 +91,12 @@ export default function Zones(){
   const startEdit = (zone) => {
     setEditingZone(zone)
     setEditDomain(zone.domain)
-    setEditType(zone.zone_type || 'primary')
     setEditGeodns(zone.geodns_enabled || false)
   }
 
   const cancelEdit = () => {
     setEditingZone(null)
     setEditDomain('')
-    setEditType('primary')
   }
 
   const saveEdit = async () => {
@@ -110,7 +106,7 @@ export default function Zones(){
     }
     try {
       const domain = editDomain.endsWith('.') ? editDomain : editDomain + '.'
-      await api.put(`/api/v1/zones/${editingZone.id}`, { domain, zone_type: editType, geodns_enabled: editGeodns })
+      await api.put(`/api/v1/zones/${editingZone.id}`, { domain, geodns_enabled: editGeodns })
       notify?.success('Zone updated')
       cancelEdit()
       load()
@@ -149,8 +145,6 @@ export default function Zones(){
       notify?.error(e.response?.data?.error || e.message || 'Failed to update zone')
     }
   }
-
-  const onBulkComplete = () => { load(); notify?.success('Zones imported') }
 
   return (
     <div className="page">
@@ -206,7 +200,6 @@ export default function Zones(){
                   {creating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                   {creating ? 'Creating...' : 'Create Zone'}
                 </button>
-                <BulkImport endpoint="/api/v1/zones/bulk" onComplete={onBulkComplete} />
               </div>
             </div>
           ) : (
@@ -214,14 +207,6 @@ export default function Zones(){
               <div className="flex-1 max-w-md">
                 <FormField label="Domain">
                   <input className="input" value={editDomain} onChange={e => setEditDomain(e.target.value)} />
-                </FormField>
-              </div>
-              <div>
-                <FormField label="Zone Type">
-                  <select className="select" value={editType} onChange={e => setEditType(e.target.value)}>
-                    <option value="primary">Primary</option>
-                    <option value="secondary">Secondary</option>
-                  </select>
                 </FormField>
               </div>
               <div className="flex items-center gap-3 pb-0.5">

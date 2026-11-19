@@ -103,7 +103,13 @@ export default function Servers(){
 
 
   const getStatus = (server) => {
-    return server.status === 'running' ? 'running' : 'stopped'
+    return server.status === 'running' || server.status === 'disabled' ? server.status : 'unknown'
+  }
+
+  const statusLabel = (status) => {
+    if (status === 'running') return 'Running'
+    if (status === 'disabled') return 'Disabled'
+    return 'Unknown'
   }
 
   return (
@@ -165,7 +171,7 @@ export default function Servers(){
                     </div>
                   </div>
                   <span className={`badge ${getStatus(server) === 'running' ? 'badge-success' : 'badge-default'}`}>
-                    {getStatus(server) === 'running' ? 'Running' : 'Stopped'}
+                    {statusLabel(getStatus(server))}
                   </span>
                 </div>
 

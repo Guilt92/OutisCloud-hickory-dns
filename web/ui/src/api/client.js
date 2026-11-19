@@ -153,11 +153,9 @@ export const authApi = {
 // ==================== Users API ====================
 export const usersApi = {
   list: () => api.get('/api/v1/users'),
-  get: (id) => api.get(`/api/v1/users/${id}`),
   create: (userData) => api.post('/api/v1/users', userData),
   update: (id, userData) => api.put(`/api/v1/users/${id}`, userData),
   delete: (id) => api.delete(`/api/v1/users/${id}`),
-  changePassword: (id, passwords) => api.post(`/api/v1/users/${id}/password`, passwords),
 };
 
 // ==================== Zones API ====================
@@ -178,20 +176,15 @@ export const zonesApi = {
 // ==================== Servers API ====================
 export const serversApi = {
   list: () => api.get('/api/v1/servers'),
-  get: (id) => api.get(`/api/v1/servers/${id}`),
   create: (serverData) => api.post('/api/v1/servers', serverData),
   update: (id, serverData) => api.put(`/api/v1/servers/${id}`, serverData),
   delete: (id) => api.delete(`/api/v1/servers/${id}`),
-  start: (id) => api.post(`/api/v1/servers/${id}/start`),
-  stop: (id) => api.post(`/api/v1/servers/${id}/stop`),
-  restart: (id) => api.post(`/api/v1/servers/${id}/restart`),
   getStatus: (id) => api.get(`/api/v1/servers/${id}/status`),
 };
 
 // ==================== Nameservers API ====================
 export const nameserversApi = {
   list: () => api.get('/api/v1/nameservers'),
-  get: (id) => api.get(`/api/v1/nameservers/${id}`),
   create: (nsData) => api.post('/api/v1/nameservers', nsData),
   update: (id, nsData) => api.put(`/api/v1/nameservers/${id}`, nsData),
   delete: (id) => api.delete(`/api/v1/nameservers/${id}`),
@@ -206,7 +199,6 @@ export const dnsApi = {
 // ==================== Agents API ====================
 export const agentsApi = {
   list: () => api.get('/api/v1/agents'),
-  get: (id) => api.get(`/api/v1/agents/${id}`),
   register: (agentData) => api.post('/api/v1/agents/register', agentData),
   heartbeat: (agentData) => api.post('/api/v1/agents/heartbeat', agentData),
   getConfig: (id) => api.get(`/api/v1/agents/${id}/config`),
@@ -220,39 +212,20 @@ export const agentsApi = {
 // ==================== GeoRules API ====================
 export const geoRulesApi = {
   list: () => api.get('/api/v1/georules'),
-  get: (id) => api.get(`/api/v1/georules/${id}`),
   create: (ruleData) => api.post('/api/v1/georules', ruleData),
   update: (id, ruleData) => api.put(`/api/v1/georules/${id}`, ruleData),
   delete: (id) => api.delete(`/api/v1/georules/${id}`),
   test: (testData) => api.post('/api/v1/georules/resolve', testData),
-  getStats: () => api.get('/api/v1/georules/stats'),
-};
-
-// ==================== SSL Certificates API ====================
-export const certificatesApi = {
-  list: () => api.get('/api/v1/certificates'),
-  get: (id) => api.get(`/api/v1/certificates/${id}`),
-  create: (certData) => api.post('/api/v1/certificates', certData),
-  renew: (id) => api.post(`/api/v1/certificates/${id}/renew`),
-  revoke: (id) => api.post(`/api/v1/certificates/${id}/revoke`),
-  delete: (id) => api.delete(`/api/v1/certificates/${id}`),
-  getStatus: (id) => api.get(`/api/v1/certificates/${id}/status`),
 };
 
 // ==================== Metrics API ====================
 export const metricsApi = {
-  get: () => api.get('/metrics'),
-  getPrometheus: () => api.get('/api/v1/metrics'),
   getQueryRate: () => api.get('/api/v1/metrics/queries'),
-  getCacheStats: () => api.get('/api/v1/metrics/cache'),
-  getGeoStats: () => api.get('/api/v1/metrics/geo'),
-  getAgentStats: () => api.get('/api/v1/metrics/agents'),
 };
 
 // ==================== Audit Logs API ====================
 export const auditApi = {
   list: (params) => api.get('/api/v1/audit/logs', { params }),
-  get: (id) => api.get(`/api/v1/audit/logs/${id}`),
 };
 
 // ==================== Health Check API ====================
