@@ -2,10 +2,15 @@
 
 **Repository:** `/home/outis/work-github/OutisCloud-hickory-dns`
 **Branch:** `main`
+**Last updated:** 2026-11-19
 **Base commit:** `7ec82cf0f feat(ui): redesign admin and customer consoles`
 **Audit-remediation commit:** `a6bcf9ad5 fix(security): complete audit remediation across API, DNS, and UI` (local, not pushed)
-**Follow-up state:** platform-QA and analytics-hardening changes are committed locally on top of `a6bcf9ad5`; **not pushed**.
+**Follow-up commits:** `c9da12736 fix(analytics): reject invalid ranges and harden platform QA`, `a028a360c docs: record final platform QA commit state`, plus the docs-only status update containing this report (local, **not pushed**).
+**Completion:** all locally actionable implementation, test, performance, cleanup, and reporting work is complete. Remote validation remains blocked by the absence of a verified non-production host.
+**Scope:** this report describes the **currently completed implementation and audit-remediation state only**. It is not a roadmap, architecture plan, or production-readiness claim. The production gaps, phased plan, and readiness criteria are maintained separately in `task.md`.
 **Report basis:** current source, executed test suites, browser runs, database state, and captured logs. Prior documentation was not treated as proof of completion.
+
+> **Push and readiness note.** Branch `main` is local and has not been pushed. Passing local tests, including 140 control-API tests and 96 platform-QA checks, proves only the tested local behavior. It does **not** prove production readiness, remote deployment safety, HA, disaster recovery, or external DNS delegation. See `task.md` for the production-readiness gap analysis.
 
 ---
 
@@ -296,23 +301,24 @@ No remote test or deployment was performed. This is an explicit residual block, 
 - Two other local SSH aliases were probed read-only and both failed host-key verification with `REMOTE HOST IDENTIFICATION HAS CHANGED`. The safe action was to stop; no `StrictHostKeyChecking=no` bypass was used.
 - No repository documentation identifies a separate authorized test/staging host.
 - No remote connection details were guessed, and no deployment/rebuild of the running production containers was attempted.
-- The legacy `outiscloud-control-api` container was stopped only to free local port 8080 for the disposable stack. It is restored after the local run; the old DNS/API containers were not rebuilt or changed.
+- The legacy `outiscloud-control-api` container was stopped only to free local port 8080 for the disposable stack. It was restarted after the local run; its health must be rechecked before use. The old DNS/API containers were not rebuilt or changed.
 
-To finish remote validation, a genuinely non-production host must be identified with verified SSH host keys. That is the only missing external input.
+To finish remote validation, a genuinely non-production host must be identified with verified SSH host keys. That is the missing external input for remote validation; it does not close the production-readiness gaps documented in `task.md`.
 
 ---
 
 ## 10. Git status and commit state
 
 - Base before this follow-up: `a6bcf9ad5` on top of `7ec82cf0f`; branch `main` has not been pushed.
-- The platform-QA/analytics follow-up is committed locally as one clean commit with only:
+- Code/test follow-up commit `c9da12736` contains only:
   - `crates/control_api/src/tenants.rs` — reject unknown analytics ranges.
   - `crates/control_api/src/api_tests.rs` — range/interval tests and bounded overview query-count assertions.
   - `web/ui/tests/platform_qa.cjs` — repeatable fixtures, hot-reload update/delete checks, quota/member/transfer coverage, performance measurement, browser cleanup.
-  - `TASK_STATUS.md` — this report.
-- Explicitly not staged: `.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `deploy/dns/.orphaned/`, `WORK_PROGRESS.md`, the task prompt file.
-- The follow-up commit was created locally with **no amend and no push**; this report is included in that commit. A docs-only correction records the final repository state.
-- Before committing, `git diff --check` passed, the staged diff was inspected, and no secret or generated runtime file was included.
+  - `TASK_STATUS.md` — the report at that commit.
+- Docs-only follow-up `a028a360c` corrected the committed state. The final docs-only update containing this report and `task.md` is committed locally after `a028a360c`; it is **not pushed**.
+- Explicitly excluded from the docs-only commit and staging: `.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `deploy/dns/.orphaned/`, `WORK_PROGRESS.md`, `"# OutisCloud Hickory DNS — Audit Remedia.md"`, and the recovered task prompt.
+- All local commits were created with **no amend and no push**. No code, test, runtime configuration, or generated DNS state is part of the docs-only update.
+- The docs-only update passed `git diff --check`; the staged diff was inspected and contains only `task.md` and `TASK_STATUS.md`.
 
 ---
 
@@ -343,6 +349,7 @@ To finish remote validation, a genuinely non-production host must be identified 
 - **Analytics:** a leader-elected collector reads the Prometheus endpoint, stores deltas in `analytics_samples` and per-zone tables, and supports hourly rollups plus configurable retention. History has no FK to zones so it survives zone deletion.
 - **Overview:** one tenant-scoped lateral query returns zones and record totals; customer responses add one bounded tenant-usage query. `limit` shortens only the returned list, never the totals.
 - **Local QA stack:** `scripts/ui_stack.sh` starts the API, DNS, metrics stub, and Vite UI in `/tmp/opencode/platform-qa2`, using a disposable `outis_ui` database. It is not part of the committed change and is not a production deployment.
+- **Final local runtime:** at the end of the final local run, the disposable release stack was stopped and the legacy API container was restarted. Current container/API health is not assumed and must be rechecked before use.
 - **Ports used locally:** UI 5173, API 8080, DNS 5402, metrics stub 19100. The DNS integration test also uses fixed Prometheus port 9000, which required temporarily stopping the local DNS process for the targeted run.
 
 ---
@@ -371,12 +378,16 @@ To finish remote validation, a genuinely non-production host must be identified 
 - `web/ui/src/pages/Admin/Users.jsx` — email field consistency.
 - `web/ui/src/pages/Admin/Zones.jsx` — single nameserver fetch and derived labels.
 
-### Platform-QA follow-up (this report's commit)
+### Platform-QA follow-up commit (`c9da12736`)
 
 - `crates/control_api/src/tenants.rs` — explicit analytics range validation.
 - `crates/control_api/src/api_tests.rs` — invalid range/interval regression and overview query-count assertions.
 - `web/ui/tests/platform_qa.cjs` — repeatable fixture cleanup, browser cleanup, expanded hot-reload/tenant/quota/member/transfer coverage, performance measurement.
-- `TASK_STATUS.md` — this updated report.
+- `TASK_STATUS.md` — the report at that commit.
+
+### Docs-only updates (`a028a360c` and final status commit)
+
+- `TASK_STATUS.md` — corrected commit/runtime state and recorded final completion status.
 
 ### Excluded from commits
 
@@ -468,6 +479,8 @@ TEST_DATABASE_URL="$TEST_POSTGRES_URL" \
 - [x] Analytics samples survive a clean API restart.
 - [x] Invalid analytics ranges/intervals rejected with `400`.
 - [x] Test fixtures cleaned before and after platform runs.
+- [x] Final report updated with commit and runtime state.
+- [x] Disposable release stack stopped; legacy API container restored (health must be rechecked before use).
 - [x] No secrets or generated runtime state staged.
 - [x] No push, amend, reset, or production deployment performed.
 - [ ] Remote validation on an authorized non-production host — blocked; no safe host identified.
