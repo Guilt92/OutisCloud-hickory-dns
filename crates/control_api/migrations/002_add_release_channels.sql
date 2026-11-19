@@ -24,32 +24,6 @@ BEGIN
     END IF;
 END $$;
 
--- Add health check history table
-CREATE TABLE IF NOT EXISTS agent_health_history (
-    id UUID PRIMARY KEY,
-    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
-    status TEXT NOT NULL,
-    cpu_usage FLOAT,
-    memory_usage FLOAT,
-    disk_usage FLOAT,
-    query_count BIGINT DEFAULT 0,
-    error_count BIGINT DEFAULT 0,
-    recorded_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_health_history_agent_id ON agent_health_history(agent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_health_history_recorded_at ON agent_health_history(recorded_at);
-
--- Add API rate limiting table
-CREATE TABLE IF NOT EXISTS rate_limits (
-    id UUID PRIMARY KEY,
-    ip_address TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    request_count INT DEFAULT 0,
-    window_start TIMESTAMPTZ DEFAULT now(),
-    window_duration INT DEFAULT 60,
-    blocked_until TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_rate_limits_ip_endpoint ON rate_limits(ip_address, endpoint);
-CREATE INDEX IF NOT EXISTS idx_rate_limits_blocked ON rate_limits(blocked_until) WHERE blocked_until IS NOT NULL;
+-- agent_health_history and the legacy rate_limits table were removed: both
+-- were migration-only objects with no application references, and the latter
+-- collided with the live rate_limits table created by migrate_db().

@@ -6327,3 +6327,187 @@ async fn rollup_preserves_sums_bounds_growth_and_is_idempotent() {
     assert_eq!(a["total_queries"], 288 * 10 + 5);
     env.cleanup().await;
 }
+
+/// The checked-in SQL migrations and the runtime `migrate_db()` path must produce
+/// the same schema. This closes ARCH-001: fresh Compose databases and fresh
+/// Kubernetes/test databases can no longer diverge silently.
+#[actix_web::test]
+async fn migration_files_and_runtime_ddl_have_no_schema_drift() {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("SKIPPED: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let schemas = [
+        format!("t_mig_{}", Uuid::new_v4().simple()),
+        format!("t_run_{}", Uuid::new_v4().simple()),
+    ];
+    {
+        let (c, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        for schema in &schemas {
+            c.batch_execute(&format!("CREATE SCHEMA {schema}"))
+                .await
+                .unwrap();
+        }
+    }
+
+    let migrations_dir = format!("{}/migrations", env!("CARGO_MANIFEST_DIR"));
+    let mut files = std::fs::read_dir(&migrations_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("sql"))
+        .collect::<Vec<_>>();
+    files.sort();
+    for path in files {
+        let sql = std::fs::read_to_string(&path).unwrap();
+        let (c, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        c.batch_execute(&format!("SET search_path TO {}", schemas[0]))
+            .await
+            .unwrap();
+        c.batch_execute(&sql)
+            .await
+            .unwrap_or_else(|e| panic!("migration {}: {}", path.display(), full_error_string(&e)));
+    }
+
+    for schema in &schemas {
+        let pool = Pool::connect(&url, 2, Some(schema)).await.unwrap();
+        migrate_db(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("migrate_db {schema}: {}", full_error_string(&e)));
+    }
+
+    let (admin, conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    async fn catalog(client: &tokio_postgres::Client, schema: &str) -> (Vec<String>, Vec<String>) {
+        let cols = client
+            .query(
+                "SELECT table_name, column_name, data_type, is_nullable, coalesce(column_default, '')
+                 FROM information_schema.columns
+                 WHERE table_schema = $1
+                 ORDER BY 1, 2",
+                &[&schema],
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                format!(
+                    "{}|{}|{}|{}|{}",
+                    r.get::<_, String>(0),
+                    r.get::<_, String>(1),
+                    r.get::<_, String>(2),
+                    r.get::<_, String>(3),
+                    r.get::<_, String>(4)
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let idx = client
+            .query(
+                "SELECT tablename, indexname, indexdef FROM pg_indexes
+                 WHERE schemaname = $1 ORDER BY 1, 2",
+                &[&schema],
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                format!(
+                    "{}|{}|{}",
+                    r.get::<_, String>(0),
+                    r.get::<_, String>(1),
+                    r.get::<_, String>(2).replace(schema, "SCHEMA")
+                )
+            })
+            .collect::<Vec<_>>();
+        (cols, idx)
+    }
+
+    let (mig_cols, mig_idx) = catalog(&admin, &schemas[0]).await;
+    let (run_cols, run_idx) = catalog(&admin, &schemas[1]).await;
+    assert_eq!(
+        mig_cols, run_cols,
+        "SQL migrations and runtime DDL columns differ"
+    );
+    assert_eq!(
+        mig_idx, run_idx,
+        "SQL migrations and runtime DDL indexes differ"
+    );
+
+    for schema in &schemas {
+        let unique = admin
+            .query_one(
+                "SELECT count(*) FROM pg_indexes
+                 WHERE schemaname = $1 AND indexname = 'uq_records_rrset_value'",
+                &[&schema],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(unique, 1, "uq_records_rrset_value missing in {schema}");
+
+        let legacy = admin
+            .query_one(
+                "SELECT count(*) FROM pg_constraint
+                 WHERE connamespace = $1::regnamespace AND conname = 'records_zone_id_name_record_type_key'",
+                &[&schema],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(
+            legacy, 0,
+            "legacy RRset constraint still present in {schema}"
+        );
+    }
+
+    let pool = Pool::connect(&url, 2, Some(&schemas[1])).await.unwrap();
+    let zone = Uuid::new_v4().to_string();
+    pool.execute(
+        "INSERT INTO zones (id, domain) VALUES ($1::text::uuid, 'rrset.example')",
+        &[&zone],
+    )
+    .await
+    .unwrap();
+    let value = "192.0.2.10";
+    pool.execute(
+        "INSERT INTO records (id, zone_id, name, record_type, value)
+         VALUES ($1::text::uuid, $2::text::uuid, 'WWW', 'A', $3)",
+        &[&Uuid::new_v4().to_string(), &zone, &value],
+    )
+    .await
+    .unwrap();
+    let duplicate = pool
+        .execute(
+            "INSERT INTO records (id, zone_id, name, record_type, value)
+             VALUES ($1::text::uuid, $2::text::uuid, 'www', 'A', $3)",
+            &[&Uuid::new_v4().to_string(), &zone, &value],
+        )
+        .await
+        .expect_err("exact duplicate must be rejected");
+    assert!(full_error_string(&duplicate).contains("23505"));
+
+    pool.execute(
+        "INSERT INTO records (id, zone_id, name, record_type, value)
+         VALUES ($1::text::uuid, $2::text::uuid, 'www', 'A', '192.0.2.11')",
+        &[&Uuid::new_v4().to_string(), &zone],
+    )
+    .await
+    .expect("a second value in the same RRset must be accepted");
+
+    for schema in &schemas {
+        admin
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+}

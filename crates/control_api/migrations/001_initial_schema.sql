@@ -42,16 +42,16 @@ CREATE TABLE IF NOT EXISTS records (
     id UUID PRIMARY KEY,
     zone_id UUID REFERENCES zones(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    type TEXT NOT NULL,
+    record_type TEXT NOT NULL,
     value TEXT NOT NULL,
     ttl INT NOT NULL DEFAULT 3600,
-    priority INT DEFAULT 0,
+    priority INT DEFAULT 10,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_zone_id ON records(zone_id);
-CREATE INDEX IF NOT EXISTS idx_records_name_type ON records(name, type);
+CREATE INDEX IF NOT EXISTS idx_records_name_type ON records(name, record_type);
 
 -- Agents table
 CREATE TABLE IF NOT EXISTS agents (

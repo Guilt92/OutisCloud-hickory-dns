@@ -1,4 +1,4 @@
--- Migration 002: Add missing fields and nameservers table
+-- Migration 003: Add missing fields and nameservers table
 -- Adds fields required by the API and creates nameservers configuration table
 
 -- Add missing fields to zones table

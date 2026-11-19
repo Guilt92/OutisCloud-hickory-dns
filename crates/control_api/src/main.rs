@@ -6569,10 +6569,9 @@ mod schema_consistency_tests {
         }
     }
 
-    /// Verify the records table schema in migrate_db() matches what the queries expect.
+    /// Verify the records schema contract enforced by migrate_db().
     #[test]
     fn test_records_schema_has_record_type_column() {
-        // This is the schema SQL from migrate_db()
         let create_sql = "CREATE TABLE IF NOT EXISTS records (
             id UUID PRIMARY KEY,
             zone_id UUID REFERENCES zones(id) ON DELETE CASCADE,
@@ -6582,19 +6581,22 @@ mod schema_consistency_tests {
             ttl INT NOT NULL DEFAULT 3600,
             priority INT DEFAULT 10,
             created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now(),
-            UNIQUE(zone_id, name, record_type)
+            updated_at TIMESTAMPTZ DEFAULT now()
         )";
 
         assert!(
             create_sql.contains("record_type TEXT NOT NULL"),
             "Records table schema must define record_type column, not 'type'"
         );
-
-        // The UNIQUE constraint must also use record_type
         assert!(
-            create_sql.contains("UNIQUE(zone_id, name, record_type)"),
-            "UNIQUE constraint must use record_type column name"
+            !create_sql.contains("UNIQUE(zone_id, name, record_type)"),
+            "The old (zone, name, type) constraint must not be recreated: it forbids valid multi-value RRsets"
+        );
+
+        let unique_index_sql = "CREATE UNIQUE INDEX IF NOT EXISTS uq_records_rrset_value ON records(zone_id, lower(name), record_type, value);";
+        assert!(
+            unique_index_sql.contains("lower(name)") && unique_index_sql.contains("value"),
+            "The duplicate guard must key on lower(name), record_type and value"
         );
     }
 
