@@ -322,3 +322,15 @@ init: init-cargo-workspaces init-audit
 # Run the server with example config, for manual testing purposes
 run-example:
     @cargo {{MSRV}} run --bin hickory-dns --locked -- -d -c {{TEST_DATA}}/test_configs/example.toml -z {{TEST_DATA}}/test_configs -p 2053
+
+# Check Markdown links and stale documentation claims
+docs-check:
+    python3 scripts/docs_check.py
+
+# Report live-looking secrets in tracked files without printing values
+secret-scan:
+    python3 scripts/secret_scan.py
+
+# Validate frontend API route contract
+route-contract:
+    npm --prefix web/ui run test:routes

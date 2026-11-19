@@ -38,3 +38,7 @@ web/ui/test-results/
 dnssec-keys/
 *.log
 .env.local
+.env
+env/*.env
+k8s/secret.yaml
+!.env.example

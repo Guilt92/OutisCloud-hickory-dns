@@ -1,32 +1,35 @@
-[![Build Status](https://github.com/hickory-dns/hickory-dns/workflows/test/badge.svg?branch=main)](https://github.com/hickory-dns/hickory-dns/actions?query=workflow%3Atest)
-[![codecov](https://codecov.io/gh/hickory-dns/hickory-dns/branch/main/graph/badge.svg)](https://codecov.io/gh/hickory-dns/hickory-dns)
+# OutisCloud Hickory DNS
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE-APACHE)
-[![Discord](https://img.shields.io/discord/590067103822774272.svg)](https://discord.gg/89nxE4n)
 
-<div class="oranda-hide">
+> **Status:** This repository is an OutisCloud fork of Hickory DNS with a multi-tenant DNS control plane and React console. It is **not production-ready**. Current implementation evidence, roadmap status, and production-readiness gaps are in [`TASK_STATUS.md`](TASK_STATUS.md); the canonical roadmap is Appendix A of that file.
 
-![Hickory DNS](logo.png)
+## Project layout
 
-# Hickory DNS
+| Component | Description |
+|---|---|
+| [`crates/server`](crates/server/) | Authoritative DNS server built on Hickory |
+| [`crates/control_api`](crates/control_api/) | Rust/Actix multi-tenant control API |
+| [`crates/agent`](crates/agent/) | Replica agent and signed bundle application |
+| [`crates/geodns`](crates/geodns/) | GeoDNS lookup and routing engine |
+| [`bin`](bin/) | `hickory-dns` server binary |
+| [`web/ui`](web/ui/) | Admin and customer React console |
+| [`deploy`](deploy/) | DNS configuration and example monitoring assets |
+| [`docs/adr`](docs/adr/) | Architecture decision records |
 
-</div>
+## Upstream Hickory DNS crates
 
-A Rust based DNS client, server, and resolver, built to be safe and secure from the
-ground up.
-
-This repo consists of multiple crates:
+The following upstream crates remain part of the fork:
 
 | Library         | Description                                                                                                                                                                                                                                                                                                                      |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [**Hickory DNS**](bin/)             | [![](https://img.shields.io/crates/v/hickory-dns.svg)](https://crates.io/crates/hickory-dns) Provides the `hickory-dns` binary for running a DNS server.                                                                                                                                                                         |
 | [**Proto**](crates/proto/)          | [![](https://img.shields.io/crates/v/hickory-proto.svg)](https://crates.io/crates/hickory-proto) [![hickory-proto](https://docs.rs/hickory-proto/badge.svg)](https://docs.rs/hickory-proto) Low-level DNS library, including message encoding/decoding and DNS transports.                                                       |
-| [**Client**](crates/client/)        | [![](https://img.shields.io/crates/v/hickory-client.svg)](https://crates.io/crates/hickory-client) [![hickory-client](https://docs.rs/hickory-client/badge.svg)](https://docs.rs/hickory-client) Used for sending `query`, `update`, and `notify` messages directly to a DNS server.                                             |
 | [**Server**](crates/server/)        | [![](https://img.shields.io/crates/v/hickory-server.svg)](https://crates.io/crates/hickory-server) [![hickory-server](https://docs.rs/hickory-server/badge.svg)](https://docs.rs/hickory-server) Used to build DNS servers. The `hickory-dns` binary makes use of this library.                                                  |
 | [**Resolver**](crates/resolver/)    | [![](https://img.shields.io/crates/v/hickory-resolver.svg)](https://crates.io/crates/hickory-resolver) [![hickory-resolver](https://docs.rs/hickory-resolver/badge.svg)](https://docs.rs/hickory-resolver) Utilizes the client library to perform DNS resolution. Can be used in place of the standard OS resolution facilities. |
-| [**Recursor**](crates/recursor/)    | [![](https://img.shields.io/crates/v/hickory-recursor.svg)](https://crates.io/crates/hickory-recursor) [![hickory-recursor](https://docs.rs/hickory-recursor/badge.svg)](https://docs.rs/hickory-recursor) Performs recursive DNS resolution, looking up records from their authoritative name servers.                          |
 
-**NOTICE** This project was rebranded from Trust-DNS to Hickory DNS and has been moved to the https://github.com/hickory-dns/hickory-dns organization and repo.
+**NOTICE** Upstream Hickory DNS was rebranded from Trust-DNS. This fork adds the OutisCloud control plane and is not affiliated with the upstream project's production service.
 
 # Goals
 

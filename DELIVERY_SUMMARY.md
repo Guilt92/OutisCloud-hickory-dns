@@ -1,8 +1,10 @@
-# Hickory DNS Manager - Complete Delivery Summary
+# Hickory DNS Manager — Historical Delivery Summary
 
-## 🎯 Mission Accomplished
+> **Historical document only.** This file records an earlier UI delivery pass. It is **not** a current production-readiness statement and must not be used as one. Current evidence, known gaps, and the canonical roadmap are in [`TASK_STATUS.md`](TASK_STATUS.md). Several deliverables listed below have since been removed or superseded.
 
-A **production-ready DNS Manager UI** has been successfully built and integrated with the Hickory DNS backend. The system is fully functional, comprehensively tested, and ready for immediate deployment.
+## Historical outcome
+
+A DNS Manager UI was built and integrated with the Hickory DNS backend for local validation. Its claims were accurate only for that historical local stack.
 
 ---
 
@@ -315,7 +317,7 @@ This will:
 ```
 URL: http://localhost:3000
 Username: admin
-Password: admin123
+Password: REDACTED — rotate before use
 ```
 
 ### View Services
@@ -605,7 +607,7 @@ Post-Deploy Testing:   5-10 minutes
 
 ## 🏆 Summary
 
-A complete, production-ready DNS Manager web application has been delivered with:
+A DNS Manager web application was delivered for local validation with:
 
 ✅ **Full Feature Set** - 20+ features across 8 pages
 ✅ **Advanced UI** - Pagination, sorting, search, animations, dark mode
@@ -615,7 +617,7 @@ A complete, production-ready DNS Manager web application has been delivered with
 ✅ **Automated Deployment** - One-command integration and testing
 ✅ **Developer Friendly** - Clear structure, guides, and examples
 
-**Status**: ✅ **READY FOR PRODUCTION**
+**Status**: Historical — superseded by `TASK_STATUS.md`; not production-ready
 
 **Estimated ROI**: Immediate - all planned features delivered on schedule
 **Maintenance Burden**: Low - clear code structure and documentation
