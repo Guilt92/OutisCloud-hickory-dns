@@ -101,11 +101,19 @@ pub(super) async fn handle_h2_with_acceptor(
             continue;
         }
 
+        let permit = match cx.tcp_connections.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%src_addr, "HTTPS connection limit reached; dropping connection");
+                continue;
+            }
+        };
         let cx = cx.clone();
         let tls_acceptor = tls_acceptor.clone();
         let dns_hostname = dns_hostname.clone();
         let http_endpoint = http_endpoint.clone();
         inner_join_set.spawn(async move {
+            let _permit = permit;
             debug!("starting HTTPS request from: {src_addr}");
 
             // TODO: need to consider timeout of total connect...
@@ -177,12 +185,20 @@ pub(crate) async fn h2_handler(
             },
         };
 
+        let permit = match cx.h2_streams.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%src_addr, "HTTP/2 stream limit reached; dropping stream");
+                continue;
+            }
+        };
         debug!("Received request: {:#?}", request);
         let cx = cx.clone();
         let dns_hostname = dns_hostname.clone();
         let http_endpoint = http_endpoint.clone();
         let responder = HttpsResponseHandle(Arc::new(Mutex::new(respond)));
         tokio::spawn(async move {
+            let _permit = permit;
             let body = match h2::message_from(dns_hostname, http_endpoint, request).await {
                 Ok(bytes) => bytes,
                 Err(err) => {

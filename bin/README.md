@@ -43,7 +43,6 @@ corresponding to your desired cryptography provider:
 * DoT: `tls-aws-lc-rs` or `tls-ring`
 * DoH: `https-aws-lc-rs` or `https-ring`
 * DoQ: `quic-aws-lc-rs` or `quic-ring`
-* DoH3: `h3-aws-lc-rs` or `h3-ring`
 
 ## DNSSEC
 

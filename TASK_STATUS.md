@@ -43,10 +43,10 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | CORE-001 — AXFR TCP-only/streaming | **PARTIAL** | `Catalog::lookup` now refuses AXFR on datagram transports with REFUSED. Existing catalog AXFR tests moved to TCP; new UDP-rejection test passes. Multi-message streaming and multi-message TSIG signing remain open (blocked by one-shot `TSigResponseContext`). |
 | CORE-002 — IXFR | **PARTIAL** | Server now returns explicit NOTIMP for IXFR instead of treating it as an empty query. Full delta generation remains future work. Client-side IXFR stream already existed. |
 | CORE-003 — NOTIFY | **PARTIAL** | Catalog now acknowledges NOTIFY with NOERROR for known zones and NOTAUTH otherwise; `test_notify` updated from failing-forward NotImp. Sender retry/backoff and secondary refresh remain open. |
-| CORE-005 — bounded concurrency | **TODO** | No admission semaphore yet. |
+| CORE-005 — bounded concurrency | **PARTIAL** | Added `DNS_MAX_INFLIGHT_UDP`, `DNS_MAX_TCP_CONNECTIONS`, and `DNS_MAX_H2_STREAMS` admission semaphores for UDP datagrams, TCP/TLS connections, and HTTP/2 streams; rejections are logged. `cargo test -p hickory-server --lib` passes 28/28 and DNS health integration test passes. A high-concurrency load test proving backpressure is still pending. |
 | CORE-006 — PII-safe query logging | **DONE** | Added `QueryLogConfig` (default redaction, `DNS_QUERY_LOG_LEVEL=off` disables), redacts client IP/port and query names in INFO/DEBUG paths, and added `query_log_redacts_pii_by_default`. `cargo test -p hickory-server --lib` passes 28/28. |
-| CORE-008 — conformance suite | **PARTIAL** | Existing dig/delv/conformance labs; malformed-packet and dual-stack additions not yet wired. |
-| CORE-010 — DoH3 binary wiring | **TODO** | Library support exists; binary has no H3 flags/config/tests, and README overstates support. |
+| CORE-008 — conformance suite | **PARTIAL** | Existing dig/delv/conformance labs; added `just dns-conformance-lab`, `just dnssec-lab`, and `just dns-labs` wrappers. Malformed-packet and dual-stack additions remain. |
+| CORE-010 — DoH3 binary wiring | **TODO** | Library support exists; binary has no H3 flags/config/tests. False H3 feature claims were removed from `bin/README.md`. |
 | CORE-013 — per-zone reload | **PARTIAL** | Atomic full catalog reload and unchanged-file skip exist; incremental per-zone path is open. |
 
 

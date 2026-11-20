@@ -334,3 +334,14 @@ secret-scan:
 # Validate frontend API route contract
 route-contract:
     npm --prefix web/ui run test:routes
+
+# Repeatable local DNS protocol lab (requires dig)
+dns-conformance-lab:
+    bash scripts/dns_conformance_lab.sh
+
+# Repeatable local DNSSEC validation lab (requires delv)
+dnssec-lab:
+    bash scripts/dnssec_lab.sh
+
+# Run all local DNS labs
+dns-labs: dns-conformance-lab dnssec-lab

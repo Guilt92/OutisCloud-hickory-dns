@@ -21,7 +21,7 @@ use ipnet::IpNet;
 use rustls::{ServerConfig, server::ResolvesServerCert};
 #[cfg(feature = "__tls")]
 use tokio::time::timeout;
-use tokio::{net, task::JoinSet};
+use tokio::{net, sync::Semaphore, task::JoinSet};
 #[cfg(feature = "__tls")]
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
@@ -95,6 +95,15 @@ impl<T: RequestHandler> Server<T> {
                 access,
                 shutdown: CancellationToken::new(),
                 query_log: QueryLogConfig::from_env(),
+                udp_inflight: Arc::new(Semaphore::new(concurrency_limit(
+                    "DNS_MAX_INFLIGHT_UDP",
+                    4096,
+                ))),
+                tcp_connections: Arc::new(Semaphore::new(concurrency_limit(
+                    "DNS_MAX_TCP_CONNECTIONS",
+                    1024,
+                ))),
+                h2_streams: Arc::new(Semaphore::new(concurrency_limit("DNS_MAX_H2_STREAMS", 256))),
             }),
             join_set: JoinSet::new(),
         }
@@ -470,9 +479,17 @@ async fn handle_udp(
             continue;
         }
 
+        let permit = match cx.udp_inflight.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%src_addr, "UDP concurrency limit reached; dropping query");
+                continue;
+            }
+        };
         let cx = cx.clone();
         let stream_handle = stream_handle.with_remote_addr(src_addr);
         inner_join_set.spawn(async move {
+            let _permit = permit;
             cx.handle_raw_request(message, Protocol::Udp, stream_handle)
                 .await;
         });
@@ -523,8 +540,16 @@ async fn handle_tcp(
         }
 
         // and spawn to the io_loop
+        let permit = match cx.tcp_connections.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%src_addr, "TCP connection limit reached; dropping connection");
+                continue;
+            }
+        };
         let cx = cx.clone();
         inner_join_set.spawn(async move {
+            let _permit = permit;
             debug!(%src_addr, "accepted TCP request");
             // take the created stream...
             let (buf_stream, stream_handle) =
@@ -595,10 +620,18 @@ async fn handle_tls(
             continue;
         }
 
+        let permit = match cx.tcp_connections.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%src_addr, "TLS connection limit reached; dropping connection");
+                continue;
+            }
+        };
         let cx = cx.clone();
         let tls_acceptor = tls_acceptor.clone();
         // kick out to a different task immediately, let them do the TLS handshake
         inner_join_set.spawn(async move {
+            let _permit = permit;
             debug!(%src_addr, "starting TLS request");
 
             // perform the TLS
@@ -667,6 +700,14 @@ pub fn default_tls_server_config(
     config.alpn_protocols = vec![protocol.to_vec()];
 
     Ok(config)
+}
+
+fn concurrency_limit(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
 #[derive(Clone)]
@@ -779,6 +820,9 @@ struct ServerContext<T> {
     access: AccessControl,
     shutdown: CancellationToken,
     query_log: QueryLogConfig,
+    udp_inflight: Arc<Semaphore>,
+    tcp_connections: Arc<Semaphore>,
+    h2_streams: Arc<Semaphore>,
 }
 
 impl<T: RequestHandler> ServerContext<T> {
