@@ -1,4 +1,9 @@
-#[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+#[cfg(any(
+    feature = "__tls",
+    feature = "__https",
+    feature = "__quic",
+    feature = "__h3"
+))]
 use std::sync::Arc;
 use std::time::Duration;
 use std::{
@@ -10,9 +15,19 @@ use std::{
 use clap::Parser;
 #[cfg(feature = "metrics")]
 use metrics_process::Collector;
-#[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+#[cfg(any(
+    feature = "__tls",
+    feature = "__https",
+    feature = "__quic",
+    feature = "__h3"
+))]
 use rustls::KeyLogFile;
-#[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+#[cfg(any(
+    feature = "__tls",
+    feature = "__https",
+    feature = "__quic",
+    feature = "__h3"
+))]
 use rustls::server::ResolvesServerCert;
 use socket2::{Domain, Socket, Type};
 use tokio::net::{TcpListener, UdpSocket};
@@ -20,7 +35,12 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::signal::unix::{SignalKind, signal};
 #[cfg(feature = "metrics")]
 use tokio::time::sleep;
-#[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+#[cfg(any(
+    feature = "__tls",
+    feature = "__https",
+    feature = "__quic",
+    feature = "__h3"
+))]
 use tracing::warn;
 use tracing::{error, info};
 
@@ -118,6 +138,12 @@ pub struct DnsServer {
     #[clap(long = "quic-port", value_name = "QUIC-PORT")]
     quic_port: Option<u16>,
 
+    /// Listening port for DNS over HTTP/3 queries,
+    /// overrides any value in config file
+    #[cfg(feature = "__h3")]
+    #[clap(long = "h3-port", value_name = "H3-PORT")]
+    h3_port: Option<u16>,
+
     /// Listening socket for Prometheus metrics,
     /// for remote access configure socket as needed (e.g. 0.0.0.0:9000)
     /// overrides any value in config file
@@ -156,6 +182,12 @@ pub struct DnsServer {
     #[clap(long = "disable-quic", conflicts_with = "quic_port")]
     disable_quic: bool,
 
+    /// Disable HTTP/3 protocol,
+    /// overrides any value in config file
+    #[cfg(feature = "__h3")]
+    #[clap(long = "disable-h3", conflicts_with = "h3_port")]
+    disable_h3: bool,
+
     /// Disable Prometheus metrics,
     /// overrides any value in config file
     #[cfg(feature = "prometheus-metrics")]
@@ -190,6 +222,8 @@ impl DnsServer {
             https_port,
             #[cfg(feature = "__quic")]
             quic_port,
+            #[cfg(feature = "__h3")]
+            h3_port,
             #[cfg(feature = "prometheus-metrics")]
             prometheus_listen_addr,
             disable_tcp,
@@ -200,6 +234,8 @@ impl DnsServer {
             disable_https,
             #[cfg(feature = "__quic")]
             disable_quic,
+            #[cfg(feature = "__h3")]
+            disable_h3,
             #[cfg(feature = "prometheus-metrics")]
             disable_prometheus,
             nsid,
@@ -227,6 +263,8 @@ impl DnsServer {
         let disable_https = disable_https | config.disable_https;
         #[cfg(feature = "__quic")]
         let disable_quic = disable_quic | config.disable_quic;
+        #[cfg(feature = "__h3")]
+        let disable_h3 = disable_h3 | config.disable_h3;
 
         #[cfg(feature = "prometheus-metrics")]
         let prometheus_server_opt = if !disable_prometheus {
@@ -283,6 +321,8 @@ impl DnsServer {
             https_listen_port,
             #[cfg(feature = "__quic")]
             quic_listen_port,
+            #[cfg(feature = "__h3")]
+            h3_listen_port,
             #[cfg(feature = "prometheus-metrics")]
                 prometheus_listen_addr: _,
             disable_tcp: _,
@@ -293,6 +333,8 @@ impl DnsServer {
                 disable_https: _,
             #[cfg(feature = "__quic")]
                 disable_quic: _,
+            #[cfg(feature = "__h3")]
+                disable_h3: _,
             #[cfg(feature = "prometheus-metrics")]
                 disable_prometheus: _,
             tcp_request_timeout,
@@ -393,7 +435,12 @@ impl DnsServer {
             listen_addrs,
             server: &mut server,
             tcp_request_timeout,
-            #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+            #[cfg(any(
+                feature = "__tls",
+                feature = "__https",
+                feature = "__quic",
+                feature = "__h3"
+            ))]
             cert_resolver: tls_cert
                 .as_ref()
                 .map(|config| {
@@ -405,7 +452,12 @@ impl DnsServer {
                     })
                 })
                 .transpose()?,
-            #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+            #[cfg(any(
+                feature = "__tls",
+                feature = "__https",
+                feature = "__quic",
+                feature = "__h3"
+            ))]
             ssl_keylog_enabled,
         };
 
@@ -420,7 +472,12 @@ impl DnsServer {
             false => setup.tcp(listen_port)?,
         }
 
-        #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+        #[cfg(any(
+            feature = "__tls",
+            feature = "__https",
+            feature = "__quic",
+            feature = "__h3"
+        ))]
         if setup.cert_resolver.is_none() {
             info!("TLS certificates are not provided");
             info!("TLS related protocols (TLS, HTTPS and QUIC) are disabled")
@@ -448,6 +505,12 @@ impl DnsServer {
         match disable_quic {
             true => info!("QUIC protocol is disabled"),
             false => setup.quic(quic_port.unwrap_or(quic_listen_port))?,
+        }
+
+        #[cfg(feature = "__h3")]
+        match disable_h3 {
+            true => info!("HTTP/3 protocol is disabled"),
+            false => setup.h3(h3_port.unwrap_or(h3_listen_port))?,
         }
 
         #[cfg(feature = "prometheus-metrics")]
@@ -690,9 +753,19 @@ struct ServerSetup<'a> {
     listen_addrs: Vec<IpAddr>,
     server: &'a mut Server<SwapHandler>,
     tcp_request_timeout: Duration,
-    #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+    #[cfg(any(
+        feature = "__tls",
+        feature = "__https",
+        feature = "__quic",
+        feature = "__h3"
+    ))]
     cert_resolver: Option<Arc<dyn ResolvesServerCert>>,
-    #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
+    #[cfg(any(
+        feature = "__tls",
+        feature = "__https",
+        feature = "__quic",
+        feature = "__h3"
+    ))]
     ssl_keylog_enabled: bool,
 }
 
@@ -853,6 +926,45 @@ impl ServerSetup<'_> {
                     Arc::new(tls_config),
                 )
                 .map_err(|err| format!("failed to register QUIC listener: {err}"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "__h3")]
+    fn h3(&mut self, port: u16) -> Result<(), String> {
+        let Some(cert_resolver) = &self.cert_resolver else {
+            return Ok(());
+        };
+
+        for addr in &self.listen_addrs {
+            info!("Binding HTTP/3 to {addr:?}");
+
+            let h3_socket = build_udp_socket(*addr, port).map_err(|err| {
+                format!("failed to bind to HTTP/3 socket address {addr:?}: {err}")
+            })?;
+
+            info!(
+                "listening for HTTP/3 on {:?}",
+                h3_socket
+                    .local_addr()
+                    .map_err(|err| format!("failed to lookup local address: {err}"))?
+            );
+
+            let mut tls_config = default_tls_server_config(b"h3", cert_resolver.clone())
+                .map_err(|err| format!("failed to build default TLS config: {err}"))?;
+            if self.ssl_keylog_enabled {
+                warn!("DoH3 SSL_KEYLOG_FILE support enabled");
+                tls_config.key_log = Arc::new(KeyLogFile::new());
+            }
+
+            self.server
+                .register_h3_listener_with_tls_config(
+                    h3_socket,
+                    self.tcp_request_timeout,
+                    Arc::new(tls_config),
+                    None,
+                )
+                .map_err(|err| format!("failed to register HTTP/3 listener: {err}"))?;
         }
         Ok(())
     }

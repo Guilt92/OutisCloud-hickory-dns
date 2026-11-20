@@ -612,3 +612,15 @@ fn file_store_zone_path() {
         Err(e) => panic!("expected successful parse: {e:?}"),
     }
 }
+
+#[test]
+#[cfg(feature = "__h3")]
+fn test_parse_h3() {
+    let config = Config::from_toml("").unwrap();
+    assert_eq!(config.h3_listen_port, 853);
+    assert!(!config.disable_h3);
+
+    let config = Config::from_toml("h3_listen_port = 8853\ndisable_h3 = true\n").unwrap();
+    assert_eq!(config.h3_listen_port, 8853);
+    assert!(config.disable_h3);
+}

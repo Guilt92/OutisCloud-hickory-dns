@@ -123,6 +123,10 @@ pub(crate) struct Config {
     #[cfg(feature = "__quic")]
     #[serde(default = "default_tls_port")]
     pub(crate) quic_listen_port: u16,
+    /// HTTP/3 port to listen on
+    #[cfg(feature = "__h3")]
+    #[serde(default = "default_tls_port")]
+    pub(crate) h3_listen_port: u16,
     /// Prometheus listen address
     #[cfg(feature = "prometheus-metrics")]
     pub(crate) prometheus_listen_addr: Option<SocketAddr>,
@@ -144,6 +148,10 @@ pub(crate) struct Config {
     #[cfg(feature = "__quic")]
     #[serde(default)]
     pub(crate) disable_quic: bool,
+    /// Disable HTTP/3 protocol
+    #[cfg(feature = "__h3")]
+    #[serde(default)]
+    pub(crate) disable_h3: bool,
     /// Disable Prometheus metrics
     #[cfg(feature = "prometheus-metrics")]
     #[serde(default)]
