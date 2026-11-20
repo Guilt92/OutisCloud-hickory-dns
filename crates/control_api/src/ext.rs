@@ -262,6 +262,126 @@ pub async fn list_revisions(
     }
 }
 
+/// Compare a stored revision with the zone's current records.
+pub async fn diff_revision(
+    path: web::Path<(String, String)>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let (zone_id, revision_id) = path.into_inner();
+    if let Err(response) = zone_access_at(&data.db, &zone_id, &tok, Level::Read).await {
+        return response;
+    }
+
+    let stored = match data
+        .db
+        .query_opt(
+            "SELECT records FROM zone_revisions \
+         WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
+            &[&revision_id, &zone_id],
+        )
+        .await
+    {
+        Ok(Some(row)) => match row.get::<_, serde_json::Value>(0).as_array().cloned() {
+            Some(records) => records,
+            None => {
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error":"invalid revision"}));
+            }
+        },
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error":"revision not found"}));
+        }
+        Err(e) => {
+            warn!("diff_revision lookup: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error":"database error"}));
+        }
+    };
+
+    let rows = match data
+        .db
+        .query(
+            "SELECT name, record_type, value, ttl, priority FROM records \
+         WHERE CAST(zone_id AS varchar) = $1 ORDER BY name, record_type, value",
+            &[&zone_id],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("diff_revision current records: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error":"database error"}));
+        }
+    };
+    let current: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.get::<_, String>(0),
+                "record_type": r.get::<_, String>(1),
+                "value": r.get::<_, String>(2),
+                "ttl": r.get::<_, i32>(3),
+                "priority": r.get::<_, Option<i32>>(4).unwrap_or(0),
+            })
+        })
+        .collect();
+
+    let key = |r: &serde_json::Value| -> String {
+        format!(
+            "{}|{}|{}",
+            r["name"].as_str().unwrap_or_default().to_ascii_lowercase(),
+            r["record_type"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_uppercase(),
+            r["value"].as_str().unwrap_or_default()
+        )
+    };
+    let detail = |r: &serde_json::Value| -> serde_json::Value {
+        serde_json::json!({
+            "name": r["name"],
+            "record_type": r["record_type"],
+            "value": r["value"],
+            "ttl": r["ttl"],
+            "priority": r["priority"],
+        })
+    };
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    for record in &current {
+        if !stored.iter().any(|r| key(r) == key(record)) {
+            added.push(detail(record));
+        }
+    }
+    for record in &stored {
+        if !current.iter().any(|r| key(r) == key(record)) {
+            removed.push(detail(record));
+        }
+    }
+    for record in &current {
+        if let Some(old) = stored.iter().find(|r| key(r) == key(record)) {
+            if old["ttl"] != record["ttl"] || old["priority"] != record["priority"] {
+                changed.push(serde_json::json!({"from": detail(old), "to": detail(record)}));
+            }
+        }
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "revision_id": revision_id,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    }))
+}
+
 pub async fn restore_revision(
     path: web::Path<(String, String)>,
     data: web::Data<AppState>,
@@ -1462,6 +1582,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/v1/zones/{id}/revisions/{rev}/restore",
             web::post().to(restore_revision),
+        )
+        .route(
+            "/api/v1/zones/{id}/revisions/{rev}/diff",
+            web::get().to(diff_revision),
         )
         .route("/api/v1/zones/{id}/verify", web::post().to(verify_zone))
         .route("/api/v1/auth/mfa/setup", web::post().to(mfa_setup))

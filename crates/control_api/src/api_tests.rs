@@ -6694,3 +6694,61 @@ async fn import_reports_all_row_errors() {
     );
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn revision_diff_reports_added_and_removed_records() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "diff.example").await;
+    let url = format!("/api/v1/zones/{zid}/records");
+    let (_, record, raw) = call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        j(serde_json::json!({"name":"old","record_type":"A","value":"192.0.2.1","ttl":60}))
+    );
+    assert!(!raw.contains("error"), "{raw}");
+    let rid = record["id"].as_str().unwrap().to_string();
+    let (_, revisions, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/revisions"),
+        Some(&t),
+        None
+    );
+    let rev = revisions[0]["id"].as_str().unwrap().to_string();
+
+    call!(app, delete, &format!("{url}/{rid}"), Some(&t), None);
+    call!(
+        app,
+        post,
+        &url,
+        Some(&t),
+        j(serde_json::json!({"name":"new","record_type":"A","value":"192.0.2.2","ttl":60}))
+    );
+    let (st, body, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/revisions/{rev}/diff"),
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        body["added"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "new")
+    );
+    assert!(
+        body["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "old")
+    );
+    env.cleanup().await;
+}

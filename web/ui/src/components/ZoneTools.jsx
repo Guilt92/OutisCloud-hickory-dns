@@ -15,6 +15,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
   const [msg, setMsg] = React.useState(null)
   const [busy, setBusy] = React.useState(false)
   const [verification, setVerification] = React.useState(null)
+  const [diff, setDiff] = React.useState(null)
   const owner = zone.access === 'admin' || zone.access === 'owner'
   const err = (e) => setMsg({ bad: true, text: e.response?.data?.details || e.response?.data?.error || e.message })
 
@@ -40,6 +41,12 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
     if (!(await askConfirm({ title: 'Restore this revision?', message: `Restore the zone to the state of ${new Date(r.created_at).toLocaleString()}? The current state is saved as a revision first.`, confirmLabel: 'Restore', danger: false }))) return
     setBusy(true); setMsg(null)
     try { await api.post(`/api/v1/zones/${zone.id}/revisions/${r.id}/restore`, {}); await load(); setMsg({ text: 'Restored and published' }); onChanged && onChanged() }
+    catch (e) { err(e) }
+    setBusy(false)
+  }
+  const showDiff = async (r) => {
+    setBusy(true); setMsg(null)
+    try { setDiff((await api.get(`/api/v1/zones/${zone.id}/revisions/${r.id}/diff`)).data) }
     catch (e) { err(e) }
     setBusy(false)
   }
@@ -92,9 +99,20 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
               {revisions.length === 0 && <tr><td colSpan="5" className="text-muted text-sm">No revisions yet</td></tr>}
               {revisions.map(r => (
                 <tr key={r.id}><td>{new Date(r.created_at).toLocaleString()}</td><td>{r.user || '-'}</td><td>{r.reason}</td><td>{r.record_count}</td>
-                  <td className="text-right">{owner && <button className="btn-sm btn-ghost" disabled={busy} onClick={() => restore(r)}>Restore</button>}</td></tr>
+                  <td className="text-right">
+                    <button className="btn-sm btn-ghost" disabled={busy} onClick={() => showDiff(r)}>Diff</button>
+                    {owner && <button className="btn-sm btn-ghost" disabled={busy} onClick={() => restore(r)}>Restore</button>}
+                  </td></tr>
               ))}
             </tbody></table>
+          {diff && (
+            <div className="rounded-[14px] border border-line p-3 text-xs font-mono space-y-1">
+              <div>Added: {diff.added.length} · Removed: {diff.removed.length} · Changed: {diff.changed.length}</div>
+              {diff.added.map((r, i) => <div key={`a${i}`} className="text-success-600">+ {r.name} {r.record_type} {r.value}</div>)}
+              {diff.removed.map((r, i) => <div key={`r${i}`} className="text-danger-500">- {r.name} {r.record_type} {r.value}</div>)}
+              {diff.changed.map((r, i) => <div key={`c${i}`}>~ {r.to.name} {r.to.record_type} {r.from.value} → {r.to.value}</div>)}
+            </div>
+          )}
           {!owner && <p className="text-sm text-muted">Only the zone owner can restore a revision.</p>}
         </div>
       )}

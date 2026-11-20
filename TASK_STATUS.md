@@ -80,7 +80,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | ZONE-004 — metadata/tags | **TODO** | No tags/metadata columns or server-side filters. |
 | ZONE-005 — ownership verification | **PARTIAL** | TXT challenge and pending gating work; NS-delegation proof, retry and rate limits are missing. |
 | ZONE-006 — suspend/hold/archive | **TODO** | Only active/pending/deleting statuses exist. |
-| ZONE-007 / BAK-01 — revisions/diff | **PARTIAL** | Record-only revisions, 50-revision cap, no diff endpoint or failure visibility. |
+| ZONE-007 / BAK-01 — revisions/diff | **PARTIAL** | Added `GET /api/v1/zones/{id}/revisions/{rev}/diff` with added/removed/changed records and a History-tab Diff action. `revision_diff_reports_added_and_removed_records` passes. Complete snapshots, configurable retention, and failure visibility remain. |
 | REC-001 — record metadata | **TODO** | No comments/tags columns. |
 | REC-002 — publication-atomic update/delete | **DONE** | `update_record` and `delete_record` now compensate on publish failure and return `saved:false`. New DB-backed tests `record_update_publish_failure_restores_old_value` and `record_delete_publish_failure_restores_record` pass. |
 | REC-003 — RRset/batch mutation | **TODO** | Depends on REC-002; only single-record routes exist. |

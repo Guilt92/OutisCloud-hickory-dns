@@ -24,6 +24,7 @@ const ALLOWED = [
   /^\/api\/v1\/zones\/\*\/records\/\*$/,
   /^\/api\/v1\/zones\/\*\/members\/\*$/,
   /^\/api\/v1\/zones\/\*\/revisions\/\*\/restore$/,
+  /^\/api\/v1\/zones\/\*\/revisions\/\*\/diff$/,
   /^\/api\/v1\/zones\/\*\/dnssec\/(enable|disable|rollover|rollover\/complete)$/,
   /^\/api\/v1\/zones\/\*\/dnssec\/\*$/,
   /^\/api\/v1\/agents\/\*\/(config|zones|bundle|ack|token\/rotate)$/,
