@@ -44,7 +44,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | CORE-002 — IXFR | **PARTIAL** | Server now returns explicit NOTIMP for IXFR instead of treating it as an empty query. Full delta generation remains future work. Client-side IXFR stream already existed. |
 | CORE-003 — NOTIFY | **PARTIAL** | Catalog now acknowledges NOTIFY with NOERROR for known zones and NOTAUTH otherwise; `test_notify` updated from failing-forward NotImp. Sender retry/backoff and secondary refresh remain open. |
 | CORE-005 — bounded concurrency | **TODO** | No admission semaphore yet. |
-| CORE-006 — PII-safe query logging | **TODO** | Full query names and client IPs still logged at INFO. |
+| CORE-006 — PII-safe query logging | **DONE** | Added `QueryLogConfig` (default redaction, `DNS_QUERY_LOG_LEVEL=off` disables), redacts client IP/port and query names in INFO/DEBUG paths, and added `query_log_redacts_pii_by_default`. `cargo test -p hickory-server --lib` passes 28/28. |
 | CORE-008 — conformance suite | **PARTIAL** | Existing dig/delv/conformance labs; malformed-packet and dual-stack additions not yet wired. |
 | CORE-010 — DoH3 binary wiring | **TODO** | Library support exists; binary has no H3 flags/config/tests, and README overstates support. |
 | CORE-013 — per-zone reload | **PARTIAL** | Atomic full catalog reload and unchanged-file skip exist; incremental per-zone path is open. |

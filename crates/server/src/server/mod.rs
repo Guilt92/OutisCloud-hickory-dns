@@ -94,6 +94,7 @@ impl<T: RequestHandler> Server<T> {
                 handler,
                 access,
                 shutdown: CancellationToken::new(),
+                query_log: QueryLogConfig::from_env(),
             }),
             join_set: JoinSet::new(),
         }
@@ -669,12 +670,47 @@ pub fn default_tls_server_config(
 }
 
 #[derive(Clone)]
+struct QueryLogConfig {
+    enabled: bool,
+    redact: bool,
+}
+
+impl QueryLogConfig {
+    fn from_env() -> Self {
+        let enabled = std::env::var("DNS_QUERY_LOG_LEVEL")
+            .map(|v| v.trim().to_ascii_lowercase() != "off")
+            .unwrap_or(true);
+        let redact = std::env::var("DNS_QUERY_LOG_REDACT")
+            .map(|v| v.trim().to_ascii_lowercase() != "false")
+            .unwrap_or(true);
+        Self { enabled, redact }
+    }
+}
+
+fn log_addr(addr: SocketAddr, redact: bool) -> String {
+    if redact {
+        "<redacted>".to_string()
+    } else {
+        addr.to_string()
+    }
+}
+
+fn log_query(name: &LowerQuery, redact: bool) -> String {
+    if redact {
+        "<redacted>".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct ReportingResponseHandler<R: ResponseHandler> {
     pub(super) request_header: Header,
     queries: Vec<LowerQuery>,
     pub(super) protocol: Protocol,
     src_addr: SocketAddr,
     handler: R,
+    query_log: QueryLogConfig,
     #[cfg(feature = "metrics")]
     metrics: ResponseHandlerMetrics,
 }
@@ -707,27 +743,28 @@ impl<R: ResponseHandler> ResponseHandler for ReportingResponseHandler<R> {
         let additional_count = response_info.additional_count();
         let response_code = response_info.response_code();
 
-        info!(
-            "request:{id} src:{proto}://{addr}#{port} {op} qflags:{qflags} response:{code:?} rr:{answers}/{authorities}/{additionals} rflags:{rflags}",
-            id = rid,
-            proto = self.protocol,
-            addr = self.src_addr.ip(),
-            port = self.src_addr.port(),
-            op = self.request_header.op_code(),
-            qflags = self.request_header.flags(),
-            code = response_code,
-            answers = answer_count,
-            authorities = authority_count,
-            additionals = additional_count,
-            rflags = rflags
-        );
-        for query in self.queries.iter() {
+        if self.query_log.enabled {
             info!(
-                "query:{query}:{qtype}:{class}",
-                query = query.name(),
-                qtype = query.query_type(),
-                class = query.query_class()
+                "request:{id} src:{proto}://{addr} {op} qflags:{qflags} response:{code:?} rr:{answers}/{authorities}/{additionals} rflags:{rflags}",
+                id = rid,
+                proto = self.protocol,
+                addr = log_addr(self.src_addr, self.query_log.redact),
+                op = self.request_header.op_code(),
+                qflags = self.request_header.flags(),
+                code = response_code,
+                answers = answer_count,
+                authorities = authority_count,
+                additionals = additional_count,
+                rflags = rflags
             );
+            for query in self.queries.iter() {
+                info!(
+                    "query:{query}:{qtype}:{class}",
+                    query = log_query(query, self.query_log.redact),
+                    qtype = query.query_type(),
+                    class = query.query_class()
+                );
+            }
         }
 
         #[cfg(feature = "metrics")]
@@ -741,6 +778,7 @@ struct ServerContext<T> {
     handler: T,
     access: AccessControl,
     shutdown: CancellationToken,
+    query_log: QueryLogConfig,
 }
 
 impl<T: RequestHandler> ServerContext<T> {
@@ -790,6 +828,7 @@ impl<T: RequestHandler> ServerContext<T> {
                 queries,
                 ResponseCode::Refused,
                 "request refused",
+                self.query_log.clone(),
                 response_handler,
             )
             .await;
@@ -816,6 +855,7 @@ impl<T: RequestHandler> ServerContext<T> {
                     queries,
                     ResponseCode::FormErr,
                     error,
+                    self.query_log.clone(),
                     response_handler,
                 )
                 .await;
@@ -848,11 +888,10 @@ impl<T: RequestHandler> ServerContext<T> {
             .is_some_and(|edns| edns.flags().dnssec_ok);
 
         debug!(
-            "request:{id} src:{proto}://{addr}#{port} type:{message_type} dnssec:{is_dnssec} {op} qflags:{qflags}",
+            "request:{id} src:{proto}://{addr} type:{message_type} dnssec:{is_dnssec} {op} qflags:{qflags}",
             id = id,
             proto = request.protocol(),
-            addr = request.src().ip(),
-            port = request.src().port(),
+            addr = log_addr(request.src(), self.query_log.redact),
             message_type = message_type,
             is_dnssec = is_dnssec,
             op = qop_code,
@@ -875,6 +914,7 @@ impl<T: RequestHandler> ServerContext<T> {
             protocol: request.protocol(),
             src_addr: request.src(),
             handler: response_handler,
+            query_log: self.query_log.clone(),
             #[cfg(feature = "metrics")]
             metrics: ResponseHandlerMetrics::default(),
         };
@@ -893,6 +933,7 @@ async fn error_response_handler(
     queries: Queries,
     response_code: ResponseCode,
     error: impl fmt::Display,
+    query_log: QueryLogConfig,
     response_handler: impl ResponseHandler,
 ) {
     // debug for more info on why the message parsing failed
@@ -915,6 +956,7 @@ async fn error_response_handler(
         protocol,
         src_addr,
         handler: response_handler,
+        query_log,
         #[cfg(feature = "metrics")]
         metrics: ResponseHandlerMetrics::default(),
     };
@@ -1203,5 +1245,28 @@ mod tests {
 
         // this should also return immediately since the task has been aborted
         reap_tasks(&mut joinset);
+    }
+}
+
+#[cfg(test)]
+mod query_log_tests {
+    use super::*;
+    use crate::proto::op::Query;
+    use crate::proto::rr::{Name, RecordType};
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
+    #[test]
+    fn query_log_redacts_pii_by_default() {
+        let addr = SocketAddr::from(([192, 0, 2, 1], 53_553));
+        assert_eq!(log_addr(addr, true), "<redacted>");
+        assert_eq!(log_addr(addr, false), addr.to_string());
+
+        let query = LowerQuery::from(Query::query(
+            Name::from_str("sensitive.example.").unwrap(),
+            RecordType::A,
+        ));
+        assert_eq!(log_query(&query, true), "<redacted>");
+        assert!(log_query(&query, false).contains("sensitive.example"));
     }
 }
