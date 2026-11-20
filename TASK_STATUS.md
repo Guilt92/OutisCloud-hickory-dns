@@ -50,6 +50,20 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | CORE-013 — per-zone reload | **PARTIAL** | Atomic full catalog reload and unchanged-file skip exist; incremental per-zone path is open. |
 
 
+### Phase 1 exit gate
+
+**Not closed.** CORE-004 and CORE-006 are DONE; CORE-001/002/003/005/008 are PARTIAL; CORE-007/009/010/011/012/013 remain TODO. Remaining genuine blockers:
+
+| Blocker | Impact | Required action | Safe alternative |
+|---|---|---|---|
+| `TSigResponseContext::sign` consumes the context and always anchors to the request MAC | Signed multi-message AXFR (CORE-001) cannot be correct | Change the TSIG API to chain the previous message MAC, then implement chunked AXFR with SOA bookends | Keep single-message AXFR over TCP; explicitly document the limit |
+| SQLite journal lacks transactional markers and a “records since serial” query (CORE-002) | Full IXFR deltas can be inconsistent | Add journal transactions and a delta query before generating IXFR | Current explicit NOTIMP is safe and standards-visible |
+| No peer/notify configuration or secondary refresh engine (CORE-003) | NOTIFY can only be acknowledged, not acted on | Add peer config and secondary zone state in Phase 4 | Keep ACK-only NOTIFY; no false refresh claim |
+| No H3 CLI/config/client harness (CORE-010) | DoH3 cannot be claimed in the binary | Wire H3 features, config, flags, and an integration test | Remove false README claims (done) |
+| No catalog identity accessor for partial swaps (CORE-013) | Per-zone incremental reload cannot be proven | Add per-zone fingerprinting and `upsert`/`remove`-only reload path | Keep atomic full-catalog reload with last-known-good |
+| No high-concurrency load harness (CORE-005) | Admission limits are implemented but not capacity-proven | Add a repeatable backpressure test | Keep conservative env-configurable defaults |
+
+
 ---
 
 ## 1. Executive summary
