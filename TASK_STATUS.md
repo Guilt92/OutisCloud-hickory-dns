@@ -77,11 +77,11 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | ZONE-001 — BIND import/export | **PARTIAL** | Added `dry_run` previews and per-row error arrays to JSON import; `import_dry_run_writes_nothing` and `import_reports_all_row_errors` pass. Full `control_api` suite passes 145/145 with PostgreSQL. BIND zone-file parsing and byte-size cap remain. |
 | ZONE-002 — multi-zone bulk import | **TODO** | No backend route; dead UI control was removed in Phase 0. |
 | ZONE-003 — zone templates | **TODO** | No template/clone API or schema. |
-| ZONE-004 — metadata/tags | **TODO** | No tags/metadata columns or server-side filters. |
+| ZONE-004 — metadata/tags | **PARTIAL** | Added `description`/`tags` columns to zones and runtime/migration DDL, `PUT /api/v1/zones/{id}/metadata`, validation/dedup, and audit. UI filters and server-side tag filtering remain. |
 | ZONE-005 — ownership verification | **PARTIAL** | Added bounded retry/backoff and shared per-user/per-zone rate limiting to verification; `domain_verification_gates_publication` passes. NS-delegation proof remains unimplemented. |
 | ZONE-006 — suspend/hold/archive | **TODO** | Only active/pending/deleting statuses exist. |
 | ZONE-007 / BAK-01 — revisions/diff | **PARTIAL** | Added `GET /api/v1/zones/{id}/revisions/{rev}/diff` with added/removed/changed records and a History-tab Diff action. `revision_diff_reports_added_and_removed_records` passes. Complete snapshots, configurable retention, and failure visibility remain. |
-| REC-001 — record metadata | **TODO** | No comments/tags columns. |
+| REC-001 — record metadata | **PARTIAL** | Added `comment`/`tags` columns to records and `PUT /api/v1/zones/{zone_id}/records/{record_id}/metadata` with validation and audit. UI editor integration remains. |
 | REC-002 — publication-atomic update/delete | **DONE** | `update_record` and `delete_record` now compensate on publish failure and return `saved:false`. New DB-backed tests `record_update_publish_failure_restores_old_value` and `record_delete_publish_failure_restores_record` pass. |
 | REC-003 — RRset/batch mutation | **TODO** | Depends on REC-002; only single-record routes exist. |
 | REC-004 — apex alias decision | **DONE** | `docs/RECORD_TYPES.md` explicitly rejects ANAME/ALIAS apex flattening and documents apex CNAME rejection as a product decision. |

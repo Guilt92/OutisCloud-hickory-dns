@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS zones (
     domain TEXT NOT NULL,
     owner UUID REFERENCES users(id) ON DELETE SET NULL,
     zone_type TEXT NOT NULL DEFAULT 'primary',
+    description TEXT NOT NULL DEFAULT '',
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE(domain)
@@ -46,6 +48,8 @@ CREATE TABLE IF NOT EXISTS records (
     value TEXT NOT NULL,
     ttl INT NOT NULL DEFAULT 3600,
     priority INT DEFAULT 10,
+    comment TEXT NOT NULL DEFAULT '',
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );

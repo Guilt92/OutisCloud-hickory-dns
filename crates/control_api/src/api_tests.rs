@@ -6752,3 +6752,78 @@ async fn revision_diff_reports_added_and_removed_records() {
     );
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn zone_and_record_metadata_roundtrip() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "metadata.example").await;
+
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/metadata"),
+        Some(&t),
+        j(
+            serde_json::json!({"description":"primary customer zone","tags":["prod","customer","prod"]})
+        )
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(
+        body["tags"].as_array().unwrap().len(),
+        2,
+        "tags are deduplicated"
+    );
+
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/metadata"),
+        Some(&t),
+        j(serde_json::json!({"tags":["bad tag!"]}))
+    );
+    assert_eq!(st, 400, "{raw}");
+
+    let (st, record, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.1","ttl":300}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let rid = record["id"].as_str().unwrap().to_string();
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/records/{rid}/metadata"),
+        Some(&t),
+        j(serde_json::json!({"comment":"web front door","tags":["web"]}))
+    );
+    assert_eq!(st, 200, "{raw}");
+
+    let description: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT description FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(description, "primary customer zone");
+    let comment: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT comment FROM records WHERE CAST(id AS varchar) = $1",
+            &[&rid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(comment, "web front door");
+    env.cleanup().await;
+}

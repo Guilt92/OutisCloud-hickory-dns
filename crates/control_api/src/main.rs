@@ -768,6 +768,8 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
             domain TEXT NOT NULL,
             owner UUID REFERENCES users(id) ON DELETE SET NULL,
             zone_type TEXT NOT NULL DEFAULT 'primary',
+            description TEXT NOT NULL DEFAULT '',
+            tags JSONB NOT NULL DEFAULT '[]'::jsonb,
             geodns_enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now(),
@@ -802,6 +804,8 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
             value TEXT NOT NULL,
             ttl INT NOT NULL DEFAULT 3600,
             priority INT DEFAULT 10,
+            comment TEXT NOT NULL DEFAULT '',
+            tags JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         );",
@@ -1054,6 +1058,10 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
     // zones: verification state; zone sharing; revision history
     client.batch_execute(
         "ALTER TABLE zones ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+         ALTER TABLE zones ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+         ALTER TABLE zones ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+         ALTER TABLE records ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT '';
+         ALTER TABLE records ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS verify_token TEXT;
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS ecs_enabled BOOLEAN NOT NULL DEFAULT false;
@@ -5945,6 +5953,144 @@ async fn delete_zone(
 }
 
 /// All HTTP routes of the control API (shared by the server and the tests).
+#[derive(Deserialize)]
+struct ZoneMetadataReq {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct RecordMetadataReq {
+    #[serde(default)]
+    comment: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+}
+
+fn validate_metadata_tags(tags: &[String]) -> Result<Vec<String>, String> {
+    if tags.len() > 20 {
+        return Err("at most 20 tags are allowed".to_string());
+    }
+    for tag in tags {
+        if tag.is_empty() || tag.len() > 32 {
+            return Err("tags must be 1-32 characters".to_string());
+        }
+        if !tag
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err("tags may only contain letters, digits, '-' and '_'".to_string());
+        }
+    }
+    let mut clean = tags.to_vec();
+    clean.sort();
+    clean.dedup();
+    Ok(clean)
+}
+
+async fn set_zone_metadata(
+    path: web::Path<String>,
+    body: web::Json<ZoneMetadataReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    let access = match zone_access(&data.db, &zone_id, &tok).await {
+        Ok(a) => a,
+        Err(response) => return response,
+    };
+    let description = body.description.clone().unwrap_or_default();
+    if description.len() > 500 {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "description too long"}));
+    }
+    let tags = match validate_metadata_tags(body.tags.as_deref().unwrap_or(&[])) {
+        Ok(tags) => {
+            serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect())
+        }
+        Err(error) => return HttpResponse::BadRequest().json(serde_json::json!({"error": error})),
+    };
+    if let Err(e) = data.db.execute(
+        "UPDATE zones SET description = $1, tags = $2, updated_at = now() WHERE CAST(id AS varchar) = $3",
+        &[&description, &tags, &zone_id],
+    ).await {
+        warn!("set_zone_metadata: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+    }
+    audit(
+        &data.db,
+        Some(&tok.claims.sub),
+        "set_zone_metadata",
+        "zone",
+        Some(zone_id.clone()),
+        &req,
+        serde_json::json!({"zone": access.domain}),
+    )
+    .await;
+    HttpResponse::Ok().json(serde_json::json!({"description": description, "tags": tags}))
+}
+
+async fn set_record_metadata(
+    path: web::Path<(String, String)>,
+    body: web::Json<RecordMetadataReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let (zone_id, record_id) = path.into_inner();
+    let access = match zone_access(&data.db, &zone_id, &tok).await {
+        Ok(a) => a,
+        Err(response) => return response,
+    };
+    let comment = body.comment.clone().unwrap_or_default();
+    if comment.len() > 500 {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "comment too long"}));
+    }
+    let tags = match validate_metadata_tags(body.tags.as_deref().unwrap_or(&[])) {
+        Ok(tags) => {
+            serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect())
+        }
+        Err(error) => return HttpResponse::BadRequest().json(serde_json::json!({"error": error})),
+    };
+    let result = data
+        .db
+        .execute(
+            "UPDATE records SET comment = $1, tags = $2, updated_at = now() \
+         WHERE CAST(id AS varchar) = $3 AND CAST(zone_id AS varchar) = $4",
+            &[&comment, &tags, &record_id, &zone_id],
+        )
+        .await;
+    match result {
+        Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "record not found"})),
+        Ok(_) => {
+            audit(
+                &data.db,
+                Some(&tok.claims.sub),
+                "set_record_metadata",
+                "record",
+                Some(record_id.clone()),
+                &req,
+                serde_json::json!({"zone": access.domain}),
+            )
+            .await;
+            HttpResponse::Ok().json(serde_json::json!({"comment": comment, "tags": tags}))
+        }
+        Err(e) => {
+            warn!("set_record_metadata: {}", full_error_string(&e));
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+        }
+    }
+}
+
 fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/health", web::get().to(health))
         .route("/ready", web::get().to(ready))
@@ -5988,6 +6134,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/v1/zones/{id}", web::delete().to(delete_zone))
         .route("/api/v1/zones/{id}/export", web::get().to(export_zone))
         .route("/api/v1/zones/{id}/import", web::post().to(import_zone))
+        .route(
+            "/api/v1/zones/{id}/metadata",
+            web::put().to(set_zone_metadata),
+        )
         // Records
         .route("/api/v1/zones/{id}/records", web::post().to(create_record))
         .route("/api/v1/zones/{id}/records", web::get().to(list_records))
@@ -5998,6 +6148,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/v1/zones/{zone_id}/records/{record_id}",
             web::delete().to(delete_record),
+        )
+        .route(
+            "/api/v1/zones/{zone_id}/records/{record_id}/metadata",
+            web::put().to(set_record_metadata),
         )
         // Agents
         .route("/api/v1/agents/register", web::post().to(agent_register))
@@ -6669,6 +6823,8 @@ mod schema_consistency_tests {
             value TEXT NOT NULL,
             ttl INT NOT NULL DEFAULT 3600,
             priority INT DEFAULT 10,
+            comment TEXT NOT NULL DEFAULT '',
+            tags JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         )";
@@ -6676,6 +6832,11 @@ mod schema_consistency_tests {
         assert!(
             create_sql.contains("record_type TEXT NOT NULL"),
             "Records table schema must define record_type column, not 'type'"
+        );
+        assert!(
+            create_sql.contains("comment TEXT NOT NULL DEFAULT ''")
+                && create_sql.contains("tags JSONB NOT NULL DEFAULT '[]'::jsonb"),
+            "Records table must carry comment/tags metadata"
         );
         assert!(
             !create_sql.contains("UNIQUE(zone_id, name, record_type)"),
