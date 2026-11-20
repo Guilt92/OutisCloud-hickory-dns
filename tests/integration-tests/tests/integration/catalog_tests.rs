@@ -431,7 +431,7 @@ async fn test_axfr_allow_all() {
     // temp request
     let question_bytes = question.to_bytes().unwrap();
     let question_req =
-        Request::from_bytes(question_bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Udp).unwrap();
+        Request::from_bytes(question_bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Tcp).unwrap();
 
     let response_handler = TestResponseHandler::new();
     catalog
@@ -554,7 +554,7 @@ async fn test_axfr_deny_all() {
     // temp request
     let question_bytes = question.to_bytes().unwrap();
     let question_req =
-        Request::from_bytes(question_bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Udp).unwrap();
+        Request::from_bytes(question_bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Tcp).unwrap();
 
     let response_handler = TestResponseHandler::new();
     catalog
@@ -634,7 +634,7 @@ async fn test_axfr_deny_unsigned() {
     // temp request
     let question_bytes = question.to_bytes().unwrap();
     let question_req =
-        Request::from_bytes(question_bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Udp).unwrap();
+        Request::from_bytes(question_bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Tcp).unwrap();
 
     let response_handler = TestResponseHandler::new();
     catalog
@@ -1206,4 +1206,63 @@ mod dnssec {
             assert!(nsec3param.salt().is_empty());
         }
     }
+}
+
+#[tokio::test]
+async fn test_axfr_over_udp_is_refused() {
+    subscribe();
+
+    let mut test = create_test();
+    test.set_axfr_policy(AxfrPolicy::AllowAll);
+    let origin = test.origin().clone();
+    let catalog = Catalog::new();
+    let catalog = {
+        let mut c = catalog;
+        c.upsert(origin.clone(), vec![Arc::new(test)]);
+        c
+    };
+
+    let mut query = Query::new();
+    query.set_name(origin.into());
+    query.set_query_type(RecordType::AXFR);
+    let mut question = Message::query();
+    question.add_query(query);
+    let bytes = question.to_bytes().unwrap();
+    let request = Request::from_bytes(bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Udp).unwrap();
+
+    let handler = TestResponseHandler::new();
+    catalog
+        .lookup(&request, None, TokioTime::current_time(), handler.clone())
+        .await;
+    assert_eq!(
+        handler.into_message().await.response_code(),
+        ResponseCode::Refused
+    );
+}
+
+#[tokio::test]
+async fn test_ixfr_is_explicitly_not_implemented() {
+    subscribe();
+
+    let test = create_test();
+    let origin = test.origin().clone();
+    let mut catalog = Catalog::new();
+    catalog.upsert(origin.clone(), vec![Arc::new(test)]);
+
+    let mut query = Query::new();
+    query.set_name(origin.into());
+    query.set_query_type(RecordType::IXFR);
+    let mut question = Message::query();
+    question.add_query(query);
+    let bytes = question.to_bytes().unwrap();
+    let request = Request::from_bytes(bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Tcp).unwrap();
+
+    let handler = TestResponseHandler::new();
+    catalog
+        .lookup(&request, None, TokioTime::current_time(), handler.clone())
+        .await;
+    assert_eq!(
+        handler.into_message().await.response_code(),
+        ResponseCode::NotImp
+    );
 }

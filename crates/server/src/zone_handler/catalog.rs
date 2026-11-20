@@ -140,6 +140,10 @@ impl RequestHandler for Catalog {
                     self.update(request, response_edns, now, response_handle)
                         .await
                 }
+                OpCode::Notify => {
+                    debug!("notify received: {}", request.id());
+                    self.notify(request, response_edns, response_handle).await
+                }
                 c => {
                     warn!("unimplemented op_code: {:?}", c);
                     send_error_response(
@@ -265,6 +269,30 @@ impl Catalog {
     /// * `request` - an update message
     /// * `response_edns` an optional `Edns` value for the response message
     /// * `response_handle` - sink for the response message to be sent
+    pub async fn notify<R: ResponseHandler>(
+        &self,
+        request: &Request,
+        response_edns: Option<&Edns>,
+        response_handle: R,
+    ) -> ResponseInfo {
+        let Ok(request_info) = request.request_info() else {
+            return send_error_response(
+                request,
+                ResponseCode::FormErr,
+                response_edns,
+                response_handle,
+            )
+            .await;
+        };
+        let code = if self.find(request_info.query.name()).is_some() {
+            ResponseCode::NoError
+        } else {
+            ResponseCode::NotAuth
+        };
+        send_error_response(request, code, response_edns, response_handle).await
+    }
+
+    /// Handles a dynamic DNS update request.
     pub async fn update<R: ResponseHandler>(
         &self,
         update: &Request,
@@ -494,7 +522,37 @@ impl Catalog {
             None
         };
 
-        let info = if request_info.query.query_type() == RecordType::AXFR {
+        let query_type = request_info.query.query_type();
+
+        // RFC 5936: AXFR is a stream-oriented transfer. Reject it on datagram
+        // transports instead of allowing truncated/partial transfers over UDP.
+        if query_type == RecordType::AXFR && request.protocol().is_datagram() {
+            warn!(
+                "AXFR requested over a datagram transport from {}",
+                request.src()
+            );
+            return send_error_response(
+                request,
+                ResponseCode::Refused,
+                response_edns,
+                response_handle,
+            )
+            .await;
+        }
+
+        // IXFR server support is not implemented. Return an explicit NOTIMP
+        // rather than silently treating the metatype as an empty record query.
+        if query_type == RecordType::IXFR {
+            return send_error_response(
+                request,
+                ResponseCode::NotImp,
+                response_edns,
+                response_handle,
+            )
+            .await;
+        }
+
+        let info = if query_type == RecordType::AXFR {
             zone_transfer(
                 request_info,
                 handlers,

@@ -35,6 +35,23 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 
 ---
 
+## 0.1 Phase 1 Implementation Reconciliation
+
+| Task | Status | Evidence |
+|---|---|---|
+| CORE-004 — DNS health/readiness | **DONE** | Added `bin/src/readiness.rs`; `/health` and `/ready` served from the DNS metrics listener; readiness refreshed on successful reload. `cargo test -p hickory-dns --test integration test_health_and_ready_endpoints` passes. |
+| CORE-001 — AXFR TCP-only/streaming | **PARTIAL** | `Catalog::lookup` now refuses AXFR on datagram transports with REFUSED. Existing catalog AXFR tests moved to TCP; new UDP-rejection test passes. Multi-message streaming and multi-message TSIG signing remain open (blocked by one-shot `TSigResponseContext`). |
+| CORE-002 — IXFR | **PARTIAL** | Server now returns explicit NOTIMP for IXFR instead of treating it as an empty query. Full delta generation remains future work. Client-side IXFR stream already existed. |
+| CORE-003 — NOTIFY | **PARTIAL** | Catalog now acknowledges NOTIFY with NOERROR for known zones and NOTAUTH otherwise; `test_notify` updated from failing-forward NotImp. Sender retry/backoff and secondary refresh remain open. |
+| CORE-005 — bounded concurrency | **TODO** | No admission semaphore yet. |
+| CORE-006 — PII-safe query logging | **TODO** | Full query names and client IPs still logged at INFO. |
+| CORE-008 — conformance suite | **PARTIAL** | Existing dig/delv/conformance labs; malformed-packet and dual-stack additions not yet wired. |
+| CORE-010 — DoH3 binary wiring | **TODO** | Library support exists; binary has no H3 flags/config/tests, and README overstates support. |
+| CORE-013 — per-zone reload | **PARTIAL** | Atomic full catalog reload and unchanged-file skip exist; incremental per-zone path is open. |
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.

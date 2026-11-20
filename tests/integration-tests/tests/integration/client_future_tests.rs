@@ -238,8 +238,8 @@ async fn test_notify() {
     let message = message.unwrap();
     assert_eq!(
         message.response_code(),
-        ResponseCode::NotImp,
-        "the catalog must support Notify now, update this"
+        ResponseCode::NoError,
+        "the catalog must acknowledge NOTIFY for a known zone"
     );
 }
 
