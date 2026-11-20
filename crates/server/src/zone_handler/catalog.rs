@@ -593,6 +593,13 @@ impl Catalog {
         info
     }
 
+    /// Copy the currently serving handlers into a new catalog so a reload can
+    /// replace only the zones whose files actually changed.
+    pub fn clone_handlers_from(&mut self, other: &Self) {
+        self.nsid_payload = other.nsid_payload.clone();
+        self.handlers = other.handlers.clone();
+    }
+
     /// Recursively searches the catalog for a matching zone handler
     pub fn find(&self, name: &LowerName) -> Option<&Vec<Arc<dyn ZoneHandler + 'static>>> {
         debug!("searching zone handlers for: {name}");

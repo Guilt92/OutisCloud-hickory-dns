@@ -57,8 +57,9 @@ use hickory_server::{
 };
 
 mod config;
-use config::Config;
+use config::{Config, ServerStoreConfig, ZoneConfig, ZoneTypeConfig};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::sync::Arc as SyncArc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
@@ -360,6 +361,7 @@ impl DnsServer {
         let exit_flag = SyncArc::new(AtomicBool::new(false));
 
         let mut catalog = Catalog::new();
+        let mut zone_fingerprints = HashMap::new();
         let mut nsid_final = nsid;
         if nsid_hostname {
             let hostname =
@@ -380,8 +382,14 @@ impl DnsServer {
             #[cfg(feature = "metrics")]
             config_metrics.increment_zone_metrics(&zone);
 
+            let fingerprint = zone_config_fingerprint(&zone, &zone_dir);
             match zone.load(&zone_dir).await {
-                Ok(handlers) => catalog.upsert(zone_name.into(), handlers),
+                Ok(handlers) => {
+                    catalog.upsert(zone_name.clone().into(), handlers);
+                    if let Some(fingerprint) = fingerprint {
+                        zone_fingerprints.insert(zone_name.to_string(), fingerprint);
+                    }
+                }
                 Err(err) => return Err(format!("could not load zone {zone_name}: {err}")),
             }
         }
@@ -418,6 +426,7 @@ impl DnsServer {
             );
         }
         let handler = SwapHandler::new(catalog, rate_limit);
+        handler.set_zone_fingerprints(zone_fingerprints);
         let mut server = Server::with_access(handler.clone(), deny_networks, allow_networks);
 
         let mut listen_addrs = listen_addrs_ipv4
@@ -696,6 +705,30 @@ fn listener_fingerprint(config: &mut Config) -> String {
     fp
 }
 
+/// Fingerprint the first file store of a configured zone.
+fn zone_config_fingerprint(zone: &ZoneConfig, zone_dir: &Path) -> Option<String> {
+    match &zone.zone_type_config {
+        ZoneTypeConfig::Primary(config) | ZoneTypeConfig::Secondary(config) => {
+            config.stores.iter().find_map(|store| match store {
+                ServerStoreConfig::File(file) => zone_fingerprint(&zone_dir.join(&file.zone_path)),
+                _ => None,
+            })
+        }
+        ZoneTypeConfig::External { .. } => None,
+    }
+}
+
+/// Fingerprint a zone file so a reload can skip zones whose content did not change.
+fn zone_fingerprint(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let nanos = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Some(format!("{}:{}", metadata.len(), nanos))
+}
+
 /// Re-read the configuration and swap in a freshly built catalog. Any problem
 /// keeps the catalog that is currently serving: a bad publication must never
 /// take the server down.
@@ -720,9 +753,13 @@ async fn reload_zones(
         return false;
     }
     let zone_dir = zonedir.clone().unwrap_or_else(|| config.directory.clone());
+    let serving = handler.current_catalog();
     let mut catalog = Catalog::new();
+    catalog.clone_handlers_from(&serving);
     catalog.set_nsid(nsid.clone());
     let count = config.zones.len();
+    let mut fingerprints = HashMap::new();
+    let mut reused = 0usize;
     for zone in config.zones {
         let zone_name = match zone.zone() {
             Ok(n) => n,
@@ -731,8 +768,26 @@ async fn reload_zones(
                 return false;
             }
         };
+        let key = zone_name.to_string();
+        let lower: hickory_server::proto::rr::LowerName = zone_name.clone().into();
+        let fingerprint = zone_config_fingerprint(&zone, &zone_dir);
+
+        if fingerprint.is_some()
+            && fingerprint == handler.zone_fingerprint(&key)
+            && serving.find(&lower).is_some()
+        {
+            fingerprints.insert(key, fingerprint.expect("fingerprint checked"));
+            reused += 1;
+            continue;
+        }
+
         match zone.load(&zone_dir).await {
-            Ok(handlers) => catalog.upsert(zone_name.into(), handlers),
+            Ok(handlers) => {
+                catalog.upsert(zone_name.into(), handlers);
+                if let Some(fingerprint) = fingerprint {
+                    fingerprints.insert(key, fingerprint);
+                }
+            }
             Err(e) => {
                 error!(
                     "reload aborted, zone {zone_name} failed to load (still serving the previous data): {e}"
@@ -742,8 +797,9 @@ async fn reload_zones(
         }
     }
     handler.swap(catalog);
+    handler.set_zone_fingerprints(fingerprints);
     info!(
-        "reloaded {count} zone(s) without restarting (reload #{})",
+        "reloaded {count} zone(s), {reused} unchanged (reload #{})",
         handler.reloads()
     );
     true
@@ -1164,5 +1220,22 @@ mod tests {
         let too_large = "x".repeat(u16::MAX as usize + 1);
         let err = parse_nsid_payload(&too_large).unwrap_err();
         assert_eq!(err.to_string(), "NSID EDNS payload too large");
+    }
+}
+
+#[cfg(test)]
+mod reload_fingerprint_tests {
+    use super::*;
+
+    #[test]
+    fn zone_fingerprint_changes_with_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.zone");
+        std::fs::write(&path, "$TTL 3600\nexample.com. IN SOA ns.example.com. hostmaster.example.com. 1 7200 3600 1209600 3600\n").unwrap();
+        let first = zone_fingerprint(&path).expect("fingerprint");
+        std::fs::write(&path, "$TTL 3600\nexample.com. IN SOA ns.example.com. hostmaster.example.com. 2 7200 3600 1209600 3600\n").unwrap();
+        let second = zone_fingerprint(&path).expect("fingerprint");
+        assert_ne!(first, second);
+        assert_eq!(zone_fingerprint(&dir.path().join("missing.zone")), None);
     }
 }

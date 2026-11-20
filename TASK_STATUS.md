@@ -47,7 +47,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | CORE-006 — PII-safe query logging | **DONE** | Added `QueryLogConfig` (default redaction, `DNS_QUERY_LOG_LEVEL=off` disables), redacts client IP/port and query names in INFO/DEBUG paths, and added `query_log_redacts_pii_by_default`. `cargo test -p hickory-server --lib` passes 28/28. |
 | CORE-008 — conformance suite | **PARTIAL** | Existing dig/delv/conformance labs; added `just dns-conformance-lab`, `just dnssec-lab`, and `just dns-labs` wrappers. Malformed-packet and dual-stack additions remain. |
 | CORE-010 — DoH3 binary wiring | **PARTIAL** | Added `h3-aws-lc-rs`/`h3-ring` bin features, `--h3-port`/`--disable-h3` CLI flags, `h3_listen_port`/`disable_h3` config fields, and `ServerSetup::h3()` using the `h3` ALPN. `cargo check -p hickory-dns --features h3-ring` and config test pass. A DoH3 client integration test is still pending. |
-| CORE-013 — per-zone reload | **PARTIAL** | Atomic full catalog reload and unchanged-file skip exist; incremental per-zone path is open. |
+| CORE-013 — per-zone reload | **PARTIAL** | Added per-zone file fingerprints, `SwapHandler::current_catalog`, `Catalog::clone_handlers_from`, and reload logic that reuses unchanged zone handlers while swapping atomically. `zone_fingerprint_changes_with_content` and `zone_file_reload` integration test pass. A load test proving no full-catalog re-render under write pressure is still pending. |
 
 
 ### Phase 1 exit gate

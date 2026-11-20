@@ -1,6 +1,7 @@
 //! A request handler whose catalog can be replaced while the server is
 //! running (hot reload), with optional per-source rate limiting.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,6 +56,7 @@ struct Shared {
     slipped: AtomicU64,
     slip: u32,
     reloads: AtomicU64,
+    zone_fingerprints: RwLock<HashMap<String, String>>,
 }
 
 /// Cheap to clone; all clones share the same catalog and limiter.
@@ -80,6 +82,7 @@ impl SwapHandler {
                 slipped: AtomicU64::new(0),
                 slip: limit.map(|l| l.slip).unwrap_or(0),
                 reloads: AtomicU64::new(0),
+                zone_fingerprints: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -108,6 +111,30 @@ impl SwapHandler {
     /// Number of successful hot reloads so far.
     pub fn reloads(&self) -> u64 {
         self.shared.reloads.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot of the currently serving catalog.
+    pub fn current_catalog(&self) -> Arc<Catalog> {
+        self.current()
+    }
+
+    /// Last successful fingerprint for a zone file.
+    pub fn zone_fingerprint(&self, zone: &str) -> Option<String> {
+        self.shared
+            .zone_fingerprints
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(zone)
+            .cloned()
+    }
+
+    /// Record fingerprints for all successfully loaded zones.
+    pub fn set_zone_fingerprints(&self, fingerprints: HashMap<String, String>) {
+        *self
+            .shared
+            .zone_fingerprints
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = fingerprints;
     }
 
     fn current(&self) -> Arc<Catalog> {
