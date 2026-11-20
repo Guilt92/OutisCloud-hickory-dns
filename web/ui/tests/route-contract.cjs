@@ -13,6 +13,7 @@ const ALLOWED = [
   /^\/api\/v1\/auth\/mfa\/(setup|enable|disable)$/,
   /^\/api\/v1\/users$/,
   /^\/api\/v1\/users\/\*$/,
+  /^\/api\/v1\/users\/\*\/password$/,
   /^\/api\/v1\/servers$/,
   /^\/api\/v1\/servers\/\*$/,
   /^\/api\/v1\/servers\/\*\/status$/,

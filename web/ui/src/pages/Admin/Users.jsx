@@ -4,7 +4,7 @@ import Modal from '../../components/Modal'
 import SearchInput from '../../components/SearchInput'
 import { useAuthStore } from '../../store'
 import { useServerPagination, PaginationControls } from '../../hooks/useAdvancedUI'
-import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Eye, Edit, ShieldCheck } from 'lucide-react'
+import { Users as UsersIcon, Plus, Edit2, Trash2, Shield, Eye, Edit, ShieldCheck, KeyRound } from 'lucide-react'
 import { PageHeader, useConfirm } from '../../components/ui'
 import Notifications from '../../components/Notifications'
 import { validators } from '../../hooks/useFormValidation'
@@ -13,12 +13,14 @@ const ROLES = [
   { value: 'admin', label: 'Admin', description: 'Full access to all features', icon: ShieldCheck },
   { value: 'editor', label: 'Editor', description: 'Can manage zones and records', icon: Edit },
   { value: 'viewer', label: 'Viewer', description: 'Read-only access', icon: Eye },
+  { value: 'user', label: 'User', description: 'Standard tenant user', icon: UsersIcon },
 ]
 
 const roleColors = {
   admin: 'bg-accent text-on-accent',
   editor: 'bg-surface-2 text-ink border border-line',
   viewer: 'bg-surface-2 text-muted border border-line',
+  user: 'bg-surface-2 text-ink border border-line',
 }
 
 export default function Users() {
@@ -32,6 +34,8 @@ export default function Users() {
   const [open, setOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(null)
   const [form, setForm] = React.useState({ username: '', email: '', role: 'viewer', password: '' })
+  const [resetting, setResetting] = React.useState(null)
+  const [resetPassword, setResetPassword] = React.useState('')
   React.useEffect(() => { const t = localStorage.getItem('token'); if (t) api.setToken(t) }, [])
 
   if (!user || user.role !== 'admin') {
@@ -62,6 +66,14 @@ export default function Users() {
       setOpen(false)
       load()
     } catch (e) { notify?.error('Save failed: ' + (e.response?.data?.error || e.message)) }
+  }
+
+  const submitReset = async () => {
+    if (resetPassword.length < 8) { notify?.warning('Password must be at least 8 characters'); return }
+    try {
+      await api.post(`/api/v1/users/${resetting.id}/password`, { new_password: resetPassword })
+      setResetting(null); setResetPassword(''); notify?.success('Password reset and sessions revoked')
+    } catch (e) { notify?.error('Reset failed: ' + (e.response?.data?.error || e.message)) }
   }
 
   const remove = async (id) => {
@@ -102,6 +114,7 @@ export default function Users() {
                         {u.role === 'admin' && <ShieldCheck className="w-3 h-3" />}
                         {u.role === 'editor' && <Edit className="w-3 h-3" />}
                         {u.role === 'viewer' && <Eye className="w-3 h-3" />}
+                        {u.role === 'user' && <UsersIcon className="w-3 h-3" />}
                         <span className="capitalize">{u.role || 'viewer'}</span>
                       </span>
                     </td>
@@ -109,6 +122,7 @@ export default function Users() {
                     <td>
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => openEdit(u)} aria-label={`Edit ${u.username}`} className="btn-icon"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => { setResetting(u); setResetPassword('') }} aria-label={`Reset password for ${u.username}`} className="btn-icon"><KeyRound className="w-4 h-4" /></button>
                         <button onClick={() => remove(u.id)} aria-label={`Delete ${u.username}`} className="btn-icon text-danger-500 hover:bg-danger-500/[0.07] hover:text-danger-500"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
@@ -151,6 +165,16 @@ export default function Users() {
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>Cancel</button>
             <button type="button" className="btn-primary" onClick={save}>{editing ? 'Update user' : 'Create user'}</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal title={`Reset password for ${resetting?.username || ''}`} open={!!resetting} onClose={() => setResetting(null)}>
+        <div className="space-y-4">
+          <div><label htmlFor="reset-password" className="form-label">New password</label><input id="reset-password" type="password" className="input" value={resetPassword} onChange={e => setResetPassword(e.target.value)} placeholder="Minimum 8 characters" /></div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-secondary" onClick={() => setResetting(null)}>Cancel</button>
+            <button type="button" className="btn-primary" onClick={submitReset}>Reset password</button>
           </div>
         </div>
       </Modal>

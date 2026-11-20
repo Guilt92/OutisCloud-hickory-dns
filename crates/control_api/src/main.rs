@@ -2014,6 +2014,66 @@ async fn admin_reset_password(
 }
 
 #[derive(Deserialize)]
+struct ResetUserPasswordReq {
+    new_password: String,
+}
+
+/// Admin-only per-user password reset addressed by path id.
+async fn reset_user_password(
+    path: web::Path<String>,
+    body: web::Json<ResetUserPasswordReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+        }
+    };
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
+    }
+    if body.new_password.len() < 8 {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "password_too_short",
+            "details": "Password must be at least 8 characters"
+        }));
+    }
+    let user_id = path.into_inner();
+    let salt = generate_salt();
+    let new_hash = match Argon2::default().hash_password(body.new_password.as_bytes(), &salt) {
+        Ok(hash) => hash.to_string(),
+        Err(e) => {
+            warn!("reset_user_password hash error: {}", e);
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "password hashing failed"}));
+        }
+    };
+    match replace_password_and_revoke_sessions(&data.db, &user_id, &new_hash).await {
+        Ok(true) => {
+            audit(
+                &data.db,
+                Some(&tok.claims.sub),
+                "reset_user_password",
+                "user",
+                Some(user_id.clone()),
+                &req,
+                serde_json::json!({}),
+            )
+            .await;
+            HttpResponse::Ok().json(serde_json::json!({"success": true}))
+        }
+        Ok(false) => HttpResponse::NotFound().json(serde_json::json!({"error": "user_not_found"})),
+        Err(e) => {
+            warn!("reset_user_password error: {}", e);
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "failed to reset password"}))
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct CreateUserReq {
     username: String,
     password: String,
@@ -6567,6 +6627,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/v1/users/{id}", web::get().to(get_user))
         .route("/api/v1/users/{id}", web::put().to(update_user))
         .route("/api/v1/users/{id}", web::delete().to(delete_user))
+        .route(
+            "/api/v1/users/{id}/password",
+            web::post().to(reset_user_password),
+        )
         // Servers
         .route("/api/v1/servers", web::get().to(list_servers))
         .route("/api/v1/servers", web::post().to(create_server))

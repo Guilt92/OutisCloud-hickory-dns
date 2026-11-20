@@ -7110,3 +7110,42 @@ async fn openapi_spec_is_published() {
     assert!(body["components"]["schemas"].is_object());
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn per_user_password_reset_revokes_sessions() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let uid = add_user(&env.state, "resetpath", "old-password-1", "user").await;
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"resetpath","password":"old-password-1"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    let old_access = body["token"].as_str().unwrap().to_string();
+
+    let admin = env.token(&env.admin, "admin");
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/users/{uid}/password"),
+        Some(&admin),
+        j(serde_json::json!({"new_password":"new-password-1"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(
+        call!(app, get, "/api/v1/auth/me", Some(&old_access), None).0,
+        401
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/auth/login",
+        None::<&str>,
+        j(serde_json::json!({"username":"resetpath","password":"new-password-1"}))
+    );
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
