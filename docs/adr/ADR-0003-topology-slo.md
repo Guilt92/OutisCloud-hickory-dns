@@ -1,6 +1,6 @@
 # ADR-0003: Topology, SLO, RPO and RTO
 
-- **Status:** Proposed — blocked by ADR-0001/ADR-0002 implementation evidence
+- **Status:** Accepted as planning target; targets unverified
 - **Date:** 2026-11-19
 - **Roadmap task:** ARCH-008
 

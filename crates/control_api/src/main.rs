@@ -1135,7 +1135,11 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
          CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
          CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
          CREATE INDEX IF NOT EXISTS idx_agents_enabled ON agents(enabled);
-         CREATE INDEX IF NOT EXISTS idx_nameservers_enabled ON nameservers(enabled);",
+         CREATE INDEX IF NOT EXISTS idx_nameservers_enabled ON nameservers(enabled);
+         CREATE INDEX IF NOT EXISTS idx_nameservers_sort_order ON nameservers(sort_order);
+         CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+         CREATE INDEX IF NOT EXISTS idx_agent_configs_agent_id ON agent_configs(agent_id);
+         CREATE INDEX IF NOT EXISTS idx_agent_configs_active ON agent_configs(agent_id, is_active);",
         )
         .await
     {

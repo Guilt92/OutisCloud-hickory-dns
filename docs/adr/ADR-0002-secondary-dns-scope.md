@@ -1,6 +1,6 @@
 # ADR-0002: Secondary DNS and transfer scope
 
-- **Status:** Proposed — requires product owner approval
+- **Status:** Accepted
 - **Date:** 2026-11-19
 - **Roadmap task:** ARCH-006
 

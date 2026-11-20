@@ -6457,8 +6457,9 @@ async fn migration_files_and_runtime_ddl_have_no_schema_drift() {
 
         let legacy = admin
             .query_one(
-                "SELECT count(*) FROM pg_constraint
-                 WHERE connamespace = $1::regnamespace AND conname = 'records_zone_id_name_record_type_key'",
+                "SELECT count(*) FROM pg_constraint c
+                 JOIN pg_namespace n ON n.oid = c.connamespace
+                 WHERE n.nspname = $1 AND c.conname = 'records_zone_id_name_record_type_key'",
                 &[&schema],
             )
             .await
@@ -6494,7 +6495,10 @@ async fn migration_files_and_runtime_ddl_have_no_schema_drift() {
         )
         .await
         .expect_err("exact duplicate must be rejected");
-    assert!(full_error_string(&duplicate).contains("23505"));
+    assert!(
+        full_error_string(&duplicate).contains("uq_records_rrset_value"),
+        "duplicate RRset value must be rejected by the unique index"
+    );
 
     pool.execute(
         "INSERT INTO records (id, zone_id, name, record_type, value)
