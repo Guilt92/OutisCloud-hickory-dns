@@ -203,6 +203,12 @@ pub trait ZoneHandler: Send + Sync {
     #[cfg(feature = "__dnssec")]
     fn nx_proof_kind(&self) -> Option<&NxProofKind>;
 
+    /// Returns journal records newer than `last_serial` for an IXFR response.
+    /// `None` means this handler does not support incremental transfers.
+    async fn ixfr_deltas(&self, _last_serial: u32) -> Option<Result<Vec<Record>, LookupError>> {
+        None
+    }
+
     /// Returns the zone handler metrics label.
     #[cfg(feature = "metrics")]
     fn metrics_label(&self) -> &'static str;

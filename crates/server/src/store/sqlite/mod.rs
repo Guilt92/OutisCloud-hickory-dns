@@ -243,23 +243,18 @@ impl<P: RuntimeProvider + Send + Sync> SqliteZoneHandler<P> {
 
             info!("persisting zone to journal at SOA.serial: {serial}");
 
-            // TODO: THIS NEEDS TO BE IN A TRANSACTION!!!
-            journal.insert_record(
-                serial,
-                &Record::update0(Name::new(), 0, RecordType::AXFR).into_record_of_rdata(),
-            )?;
-
+            let mut records =
+                vec![Record::update0(Name::new(), 0, RecordType::AXFR).into_record_of_rdata()];
             for rr_set in self.in_memory.records().await.values() {
                 // TODO: should we preserve rr_sets or not?
                 for record in rr_set.records_without_rrsigs() {
-                    journal.insert_record(serial, record)?;
+                    records.push(record.clone());
 
                     #[cfg(feature = "metrics")]
                     self.metrics.zone_records.increment(1);
                 }
             }
-
-            // TODO: COMMIT THE TRANSACTION!!!
+            journal.insert_records(serial, &records)?;
         }
 
         Ok(())
@@ -1015,6 +1010,24 @@ impl<P: RuntimeProvider + Send + Sync> ZoneHandler for SqliteZoneHandler<P> {
     /// Return a policy that can be used to determine how AXFR requests should be handled.
     fn axfr_policy(&self) -> AxfrPolicy {
         self.axfr_policy
+    }
+
+    /// Return journal deltas since `last_serial` for IXFR responses.
+    async fn ixfr_deltas(
+        &self,
+        last_serial: u32,
+    ) -> Option<Result<Vec<crate::proto::rr::Record>, crate::zone_handler::LookupError>> {
+        let journal = self.journal.lock().await;
+        let journal = journal.as_ref()?;
+        Some(match journal.records_since(last_serial) {
+            Ok(records) => Ok(records),
+            Err(error) => {
+                error!(%error, "failed to read IXFR deltas from journal");
+                Err(crate::zone_handler::LookupError::from(
+                    crate::proto::op::ResponseCode::ServFail,
+                ))
+            }
+        })
     }
 
     /// Takes the UpdateMessage, extracts the Records, and applies the changes to the record set.

@@ -19,7 +19,6 @@ use crate::{
     dnssec::NxProofKind,
     proto::{
         dnssec::{DnssecSummary, rdata::DNSSECRData},
-        rr::RData,
         serialize::binary::BinEncoder,
     },
     zone_handler::Nsec3QueryInfo,
@@ -29,7 +28,7 @@ use crate::{
     proto::{
         op::{Edns, Header, LowerQuery, Message, MessageType, OpCode, ResponseCode},
         rr::{
-            LowerName, RecordSet, RecordType,
+            LowerName, RData, RecordSet, RecordType,
             rdata::opt::{ClientSubnet, EdnsCode, EdnsOption, NSIDPayload},
         },
     },
@@ -269,6 +268,125 @@ impl Catalog {
     /// * `request` - an update message
     /// * `response_edns` an optional `Edns` value for the response message
     /// * `response_handle` - sink for the response message to be sent
+    /// Incremental transfer: answer with the new SOA, journal deltas and the
+    /// closing SOA. Unsigned only; TSIG-signed IXFR is explicitly refused.
+    pub async fn ixfr<R: ResponseHandler>(
+        &self,
+        request: &Request,
+        response_edns: Option<&Edns>,
+        now: u64,
+        mut response_handle: R,
+    ) -> ResponseInfo {
+        let Some(old_soa) =
+            request
+                .message
+                .authorities()
+                .iter()
+                .find_map(|record| match record.data() {
+                    RData::SOA(soa) => Some(soa.clone()),
+                    _ => None,
+                })
+        else {
+            return send_error_response(
+                request,
+                ResponseCode::FormErr,
+                response_edns,
+                response_handle,
+            )
+            .await;
+        };
+
+        let lookup_options = LookupOptions::from_edns(request.edns());
+        let request_info = match request.request_info() {
+            Ok(info) => info,
+            Err(_) => {
+                return send_error_response(
+                    request,
+                    ResponseCode::FormErr,
+                    response_edns,
+                    response_handle,
+                )
+                .await;
+            }
+        };
+
+        const IXFR_CHUNK_RECORDS: usize = 32;
+        for handler in self.find(request_info.query.name()).into_iter().flatten() {
+            let Some((result, signer)) = handler.zone_transfer(request, lookup_options, now).await
+            else {
+                continue;
+            };
+            if signer.is_some() {
+                return send_error_response(
+                    request,
+                    ResponseCode::NotImp,
+                    response_edns,
+                    response_handle,
+                )
+                .await;
+            }
+            let transfer = match result {
+                Ok(transfer) => transfer,
+                Err(error) => {
+                    let code = if error.is_nx_domain() {
+                        ResponseCode::NXDomain
+                    } else {
+                        ResponseCode::Refused
+                    };
+                    return send_error_response(request, code, response_edns, response_handle)
+                        .await;
+                }
+            };
+            let deltas = match handler.ixfr_deltas(old_soa.serial()).await {
+                Some(Ok(deltas)) => deltas,
+                Some(Err(_)) => {
+                    return send_error_response(
+                        request,
+                        ResponseCode::ServFail,
+                        response_edns,
+                        response_handle,
+                    )
+                    .await;
+                }
+                None => continue,
+            };
+
+            let mut records = Vec::with_capacity(deltas.len() + 2);
+            records.extend(transfer.start_soa.iter());
+            records.extend(deltas.iter());
+            records.extend(transfer.end_soa.iter());
+
+            let header = Header::response_from_request(request.header());
+            let mut last_info = None;
+            for chunk in records.chunks(IXFR_CHUNK_RECORDS) {
+                let response = MessageResponseBuilder::new(request.raw_queries(), response_edns)
+                    .build(
+                        header.clone(),
+                        chunk.iter().copied(),
+                        iter::empty(),
+                        iter::empty(),
+                        iter::empty(),
+                    );
+                match response_handle.send_response(response).await {
+                    Ok(info) => last_info = Some(info),
+                    Err(error) => {
+                        error!(%error, "error sending IXFR response");
+                        return ResponseInfo::serve_failed(request);
+                    }
+                }
+            }
+            return last_info.unwrap_or_else(|| ResponseInfo::serve_failed(request));
+        }
+
+        send_error_response(
+            request,
+            ResponseCode::NotImp,
+            response_edns,
+            response_handle,
+        )
+        .await
+    }
+
     pub async fn notify<R: ResponseHandler>(
         &self,
         request: &Request,
@@ -540,16 +658,10 @@ impl Catalog {
             .await;
         }
 
-        // IXFR server support is not implemented. Return an explicit NOTIMP
-        // rather than silently treating the metatype as an empty record query.
         if query_type == RecordType::IXFR {
-            return send_error_response(
-                request,
-                ResponseCode::NotImp,
-                response_edns,
-                response_handle,
-            )
-            .await;
+            return self
+                .ixfr(request, response_edns, now, response_handle)
+                .await;
         }
 
         let info = if query_type == RecordType::AXFR {

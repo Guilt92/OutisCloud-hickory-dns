@@ -1241,7 +1241,7 @@ async fn test_axfr_over_udp_is_refused() {
 }
 
 #[tokio::test]
-async fn test_ixfr_is_explicitly_not_implemented() {
+async fn test_ixfr_without_journal_is_not_implemented() {
     subscribe();
 
     let test = create_test();
@@ -1250,10 +1250,27 @@ async fn test_ixfr_is_explicitly_not_implemented() {
     catalog.upsert(origin.clone(), vec![Arc::new(test)]);
 
     let mut query = Query::new();
-    query.set_name(origin.into());
+    query.set_name(origin.clone().into());
     query.set_query_type(RecordType::IXFR);
     let mut question = Message::query();
     question.add_query(query);
+    question.add_authority(
+        Record::from_rdata(
+            origin.into(),
+            0,
+            RData::SOA(SOA::new(
+                Name::parse("ns.test.com.", None).unwrap(),
+                Name::parse("hostmaster.test.com.", None).unwrap(),
+                1,
+                7200,
+                3600,
+                1209600,
+                3600,
+            )),
+        )
+        .set_dns_class(DNSClass::IN)
+        .clone(),
+    );
     let bytes = question.to_bytes().unwrap();
     let request = Request::from_bytes(bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Tcp).unwrap();
 

@@ -112,18 +112,45 @@ impl Journal {
         Ok(())
     }
 
-    /// Inserts a set of records into the Journal, a convenience method for insert_record
+    /// Inserts a set of records into the Journal atomically.
     pub fn insert_records(
         &self,
         soa_serial: u32,
         records: &[Record],
     ) -> Result<(), PersistenceError> {
-        // TODO: NEED TRANSACTION HERE
-        for record in records {
-            self.insert_record(soa_serial, record)?;
+        let mut conn = self.conn.lock().expect("conn poisoned");
+        let tx = conn.transaction()?;
+        let soa_serial = i64::from(soa_serial);
+        let timestamp = time::OffsetDateTime::now_utc();
+        let client_id: i64 = 0;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO records (client_id, soa_serial, timestamp, record)
+                 VALUES ($1, $2, $3, $4)",
+            )?;
+            for record in records {
+                let mut bytes = Vec::with_capacity(512);
+                record.emit(&mut BinEncoder::new(&mut bytes))?;
+                stmt.execute([&client_id as &dyn ToSql, &soa_serial, &timestamp, &bytes])?;
+            }
         }
-
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Returns journal records written after `soa_serial`, in insertion order.
+    /// These are the add/delete deltas needed to build an IXFR response.
+    pub fn records_since(&self, soa_serial: u32) -> Result<Vec<Record>, PersistenceError> {
+        let conn = self.conn.lock().expect("conn poisoned");
+        let mut stmt =
+            conn.prepare("SELECT record FROM records WHERE soa_serial > $1 ORDER BY _rowid_ ASC")?;
+        let rows = stmt.query_and_then([i64::from(soa_serial)], |row| {
+            let bytes: Vec<u8> = row.get(0)?;
+            let mut decoder = BinDecoder::new(&bytes);
+            Record::read(&mut decoder)
+                .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Selects a record from the given row_id.
@@ -361,4 +388,32 @@ pub enum PersistenceError {
     /// A request timed out
     #[error("request timed out")]
     Timeout,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::rr::{DNSClass, Name, RData, RecordType, rdata::A};
+    use std::net::Ipv4Addr;
+    use std::str::FromStr;
+
+    #[test]
+    fn records_since_returns_only_newer_serials() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut journal = Journal::new(conn).unwrap();
+        journal.schema_up().unwrap();
+        for (serial, ip) in [(1u32, [192, 0, 2, 1]), (2, [192, 0, 2, 2])] {
+            let record = Record::from_rdata(
+                Name::from_str("www.example.com.").unwrap(),
+                3600,
+                RData::A(A(Ipv4Addr::from(ip))),
+            )
+            .set_dns_class(DNSClass::IN)
+            .clone();
+            journal.insert_record(serial, &record).unwrap();
+        }
+        assert_eq!(journal.records_since(0).unwrap().len(), 2);
+        assert_eq!(journal.records_since(1).unwrap().len(), 1);
+        assert_eq!(journal.records_since(2).unwrap().len(), 0);
+    }
 }
