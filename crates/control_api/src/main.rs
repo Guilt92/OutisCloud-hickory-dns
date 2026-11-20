@@ -470,6 +470,15 @@ fn publish_failed(err: &str) -> HttpResponse {
     }))
 }
 
+fn publish_failed_rolled_back(err: &str) -> HttpResponse {
+    HttpResponse::InternalServerError().json(serde_json::json!({
+        "error": "publish_failed",
+        "details": format!("The change was rolled back because the zone could not be published; the previous zone data is still being served: {}", err),
+        "saved": false,
+        "published": false
+    }))
+}
+
 /// Does `candidate` overlap (equal, parent or child of) a zone owned by someone else?
 async fn zone_overlaps_other_owner(
     db: &Pool,
@@ -4987,7 +4996,19 @@ async fn update_record(
         Ok(_) => {
             if let Err(e) = publish(&data.dns_manager, db, Some(&access.domain)).await {
                 warn!("Failed to publish zone after record update: {}", e);
-                return publish_failed(&e);
+                if let Err(rollback) = db.execute(
+                    "UPDATE records SET name = $1, record_type = $2, value = $3, ttl = $4, priority = $5, updated_at = now() \
+                     WHERE CAST(id AS varchar) = $6 AND CAST(zone_id AS varchar) = $7 \
+                       AND name = $8 AND record_type = $9 AND value = $10 AND ttl = $11 AND priority = $12",
+                    &[
+                        &current.name, &current.rtype, &current.value, &current.ttl, &current.priority,
+                        &record_id, &zone_id,
+                        &merged.name, &merged.rtype, &merged.value, &merged.ttl, &merged.priority,
+                    ],
+                ).await {
+                    warn!("record update rollback failed for zone {zone_id} record {record_id}: {}", full_error_string(&rollback));
+                }
+                return publish_failed_rolled_back(&e);
             }
             ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "record updated").await;
             audit(db, Some(&tok.claims.sub), "update_record", "record", Some(record_id.clone()), &req,
@@ -5021,6 +5042,35 @@ async fn delete_record(
         Err(resp) => return resp,
     };
 
+    let original = match data
+        .db
+        .query_opt(
+            "SELECT name, record_type, value, ttl, priority FROM records \
+         WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
+            &[&record_id, &zone_id],
+        )
+        .await
+    {
+        Ok(Some(row)) => RecordRow {
+            name: row.get(0),
+            rtype: row.get(1),
+            value: row.get(2),
+            ttl: row.get(3),
+            priority: row.get(4),
+        },
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "record not found".to_string(),
+                details: None,
+            });
+        }
+        Err(e) => {
+            warn!("delete_record lookup error: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
     match data
         .db
         .execute(
@@ -5037,7 +5087,17 @@ async fn delete_record(
             info!("Deleted record: {} from zone: {}", record_id, zone_id);
             if let Err(e) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await {
                 warn!("Failed to publish zone after record deletion: {}", e);
-                return publish_failed(&e);
+                if let Err(rollback) = data.db.execute(
+                    "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) \
+                     VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
+                    &[
+                        &record_id, &zone_id, &original.name, &original.rtype, &original.value,
+                        &original.ttl, &original.priority,
+                    ],
+                ).await {
+                    warn!("record delete rollback failed for zone {zone_id} record {record_id}: {}", full_error_string(&rollback));
+                }
+                return publish_failed_rolled_back(&e);
             }
             ext::snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "record deleted").await;
             audit(

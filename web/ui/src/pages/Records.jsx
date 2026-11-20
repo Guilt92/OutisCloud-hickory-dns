@@ -9,8 +9,10 @@ import { useParams } from 'react-router-dom'
 import { useAuthStore } from '../store'
 import { useServerPagination, PaginationControls } from '../hooks/useAdvancedUI'
 import { FileText, Plus, Trash2, Download, RefreshCw, Edit3, X } from 'lucide-react'
+import { useConfirm } from '../components/ui'
 
 export default function Records(){
+  const askConfirm = useConfirm()
   const { id } = useParams()
   const zoneId = id
   const paged = useServerPagination(api, `/api/v1/zones/${zoneId}/records`, { pageSize: 25 })
@@ -91,16 +93,22 @@ export default function Records(){
     }
   }
   
-  const remove = async (rid) => { 
-    try { 
-      await api.delete(`/api/v1/zones/${zoneId}/records/${rid}`); 
-      if (editing && editing.id === rid) resetForm()
-      load() 
+  const remove = async (record) => {
+    const confirmed = await askConfirm({
+      title: 'Delete record?',
+      message: `"${record.name || '@'} ${record.record_type}" will be removed and the zone republished. This cannot be undone from this page.`,
+      confirmLabel: 'Delete record',
+    })
+    if (!confirmed) return
+    try {
+      await api.delete(`/api/v1/zones/${zoneId}/records/${record.id}`)
+      if (editing && editing.id === record.id) resetForm()
+      load()
       notify?.success('Record deleted')
-    } catch (e) { 
-      const errMsg = e.response?.data?.error || e.message || 'delete failed';
+    } catch (e) {
+      const errMsg = e.response?.data?.error || e.message || 'delete failed'
       notify?.error(errMsg)
-    } 
+    }
   }
   
   const onBulkComplete = ()=> {
@@ -270,7 +278,7 @@ export default function Records(){
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => remove(r.id)} aria-label={`Delete record ${r.name || '@'}`} className="btn-sm text-danger-500 hover:bg-danger-500/[0.07] rounded-[14px] transition-colors">
+                        <button onClick={() => remove(r)} aria-label={`Delete record ${r.name || '@'}`} className="btn-sm text-danger-500 hover:bg-danger-500/[0.07] rounded-[14px] transition-colors">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>}

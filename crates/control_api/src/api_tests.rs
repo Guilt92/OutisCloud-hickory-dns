@@ -6515,3 +6515,103 @@ async fn migration_files_and_runtime_ddl_have_no_schema_drift() {
             .unwrap();
     }
 }
+
+#[actix_web::test]
+async fn record_update_publish_failure_restores_old_value() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "rec-rollback.example").await;
+
+    let (st, rec, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.10","ttl":300}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let rid = rec["id"].as_str().unwrap().to_string();
+
+    std::fs::remove_dir_all(env.dir.path()).unwrap();
+    std::fs::write(env.dir.path(), b"not a directory").unwrap();
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/records/{rid}"),
+        Some(&t),
+        j(serde_json::json!({"value":"192.0.2.99"}))
+    );
+    assert_eq!(st, 500, "{raw}");
+    assert_eq!(body["error"], "publish_failed");
+    assert_eq!(body["saved"], false);
+
+    let value: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT value FROM records WHERE CAST(id AS varchar) = $1",
+            &[&rid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        value, "192.0.2.10",
+        "failed publication must restore the old value"
+    );
+
+    std::fs::remove_file(env.dir.path()).unwrap();
+    std::fs::create_dir_all(env.dir.path()).unwrap();
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn record_delete_publish_failure_restores_record() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "rec-del-rollback.example").await;
+
+    let (st, rec, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"del","record_type":"A","value":"192.0.2.20","ttl":300}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let rid = rec["id"].as_str().unwrap().to_string();
+
+    std::fs::remove_dir_all(env.dir.path()).unwrap();
+    std::fs::write(env.dir.path(), b"not a directory").unwrap();
+    let (st, body, raw) = call!(
+        app,
+        delete,
+        &format!("/api/v1/zones/{zid}/records/{rid}"),
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 500, "{raw}");
+    assert_eq!(body["error"], "publish_failed");
+    assert_eq!(body["saved"], false);
+
+    let count: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM records WHERE CAST(id AS varchar) = $1",
+            &[&rid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        count, 1,
+        "failed publication must restore the deleted record"
+    );
+
+    std::fs::remove_file(env.dir.path()).unwrap();
+    std::fs::create_dir_all(env.dir.path()).unwrap();
+    env.cleanup().await;
+}

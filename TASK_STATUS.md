@@ -70,6 +70,29 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 
 ---
 
+## 0.2 Phase 2 Reconciliation
+
+| Task | Status | Evidence |
+|---|---|---|
+| ZONE-001 — BIND import/export | **PARTIAL** | JSON import/export with transaction and rollback exists; BIND parsing, dry-run and per-row errors do not. |
+| ZONE-002 — multi-zone bulk import | **TODO** | No backend route; dead UI control was removed in Phase 0. |
+| ZONE-003 — zone templates | **TODO** | No template/clone API or schema. |
+| ZONE-004 — metadata/tags | **TODO** | No tags/metadata columns or server-side filters. |
+| ZONE-005 — ownership verification | **PARTIAL** | TXT challenge and pending gating work; NS-delegation proof, retry and rate limits are missing. |
+| ZONE-006 — suspend/hold/archive | **TODO** | Only active/pending/deleting statuses exist. |
+| ZONE-007 / BAK-01 — revisions/diff | **PARTIAL** | Record-only revisions, 50-revision cap, no diff endpoint or failure visibility. |
+| REC-001 — record metadata | **TODO** | No comments/tags columns. |
+| REC-002 — publication-atomic update/delete | **DONE** | `update_record` and `delete_record` now compensate on publish failure and return `saved:false`. New DB-backed tests `record_update_publish_failure_restores_old_value` and `record_delete_publish_failure_restores_record` pass. |
+| REC-003 — RRset/batch mutation | **TODO** | Depends on REC-002; only single-record routes exist. |
+| REC-004 — apex alias decision | **TODO** | Apex CNAME remains rejected; no explicit ANAME policy yet. |
+| REC-005 — confirmation/diff safeguards | **PARTIAL** | Added record-delete confirmation dialog; stale bulk routes in `web/ui/SETUP.md` corrected. Record diff/history and bulk-delete safeguards remain. |
+| ZONE-008 / REC-006 | **N/A** | These IDs appear only as feature-matrix IDs or phase-range shorthand, not as defined tasks. |
+
+Phase 2 exit gate is **not closed**; only REC-002 is complete. ZONE-002/003/004/006, REC-001/003/004 and full ZONE-001/005/007/REC-005 remain open.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.

@@ -102,10 +102,9 @@ npm run test:e2e
 | POST | `/api/v1/auth/login` | Login |
 | GET | `/api/v1/zones` | List zones |
 | POST | `/api/v1/zones` | Create zone |
-| POST | `/api/v1/zones/bulk` | Bulk import zones |
 | GET | `/api/v1/zones/:id/records` | List records |
 | POST | `/api/v1/zones/:id/records` | Create record |
-| POST | `/api/v1/zones/:id/records/bulk` | Bulk import records |
+| POST | `/api/v1/zones/:id/import` | Import records into one zone |
 | PUT | `/api/v1/zones/:zone_id/records/:record_id` | Update record |
 | DELETE | `/api/v1/zones/:zone_id/records/:record_id` | Delete record |
 | GET | `/api/v1/servers` | List servers |
