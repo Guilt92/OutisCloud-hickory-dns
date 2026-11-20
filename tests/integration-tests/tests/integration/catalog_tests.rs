@@ -1266,3 +1266,55 @@ async fn test_ixfr_is_explicitly_not_implemented() {
         ResponseCode::NotImp
     );
 }
+
+#[tokio::test]
+async fn test_axfr_large_zone_uses_multiple_messages() {
+    subscribe();
+
+    let mut handler = create_test();
+    handler.set_axfr_policy(AxfrPolicy::AllowAll);
+    for i in 0..80u8 {
+        handler.upsert_mut(
+            Record::from_rdata(
+                Name::from_str(&format!("host{i}.test.com.")).unwrap(),
+                3600,
+                RData::A(A([192, 0, 2, i].into())),
+            )
+            .set_dns_class(DNSClass::IN)
+            .clone(),
+            0,
+        );
+    }
+    let origin = handler.origin().clone();
+    let mut catalog = Catalog::new();
+    catalog.upsert(origin.clone(), vec![Arc::new(handler)]);
+
+    let mut query = Query::new();
+    query.set_name(origin.into());
+    query.set_query_type(RecordType::AXFR);
+    let mut question = Message::query();
+    question.add_query(query);
+    let bytes = question.to_bytes().unwrap();
+    let request = Request::from_bytes(bytes, ([127, 0, 0, 1], 5553).into(), Protocol::Tcp).unwrap();
+
+    let responses = MultiResponseHandler::new();
+    catalog
+        .lookup(&request, None, TokioTime::current_time(), responses.clone())
+        .await;
+    let messages = responses.into_messages();
+    assert!(messages.len() > 1, "large AXFR must be split into messages");
+    assert!(
+        messages[0]
+            .answers()
+            .iter()
+            .any(|r| r.record_type() == RecordType::SOA)
+    );
+    assert!(
+        messages
+            .last()
+            .unwrap()
+            .answers()
+            .iter()
+            .any(|r| r.record_type() == RecordType::SOA)
+    );
+}

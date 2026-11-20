@@ -132,6 +132,51 @@ impl ResponseHandler for TestResponseHandler {
     }
 }
 
+/// Captures every response message, for multi-message AXFR assertions.
+#[derive(Clone, Default)]
+pub struct MultiResponseHandler {
+    messages: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl MultiResponseHandler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn into_messages(self) -> Vec<Message> {
+        self.messages
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|bytes| {
+                let mut decoder = BinDecoder::new(bytes);
+                Message::read(&mut decoder).expect("decode captured message")
+            })
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ResponseHandler for MultiResponseHandler {
+    async fn send_response<'a>(
+        &mut self,
+        response: MessageResponse<
+            '_,
+            'a,
+            impl Iterator<Item = &'a Record> + Send + 'a,
+            impl Iterator<Item = &'a Record> + Send + 'a,
+            impl Iterator<Item = &'a Record> + Send + 'a,
+            impl Iterator<Item = &'a Record> + Send + 'a,
+        >,
+    ) -> Result<ResponseInfo, NetError> {
+        let mut buf = Vec::with_capacity(512);
+        let mut encoder = BinEncoder::new(&mut buf);
+        let info = response.destructive_emit(&mut encoder)?;
+        self.messages.lock().unwrap().push(buf);
+        Ok(info)
+    }
+}
+
 impl DnsClientStream for TestClientStream {
     type Time = TokioTime;
 

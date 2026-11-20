@@ -819,29 +819,35 @@ async fn zone_transfer(
             }
         };
 
-        // TODO(issue #351): Send more than one message in response as needed.
-        #[cfg_attr(not(feature = "__dnssec"), expect(unused_mut))]
-        let mut message_response =
-            MessageResponseBuilder::new(request.raw_queries(), response_edns).build(
-                response_header,
-                zone_transfer
-                    .iter()
-                    .flat_map(|zone_transfer| zone_transfer.iter()),
-                iter::empty(),
-                iter::empty(),
-                iter::empty(),
-            );
+        const AXFR_CHUNK_RECORDS: usize = 32;
+        let records = zone_transfer
+            .iter()
+            .flat_map(|zone_transfer| zone_transfer.iter())
+            .collect::<Vec<_>>();
+
+        // TSIG multi-message signing needs chained MACs; the current signer API
+        // is single-use and anchored to the request MAC. Refuse instead of
+        // emitting invalid signatures for large signed zones.
+        #[cfg(feature = "__dnssec")]
+        if signer.is_some() && records.len() > AXFR_CHUNK_RECORDS {
+            error!("signed AXFR requires more than one message; TSIG chaining is not available");
+            return send_error_response(
+                request,
+                ResponseCode::ServFail,
+                response_edns,
+                response_handle,
+            )
+            .await;
+        }
 
         #[cfg(feature = "__dnssec")]
-        if let Some(signer) = signer {
+        let signature = if let Some(signer) = signer {
             let mut tbs_response_buf = Vec::with_capacity(512);
             let mut encoder = BinEncoder::new(&mut tbs_response_buf);
             let tbs_response = MessageResponseBuilder::new(request.raw_queries(), response_edns)
                 .build(
-                    response_header,
-                    zone_transfer
-                        .iter()
-                        .flat_map(|zone_transfer| zone_transfer.iter()),
+                    response_header.clone(),
+                    records.iter().copied(),
                     iter::empty(),
                     iter::empty(),
                     iter::empty(),
@@ -857,7 +863,7 @@ async fn zone_transfer(
                 .await;
             }
             match signer.sign(&tbs_response_buf) {
-                Ok(signature) => message_response.set_signature(signature),
+                Ok(signature) => Some(signature),
                 Err(error) => {
                     error!(%error, "error signing response");
                     return send_error_response(
@@ -869,15 +875,36 @@ async fn zone_transfer(
                     .await;
                 }
             }
+        } else {
+            None
+        };
+
+        let mut last_info = None;
+        for records in records.chunks(AXFR_CHUNK_RECORDS) {
+            #[cfg_attr(not(feature = "__dnssec"), expect(unused_mut))]
+            let mut message_response =
+                MessageResponseBuilder::new(request.raw_queries(), response_edns).build(
+                    response_header.clone(),
+                    records.iter().copied(),
+                    iter::empty(),
+                    iter::empty(),
+                    iter::empty(),
+                );
+            #[cfg(feature = "__dnssec")]
+            if let Some(signature) = signature.clone() {
+                message_response.set_signature(signature);
+            }
+
+            match response_handle.send_response(message_response).await {
+                Err(error) => {
+                    error!(%error, "error sending response");
+                    return ResponseInfo::serve_failed(request);
+                }
+                Ok(response_info) => last_info = Some(response_info),
+            }
         }
 
-        match response_handle.send_response(message_response).await {
-            Err(error) => {
-                error!(%error, "error sending response");
-                return ResponseInfo::serve_failed(request);
-            }
-            Ok(response_info) => return response_info,
-        }
+        return last_info.unwrap_or_else(|| ResponseInfo::serve_failed(request));
     }
 
     error!("end of chained zone handler loop with all zone handlers not answering");
