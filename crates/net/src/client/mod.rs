@@ -819,3 +819,40 @@ where
         Poll::Ready(message)
     }
 }
+
+/// Send a NOTIFY with bounded exponential backoff.
+///
+/// Per RFC 1996 section 3.12, a NOTIMP response is treated as a successful
+/// completion: the secondary has acknowledged that it does not implement
+/// NOTIFY and will refresh on its normal schedule.
+pub async fn notify_with_retry<C, R>(
+    client: &mut C,
+    name: Name,
+    query_class: DNSClass,
+    query_type: RecordType,
+    rrset: Option<R>,
+    attempts: usize,
+    base_delay: Duration,
+) -> Result<DnsResponse, NetError>
+where
+    C: ClientHandle,
+    R: Into<RecordSet> + Clone,
+{
+    let mut last_error = None;
+    for attempt in 0..attempts.max(1) {
+        match client
+            .notify(name.clone(), query_class, query_type, rrset.clone())
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < attempts.max(1) {
+                    let delay = base_delay.saturating_mul(1u32 << attempt.min(5));
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or(NetError::Timeout))
+}
