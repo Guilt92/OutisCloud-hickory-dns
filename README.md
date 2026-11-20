@@ -17,6 +17,9 @@
 | [`web/ui`](web/ui/) | Admin and customer React console |
 | [`deploy`](deploy/) | DNS configuration and example monitoring assets |
 | [`docs/adr`](docs/adr/) | Architecture decision records |
+| [`docs/FORWARDING.md`](docs/FORWARDING.md) | Forwarding/recursion product boundary and cache policy |
+| [`docs/RECORD_TYPES.md`](docs/RECORD_TYPES.md) | Supported record types and validation policy |
+| [`docs/DYNAMIC_UPDATE.md`](docs/DYNAMIC_UPDATE.md) | RFC 2136 update policy and limitations |
 
 ## Upstream Hickory DNS crates
 

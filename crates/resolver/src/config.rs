@@ -657,7 +657,7 @@ fn default_attempts() -> usize {
 }
 
 fn default_cache_size() -> u64 {
-    32
+    512
 }
 
 fn default_num_concurrent_reqs() -> usize {
@@ -1117,5 +1117,15 @@ mod tests {
         assert_eq!(code.os_port_selection, json.os_port_selection);
         assert_eq!(code.case_randomization, json.case_randomization);
         assert_eq!(code.trust_anchor, json.trust_anchor);
+    }
+}
+
+#[cfg(test)]
+mod cache_default_tests {
+    use super::default_cache_size;
+
+    #[test]
+    fn default_cache_size_is_512() {
+        assert_eq!(default_cache_size(), 512);
     }
 }

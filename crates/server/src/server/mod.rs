@@ -21,7 +21,11 @@ use ipnet::IpNet;
 use rustls::{ServerConfig, server::ResolvesServerCert};
 #[cfg(feature = "__tls")]
 use tokio::time::timeout;
-use tokio::{net, sync::Semaphore, task::JoinSet};
+use tokio::{
+    net,
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::JoinSet,
+};
 #[cfg(feature = "__tls")]
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
@@ -479,9 +483,9 @@ async fn handle_udp(
             continue;
         }
 
-        let permit = match cx.udp_inflight.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
+        let permit = match cx.try_admit_udp() {
+            Some(permit) => permit,
+            None => {
                 warn!(%src_addr, "UDP concurrency limit reached; dropping query");
                 continue;
             }
@@ -540,9 +544,9 @@ async fn handle_tcp(
         }
 
         // and spawn to the io_loop
-        let permit = match cx.tcp_connections.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
+        let permit = match cx.try_admit_tcp() {
+            Some(permit) => permit,
+            None => {
                 warn!(%src_addr, "TCP connection limit reached; dropping connection");
                 continue;
             }
@@ -620,9 +624,9 @@ async fn handle_tls(
             continue;
         }
 
-        let permit = match cx.tcp_connections.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
+        let permit = match cx.try_admit_tcp() {
+            Some(permit) => permit,
+            None => {
                 warn!(%src_addr, "TLS connection limit reached; dropping connection");
                 continue;
             }
@@ -826,6 +830,18 @@ struct ServerContext<T> {
 }
 
 impl<T: RequestHandler> ServerContext<T> {
+    fn try_admit_udp(&self) -> Option<OwnedSemaphorePermit> {
+        self.udp_inflight.clone().try_acquire_owned().ok()
+    }
+
+    fn try_admit_tcp(&self) -> Option<OwnedSemaphorePermit> {
+        self.tcp_connections.clone().try_acquire_owned().ok()
+    }
+
+    fn try_admit_h2(&self) -> Option<OwnedSemaphorePermit> {
+        self.h2_streams.clone().try_acquire_owned().ok()
+    }
+
     async fn handle_raw_request(
         &self,
         message: SerialMessage,
@@ -1312,5 +1328,44 @@ mod query_log_tests {
         ));
         assert_eq!(log_query(&query, true), "<redacted>");
         assert!(log_query(&query, false).contains("sensitive.example"));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::zone_handler::Catalog;
+
+    fn context() -> ServerContext<Catalog> {
+        ServerContext {
+            handler: Catalog::default(),
+            access: AccessControl::default(),
+            shutdown: CancellationToken::new(),
+            query_log: QueryLogConfig {
+                enabled: false,
+                redact: true,
+            },
+            udp_inflight: Arc::new(Semaphore::new(1)),
+            tcp_connections: Arc::new(Semaphore::new(1)),
+            h2_streams: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    #[test]
+    fn admission_limits_reject_extra_work_until_permit_is_released() {
+        let cx = context();
+        let udp = cx.try_admit_udp().expect("first UDP admission");
+        assert!(cx.try_admit_udp().is_none());
+        drop(udp);
+        assert!(cx.try_admit_udp().is_some());
+
+        let tcp = cx.try_admit_tcp().expect("first TCP admission");
+        assert!(cx.try_admit_tcp().is_none());
+        drop(tcp);
+
+        let h2 = cx.try_admit_h2().expect("first H2 admission");
+        assert!(cx.try_admit_h2().is_none());
+        drop(h2);
+        assert!(cx.try_admit_h2().is_some());
     }
 }

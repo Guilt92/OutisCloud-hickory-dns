@@ -101,9 +101,9 @@ pub(super) async fn handle_h2_with_acceptor(
             continue;
         }
 
-        let permit = match cx.tcp_connections.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
+        let permit = match cx.try_admit_tcp() {
+            Some(permit) => permit,
+            None => {
                 warn!(%src_addr, "HTTPS connection limit reached; dropping connection");
                 continue;
             }
@@ -185,9 +185,9 @@ pub(crate) async fn h2_handler(
             },
         };
 
-        let permit = match cx.h2_streams.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
+        let permit = match cx.try_admit_h2() {
+            Some(permit) => permit,
+            None => {
                 warn!(%src_addr, "HTTP/2 stream limit reached; dropping stream");
                 continue;
             }
