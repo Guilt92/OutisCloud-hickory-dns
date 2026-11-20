@@ -1,6 +1,8 @@
 use maxminddb::Reader;
 use std::net::{IpAddr, Ipv6Addr};
 
+pub mod policy;
+
 pub struct GeoDB {
     reader: std::sync::Arc<Reader<Vec<u8>>>,
 }

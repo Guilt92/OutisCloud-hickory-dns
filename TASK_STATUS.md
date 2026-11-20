@@ -133,6 +133,27 @@ Phase 4 exit gate: **COMPLETED_WITH_BLOCKERS**. All locally implementable slices
 
 ---
 
+## 0.5 Phase 5 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| GEO-001 — weighted multi-target answers | **PARTIAL** | Deterministic weighted policy engine added in `crates/geodns/src/policy.rs` with tests; DNS handler/API/UI propagation remains. |
+| GEO-002 — pool/health-aware answers | **PARTIAL** | Engine accepts injected health state with fail-open/fail-closed; real monitors depend on HLTH-001. |
+| GEO-003 — City dataset | **PARTIAL** | Watcher, atomic checksum install, staleness gauge/status exist; licensed dataset and key are external. |
+| GEO-004 — traffic policy API/UI | **BLOCKED** | Needs policy/version tables and activation design; deterministic selection primitive now exists. |
+| GEO-005 — GeoRule API/UI hardening | **PARTIAL** | Added search, pagination, `X-Total-Count` to `GET /api/v1/georules`; `georule_list_supports_search_and_pagination` passes. UI search/precedence display remains. |
+| TRAF-001 — validated policy model | **DONE** | `policy` module with deterministic weighted ordering, health filtering, zero-weight exclusion, fail-open/closed, and 3 passing tests. |
+| TRAF-002 — proximity/latency steering | **BLOCKED** | Requires external location/latency data sources; simulation behind a flag remains future work. |
+| TRAF-003 — pool/region CRUD | **BLOCKED** | Depends on policy/version schema design. |
+| TRAF-004 — preview/activation/rollback | **BLOCKED** | Depends on TRAF-003; deterministic simulation primitive exists. |
+| HLTH-001 — active monitors | **BLOCKED** | Requires a new scheduler/probe subsystem and SSRF-safe network policy. Minimum unblock: monitor schema and probe execution design. |
+| HLTH-002 — history/alerts/flapping | **BLOCKED** | Depends on HLTH-001 and Phase 6 monitoring. |
+
+Phase 5 exit gate: **COMPLETED_WITH_BLOCKERS**. TRAF-001 is complete; remaining health and policy-management work is explicitly blocked.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.

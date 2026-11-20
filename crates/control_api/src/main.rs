@@ -3738,20 +3738,56 @@ async fn create_georule(
     }
 }
 
-async fn list_georules(data: web::Data<FullState>, req: HttpRequest) -> impl Responder {
+async fn list_georules(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<FullState>,
+    req: HttpRequest,
+) -> impl Responder {
     let tok = match auth_from_header(&req, &data.inner.jwt_secret) {
         Some(t) => t,
         None => return unauthorized(),
     };
-    // Admins see every rule; other users only rules of zones they own.
-    let rows = data.inner.db.query(
-        "SELECT CAST(g.id AS varchar), CAST(g.zone_id AS varchar), g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type \
-         FROM georules g JOIN zones z ON z.id = g.zone_id \
+    let (limit, offset, qtext) = page.parts();
+    let base = "FROM georules g JOIN zones z ON z.id = g.zone_id \
          WHERE ($1 OR CAST(z.owner AS varchar) = $2 OR EXISTS (SELECT 1 FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2) \
                 OR EXISTS (SELECT 1 FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2)) \
-         ORDER BY z.domain, g.priority DESC, g.match_type, g.match_value, g.id",
-        &[&(tok.claims.role == "admin"), &tok.claims.sub]
-    ).await;
+                AND ($3::text IS NULL OR g.match_type ILIKE '%' || $3 || '%' OR g.match_value ILIKE '%' || $3 || '%' \
+                    OR COALESCE(g.record_name, '') ILIKE '%' || $3 || '%' OR z.domain ILIKE '%' || $3 || '%')";
+    let count_sql = format!("SELECT count(*) {base}");
+    let total: i64 = match data
+        .inner
+        .db
+        .query_one(
+            &count_sql,
+            &[&(tok.claims.role == "admin"), &tok.claims.sub, &qtext],
+        )
+        .await
+    {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_georules count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    let list_sql = format!(
+        "SELECT CAST(g.id AS varchar), CAST(g.zone_id AS varchar), g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type \
+         {base} ORDER BY z.domain, g.priority DESC, g.match_type, g.match_value, g.id LIMIT $4::bigint OFFSET $5::bigint"
+    );
+    let rows = data
+        .inner
+        .db
+        .query(
+            &list_sql,
+            &[
+                &(tok.claims.role == "admin"),
+                &tok.claims.sub,
+                &qtext,
+                &limit,
+                &offset,
+            ],
+        )
+        .await;
     let rows = match rows {
         Ok(r) => r,
         Err(e) => {
@@ -3776,7 +3812,9 @@ async fn list_georules(data: web::Data<FullState>, req: HttpRequest) -> impl Res
             })
         })
         .collect();
-    HttpResponse::Ok().json(out)
+    HttpResponse::Ok()
+        .insert_header(("X-Total-Count", total.to_string()))
+        .json(out)
 }
 
 #[derive(Deserialize)]

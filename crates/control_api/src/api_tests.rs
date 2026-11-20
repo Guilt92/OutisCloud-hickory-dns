@@ -6992,3 +6992,32 @@ async fn zone_transfer_policy_endpoint_and_validation() {
     assert_eq!(st, 400);
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn georule_list_supports_search_and_pagination() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "geopage.example").await;
+    for value in ["US", "CA", "GB"] {
+        let (st, _, raw) = call!(
+            app,
+            post,
+            "/api/v1/georules",
+            Some(&t),
+            j(
+                serde_json::json!({"zone_id": zid, "match_type":"country","match_value":value,"target":"192.0.2.10"})
+            )
+        );
+        assert_eq!(st, 201, "{raw}");
+    }
+    let (st, _, raw) = call!(
+        app,
+        get,
+        "/api/v1/georules?limit=2&offset=0&q=US",
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    env.cleanup().await;
+}
