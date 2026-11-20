@@ -937,47 +937,42 @@ async fn zone_transfer(
             .flat_map(|zone_transfer| zone_transfer.iter())
             .collect::<Vec<_>>();
 
-        // TSIG multi-message signing needs chained MACs; the current signer API
-        // is single-use and anchored to the request MAC. Refuse instead of
-        // emitting invalid signatures for large signed zones.
         #[cfg(feature = "__dnssec")]
-        if signer.is_some() && records.len() > AXFR_CHUNK_RECORDS {
-            error!("signed AXFR requires more than one message; TSIG chaining is not available");
-            return send_error_response(
-                request,
-                ResponseCode::ServFail,
-                response_edns,
-                response_handle,
-            )
-            .await;
-        }
+        let signer = signer;
+        #[cfg(feature = "__dnssec")]
+        let mut previous_mac: Option<Vec<u8>> = None;
 
-        #[cfg(feature = "__dnssec")]
-        let signature = if let Some(signer) = signer {
-            let mut tbs_response_buf = Vec::with_capacity(512);
-            let mut encoder = BinEncoder::new(&mut tbs_response_buf);
-            let tbs_response = MessageResponseBuilder::new(request.raw_queries(), response_edns)
-                .build(
+        let mut last_info = None;
+        for (index, chunk) in records.chunks(AXFR_CHUNK_RECORDS).enumerate() {
+            #[cfg_attr(not(feature = "__dnssec"), expect(unused_mut))]
+            let mut message_response =
+                MessageResponseBuilder::new(request.raw_queries(), response_edns).build(
                     response_header.clone(),
-                    records.iter().copied(),
+                    chunk.iter().copied(),
                     iter::empty(),
                     iter::empty(),
                     iter::empty(),
                 );
-            if let Err(error) = tbs_response.destructive_emit(&mut encoder) {
-                error!(%error, "error encoding response");
-                return send_error_response(
-                    request,
-                    ResponseCode::ServFail,
-                    response_edns,
-                    response_handle,
-                )
-                .await;
-            }
-            match signer.sign(&tbs_response_buf) {
-                Ok(signature) => Some(signature),
-                Err(error) => {
-                    error!(%error, "error signing response");
+
+            #[cfg(feature = "__dnssec")]
+            if let Some(context) = &signer {
+                let context = if index == 0 {
+                    context.clone()
+                } else {
+                    context.with_previous_mac(previous_mac.clone().unwrap_or_default())
+                };
+                let mut tbs_response_buf = Vec::with_capacity(512);
+                let mut encoder = BinEncoder::new(&mut tbs_response_buf);
+                let tbs_response =
+                    MessageResponseBuilder::new(request.raw_queries(), response_edns).build(
+                        response_header.clone(),
+                        chunk.iter().copied(),
+                        iter::empty(),
+                        iter::empty(),
+                        iter::empty(),
+                    );
+                if let Err(error) = tbs_response.destructive_emit(&mut encoder) {
+                    error!(%error, "error encoding response");
                     return send_error_response(
                         request,
                         ResponseCode::ServFail,
@@ -986,25 +981,22 @@ async fn zone_transfer(
                     )
                     .await;
                 }
-            }
-        } else {
-            None
-        };
-
-        let mut last_info = None;
-        for records in records.chunks(AXFR_CHUNK_RECORDS) {
-            #[cfg_attr(not(feature = "__dnssec"), expect(unused_mut))]
-            let mut message_response =
-                MessageResponseBuilder::new(request.raw_queries(), response_edns).build(
-                    response_header.clone(),
-                    records.iter().copied(),
-                    iter::empty(),
-                    iter::empty(),
-                    iter::empty(),
-                );
-            #[cfg(feature = "__dnssec")]
-            if let Some(signature) = signature.clone() {
-                message_response.set_signature(signature);
+                match context.sign(&tbs_response_buf) {
+                    Ok(signature) => {
+                        previous_mac = Some(signature.data().mac().to_vec());
+                        message_response.set_signature(signature);
+                    }
+                    Err(error) => {
+                        error!(%error, "error signing response");
+                        return send_error_response(
+                            request,
+                            ResponseCode::ServFail,
+                            response_edns,
+                            response_handle,
+                        )
+                        .await;
+                    }
+                }
             }
 
             match response_handle.send_response(message_response).await {

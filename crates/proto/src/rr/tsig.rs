@@ -45,6 +45,7 @@ use crate::rr::{Name, RecordType};
 use crate::serialize::binary::BinEncoder;
 
 /// Context for a TSIG response, used to construct a TSIG response signer
+#[derive(Clone)]
 pub struct TSigResponseContext {
     #[cfg(feature = "__dnssec")]
     request_id: u16,
@@ -92,6 +93,17 @@ impl TSigResponseContext {
             time,
             kind: TsigResponseKind::UnknownKey { key_name },
         }
+    }
+
+    /// Clone this context but use the previous message's MAC as the signing
+    /// base. Required for RFC 8945 multi-message transfers.
+    #[cfg(feature = "__dnssec")]
+    pub fn with_previous_mac(&self, previous_mac: Vec<u8>) -> Self {
+        let mut cloned = self.clone();
+        if let TsigResponseKind::Signed { request_mac, .. } = &mut cloned.kind {
+            *request_mac = previous_mac;
+        }
+        cloned
     }
 
     /// Sign an encoded DNS response message according to the context
@@ -164,6 +176,7 @@ impl TSigResponseContext {
 
 /// An enum describing the kind of response we may generate a response TSIG record for.
 #[cfg(feature = "__dnssec")]
+#[derive(Clone)]
 enum TsigResponseKind {
     /// A TSIG response that has a populated MAC produced by the `signer`.
     Signed {
