@@ -6870,3 +6870,43 @@ async fn clone_zone_copies_records_with_rewritten_domain() {
     assert!(zone_file.contains("copy.example"));
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn zone_lifecycle_suspend_and_activate() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "lifecycle.example").await;
+    assert!(env.zone_file("lifecycle.example").exists());
+
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/lifecycle"),
+        Some(&t),
+        j(serde_json::json!({"status":"suspended"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["status"], "suspended");
+    assert!(!env.zone_file("lifecycle.example").exists());
+
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/lifecycle"),
+        Some(&t),
+        j(serde_json::json!({"status":"active"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(env.zone_file("lifecycle.example").exists());
+
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/lifecycle"),
+        Some(&t),
+        j(serde_json::json!({"status":"bogus"}))
+    );
+    assert_eq!(st, 400);
+    env.cleanup().await;
+}

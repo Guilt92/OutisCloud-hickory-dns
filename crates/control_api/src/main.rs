@@ -6263,6 +6263,87 @@ async fn clone_zone(
     HttpResponse::Created().json(serde_json::json!({"id": zone_id, "domain": domain, "status": status, "records": names.len()}))
 }
 
+#[derive(Deserialize)]
+struct ZoneLifecycleReq {
+    status: String,
+}
+
+async fn set_zone_lifecycle(
+    path: web::Path<String>,
+    body: web::Json<ZoneLifecycleReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    let access = match zone_access_at(&data.db, &zone_id, &tok, Level::Owner).await {
+        Ok(a) => a,
+        Err(response) => return response,
+    };
+    let desired = body.status.trim().to_ascii_lowercase();
+    if !matches!(desired.as_str(), "active" | "suspended") {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "status must be active or suspended"
+        }));
+    }
+    let current: String = match data
+        .db
+        .query_one(
+            "SELECT status FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+    {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("set_zone_lifecycle lookup: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    if current == "pending" && desired == "active" {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "pending zones must be verified before activation"
+        }));
+    }
+    if let Err(e) = data
+        .db
+        .execute(
+            "UPDATE zones SET status = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
+            &[&desired, &zone_id],
+        )
+        .await
+    {
+        warn!("set_zone_lifecycle update: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "database error"}));
+    }
+    if let Err(e) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await {
+        let _ = data
+            .db
+            .execute(
+                "UPDATE zones SET status = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
+                &[&current, &zone_id],
+            )
+            .await;
+        return publish_failed_rolled_back(&e);
+    }
+    audit(
+        &data.db,
+        Some(&tok.claims.sub),
+        "set_zone_lifecycle",
+        "zone",
+        Some(zone_id.clone()),
+        &req,
+        serde_json::json!({"zone": access.domain, "from": current, "to": desired}),
+    )
+    .await;
+    HttpResponse::Ok().json(serde_json::json!({"status": desired}))
+}
+
 fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/health", web::get().to(health))
         .route("/ready", web::get().to(ready))
@@ -6311,6 +6392,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::put().to(set_zone_metadata),
         )
         .route("/api/v1/zones/{id}/clone", web::post().to(clone_zone))
+        .route(
+            "/api/v1/zones/{id}/lifecycle",
+            web::put().to(set_zone_lifecycle),
+        )
         // Records
         .route("/api/v1/zones/{id}/records", web::post().to(create_record))
         .route("/api/v1/zones/{id}/records", web::get().to(list_records))
