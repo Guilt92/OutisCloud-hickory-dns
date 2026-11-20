@@ -266,6 +266,164 @@ Production-readiness criteria are **not met**. External blockers remain: secret 
 
 ---
 
+## 0.13 Authoritative Final Task Status
+
+**Final answer: the roadmap is NOT fully complete.** Of 133 tasks: 18 DONE, 61 PARTIAL, 7 TODO, and 47 BLOCKED. This section supersedes any conflicting status text above.
+
+### DONE — implementation evidence exists and validation passed
+| Task | Evidence |
+|---|---|
+| ARCH-001 | Migration-from-empty and SQL/runtime schema-drift tests pass on isolated PostgreSQL. |
+| ARCH-004 | Frontend route-contract and lint checks pass; dead controls removed. |
+| ARCH-005 | Docs consistency check passes; README/DELIVERY_SUMMARY corrected. |
+| ARCH-006 | ADR-0002 accepted; scope decision documented. |
+| ARCH-008 | ADR-0003 accepted; topology/SLO/RPO/RTO targets documented. |
+| CORE-004 | DNS /health and /ready integration test passes. |
+| CORE-006 | PII redaction unit test passes. |
+| CORE-012 | Dynamic-update policy documented; prerequisite/prescan tests exist. |
+| REC-002 | Publish-failure rollback API tests pass. |
+| REC-004 | Apex-alias non-goal documented in docs/RECORD_TYPES.md. |
+| DNSSEC-007 | GeoDNS/DNSSEC exclusion enforced by guards and covered by tests. |
+| DNSSEC-008 | Rollover algorithm carry and new-key protection API test passes. |
+| XFR-006 | ADR-0007 documents catalog zones as out of scope. |
+| TRAF-001 | Deterministic policy engine has 3 passing unit tests. |
+| TEN-001 | Quota reservation concurrency and usage tests pass. |
+| RBAC-002 | Per-user password reset and session-revocation test passes. |
+| BAK-005 | ADR-0003 documents RPO/RTO targets; drills remain blocked. |
+| PERF-003 | Overview/query-count tests and local 5,000-zone benchmark exist. |
+
+### PARTIAL — implemented in part, not accepted as complete
+| Task | Implemented | Remaining |
+|---|---|---|
+| ARCH-002 | ADR-0001 exists | durable outbox implementation deferred to PERF-001/002. |
+| ARCH-003 | ADR-0005 selects a model | benchmark and implementation pending. |
+| CORE-001 | TCP-only and chunked AXFR with TSIG MAC chaining implemented | signed interop unvalidated. |
+| CORE-002 | Journal transactions, delta query and IXFR path exist | SQLite end-to-end IXFR test pending. |
+| CORE-003 | NOTIFY ACK and bounded sender retry exist | no peer config or secondary refresh. |
+| CORE-005 | Admission semaphores and unit test exist | no high-fanout load proof. |
+| CORE-007 | Resolver cache default raised and boundary documented | cache-hit/miss/expiry suite not extended. |
+| CORE-008 | Existing dig/delv/conformance labs | dual-stack and malformed-packet cases not unified. |
+| CORE-009 | Forwarding/recursion boundary documented | trust-anchor and hardening work pending. |
+| CORE-010 | H3 features, CLI/config and listener wired | no H3 client integration test. |
+| CORE-011 | Record-type policy documented | advanced types and UI round-trip tests pending. |
+| CORE-013 | Per-zone fingerprint reload implemented | no load proof under write pressure. |
+| ZONE-001 | JSON import dry-run and row errors implemented | BIND parser and byte-size cap pending. |
+| ZONE-003 | Clone API implemented and tested | UI template picker pending. |
+| ZONE-004 | Zone description/tags API and UI exist | server-side tag filter pending. |
+| ZONE-005 | TXT verification hardened with retry/rate limits | NS-delegation proof pending. |
+| ZONE-006 | Active/suspended lifecycle implemented | hold/archive semantics pending. |
+| ZONE-007 | Revision diff endpoint and UI exist | full snapshots, retention config and failure visibility pending. |
+| REC-001 | Record comment/tags columns and API exist | editor integration pending. |
+| REC-005 | Delete confirmation added | record diff/history and bulk safeguards pending. |
+| DNSSEC-002 | Manual CSK rollover works | scheduler/KSK-ZSK/emergency rollover pending. |
+| DNSSEC-006 | DS output and guidance exist | parent verification and alerts pending. |
+| DNSSEC-009 | Local negative tests exist | NSEC3 and expired-signature cases pending. |
+| TRANSFER-001 | Per-zone axfr_policy field and endpoint exist | config emission and AllowSigned enforcement pending. |
+| GEO-001 | Deterministic weighted policy engine exists | DNS/API/UI propagation pending. |
+| GEO-002 | Engine accepts injected health state | real health-driven failover pending. |
+| GEO-003 | Dataset watcher/atomic install/staleness exist | licensed City data is external. |
+| GEO-005 | GeoRule search/pagination added | UI search/precedence display pending. |
+| ANA-001 | Query-log redaction/level controls exist | structured sampling/persistence/export pending. |
+| ANA-002 | RCODE counters exist | latency histogram/history tables pending. |
+| MON-001 | Scrape config corrected | no runtime Prometheus scrape smoke test. |
+| MON-002 | Alertmanager config/rules added | no runtime delivery test. |
+| MON-003 | Grafana dashboard JSON added | no runtime provisioning test. |
+| MON-004 | API metrics token protection exists | DNS exporter relies on internal network isolation. |
+| TEN-003 | Deterministic tenant matrix exists | analytics/agents/search cases pending. |
+| API-001 | OpenAPI spec route with component schemas exists | full route annotation and lint pending. |
+| API-002 | create_zone idempotency implemented/tested | other mutating endpoints pending. |
+| API-004 | Global per-IP limit middleware added | tenant budgets and middleware test pending. |
+| API-007 | Pagination exists for several lists | remaining lists and error envelopes pending. |
+| API-010 | Frontend route-contract script exists | CI enforcement/schema drift checks pending. |
+| AUD-001 | Audit detail and CSV export endpoints tested | UI detail/export wiring pending. |
+| AUD-002 | Broad audit coverage exists | coverage-matrix ADR and failure-policy decision pending. |
+| AUD-003 | Retention configurable | archive/SIEM target external. |
+| SEC-003 | Rotation tool added | real secret rotation blocked by owner credentials. |
+| SEC-005 | Login/DNS/API/verification limits exist | tenant abuse scoring pending. |
+| SEC-006 | DNSSEC and agent keys separate | JWT remains single trust anchor pending rotation. |
+| SEC-007 | Per-source governor and admission limits exist | full RRL coverage pending. |
+| SEC-008 | Secret/docs checks and dependency audits exist | SBOM and image signing pending. |
+| PERF-001 | ADR state machine exists | outbox implementation pending. |
+| PERF-002 | ADR selected concurrency model | benchmark/implementation pending. |
+| PERF-004 | Admission limits implemented | capacity proof pending. |
+| ADM-001 | Metadata UI added | truthful health/lifecycle controls still partial. |
+| ADM-002 | Zone management UX advanced | clone/suspend controls not surfaced. |
+| ADM-003 | Audit backend endpoints exist | UI drawer/export wiring pending. |
+| ADM-004 | Viewer enforcement exists | full permission-aware catalog depends on RBAC-001. |
+| UX-001 | Existing a11y suite passes | new metadata/reset UI not re-audited. |
+| CUI-001 | Customer dashboard exists | onboarding/error polish pending. |
+| CUI-002 | Analytics UX exists | provenance/export/missing-data polish pending. |
+| CUI-003 | Existing WCAG checks pass | new controls need another audit. |
+| CUI-004 | Responsive/error work partial | customer journeys need regression pass. |
+| OPS-004 | Monitoring configs added | deployment and on-call runbooks incomplete. |
+
+### TODO — not implemented
+| Task | Gap |
+|---|---|
+| ZONE-002 | No backend route or job model. |
+| REC-003 | No batch/RRset mutation endpoint. |
+| OPS-003 | CI action refs, test DB service and release gates not repaired. |
+| OPS-005 | Incident/rollback/cert/GeoIP/failover runbooks not written. |
+| OPS-006 | Certificate lifecycle and GeoIP automation not implemented. |
+| OPS-007 | Status page, release signing, SBOM publication and diagnostics bundle not implemented. |
+| OPS-008 | Production-readiness review not passed; P0 gate still open. |
+
+### BLOCKED — exact blocker and minimum unblock requirement
+| Task | Exact blocker / minimum requirement |
+|---|---|
+| ARCH-007 | Tracked live-looking secrets require owner-provided values and coordinated rotation/untracking. |
+| DNSSEC-001 | Needs KMS/HSM decision and approved key-store migration. |
+| DNSSEC-003 | Needs signed-zone content design and parent-side coordination policy. |
+| DNSSEC-004 | Depends on DNSSEC-001; encrypted backup format/restore drill unavailable. |
+| DNSSEC-005 | Requires multi-operator product decision and external coordination. |
+| SECONDARY-001 | Requires secondary-zone schema, refresh engine and UI lifecycle decision. |
+| SECONDARY-002 | Depends on SECONDARY-001 and TRANSFER-001; no peer/timer model. |
+| SECONDARY-003 | Depends on SECONDARY-002; split-brain policy undecided. |
+| SECONDARY-004 | Depends on SECONDARY-002/TRANSFER-003. |
+| TRANSFER-002 | Depends on DNSSEC-001/ARCH-007; SIG(0) removed upstream; external signed interop required. |
+| TRANSFER-003 | Depends on TRANSFER-001 completion; no transfer audit/metrics events. |
+| REPL-001 | Depends on ARCH-007; mTLS and separate agent signing keys require key infrastructure. |
+| REPL-002 | Requires topology/infrastructure choice and deferred publication outbox. |
+| REPL-003 | Depends on REPL-002. |
+| GEO-004 | Requires policy/version schema and activation design. |
+| TRAF-002 | Requires external location/latency data sources. |
+| TRAF-003 | Requires pool/region schema design. |
+| TRAF-004 | Depends on TRAF-003. |
+| HLTH-001 | Requires new probe scheduler and SSRF-safe network policy. |
+| HLTH-002 | Depends on HLTH-001 and monitoring stack. |
+| ANA-003 | Requires export format/tenant-scope decision. |
+| MON-005 | Multi-location probes require external infrastructure. |
+| CUST-001 | Requires email provider, user-status schema and invite/reset token model. |
+| CUST-002 | Requires external IdP/OIDC/SAML dependency and demand approval. |
+| CUST-003 | Depends on CUST-002. |
+| TEN-002 | Depends on RBAC-001 permission catalog. |
+| RBAC-001 | Requires permission catalog tables and policy engine across handlers. |
+| API-003 | Depends on API-001 completion and ARCH-007 secret decision. |
+| API-005 | Requires outbound HTTP client, SSRF-safe egress, signing keys and dead-letter store. |
+| API-006 | Depends on API-002 completion and job model. |
+| API-008 | Depends on API-001 completion. |
+| API-009 | Depends on API-008 and external provider toolchain. |
+| BAK-002 | Requires PostgreSQL backup/PITR storage target and restore drill. |
+| BAK-003 | Depends on DNSSEC-001; no encrypted key export/restore target. |
+| BAK-004 | Depends on BAK-002/BAK-003. |
+| SEC-001 | Requires certificate issuance and reverse-proxy deployment topology. |
+| SEC-002 | Requires CA/certificate provisioning and connection-string migration. |
+| SEC-004 | Depends on key custody decision and user lifecycle schema. |
+| HA-001 | Requires multi-replica infrastructure and publication outbox. |
+| HA-002 | Depends on HA-001 and shared publication state. |
+| HA-003 | Requires redundant DNS/anycast/multi-region infrastructure. |
+| HA-004 | Depends on HA-001/HA-003 failure evidence. |
+| HA-005 | Requires chaos/failure-injection environment. |
+| HA-006 | Depends on HA-005 and BAK-004 drills. |
+| ADM-005 | Requires notification model and settings schema. |
+| OPS-001 | Requires TLS reverse proxy, certificates and production topology decision. |
+| OPS-002 | Requires Kubernetes/RWX storage and validated manifests. |
+
+### Not independently verified
+The following are not independently verified beyond local config/unit evidence: MON-001/002/003 (no runtime Prometheus/Alertmanager/Grafana smoke), CORE-005/010/013 (unit or config test only, no load/H3 client proof), CORE-001/002/009 (signed IXFR/AXFR interop or SQLite end-to-end IXFR pending), DNSSEC-009 (NSEC3/expired-signature cases pending), PERF-004 (no capacity proof), MON-005 (no multi-location probes), and decision-only DONE tasks ARCH-006, ARCH-008, BAK-005, REC-004 and XFR-006.
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.
