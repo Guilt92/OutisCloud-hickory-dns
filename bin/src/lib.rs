@@ -55,6 +55,10 @@ use crate::metrics::ConfigMetrics;
 mod prometheus_server;
 #[cfg(feature = "prometheus-metrics")]
 use prometheus_server::PrometheusServer;
+#[cfg(feature = "prometheus-metrics")]
+mod readiness;
+#[cfg(feature = "prometheus-metrics")]
+use readiness::Readiness;
 
 /// Cli struct for all options managed with clap derive api.
 #[derive(Debug, Parser)]
@@ -213,6 +217,8 @@ impl DnsServer {
 
         #[cfg(feature = "prometheus-metrics")]
         let disable_prometheus = disable_prometheus | config.disable_prometheus;
+        #[cfg(feature = "prometheus-metrics")]
+        let readiness = Readiness::new();
         let disable_udp = disable_udp | config.disable_udp;
         let disable_tcp = disable_tcp | config.disable_tcp;
         #[cfg(feature = "__tls")]
@@ -240,7 +246,7 @@ impl DnsServer {
                 .map_err(|err| format!("failed to look up local address: {err}"))?;
 
             // Set up Prometheus HTTP server.
-            let server = PrometheusServer::new(listener)?;
+            let server = PrometheusServer::new(listener, readiness.clone())?;
             info!("listening for Prometheus metrics on {local_addr:?}");
             Some(server)
         } else {
@@ -444,6 +450,9 @@ impl DnsServer {
             false => setup.quic(quic_port.unwrap_or(quic_listen_port))?,
         }
 
+        #[cfg(feature = "prometheus-metrics")]
+        readiness.mark_ready();
+
         // Drop privileges on Unix systems if running as root.
         #[cfg(target_family = "unix")]
         check_drop_privs(
@@ -555,12 +564,14 @@ impl DnsServer {
             let handler = handler.clone();
             let token = server.shutdown_token().clone();
             let config_path = config_path.to_path_buf();
+            #[cfg(feature = "prometheus-metrics")]
+            let reload_readiness = readiness.clone();
             tokio::spawn(async move {
                 while reload_rx.recv().await.is_some() {
                     // debounce: a publication touches several files
                     tokio::time::sleep(StdDuration::from_millis(300)).await;
                     while reload_rx.try_recv().is_ok() {}
-                    reload_zones(
+                    let reloaded = reload_zones(
                         &config_path,
                         &zonedir_for_reload,
                         &startup_fingerprint,
@@ -569,6 +580,10 @@ impl DnsServer {
                         &|| token.cancel(),
                     )
                     .await;
+                    #[cfg(feature = "prometheus-metrics")]
+                    if reloaded {
+                        reload_readiness.mark_ready();
+                    }
                 }
             });
         }
@@ -628,18 +643,18 @@ async fn reload_zones(
     nsid: &Option<NSIDPayload>,
     handler: &SwapHandler,
     restart: &(dyn Fn() + Send + Sync),
-) {
+) -> bool {
     let mut config = match Config::read_config(config_path) {
         Ok(c) => c,
         Err(e) => {
             error!("reload skipped, cannot read {config_path:?}: {e}");
-            return;
+            return false;
         }
     };
     if listener_fingerprint(&mut config) != startup_fingerprint {
         tracing::warn!("listener/privilege configuration changed: restarting to apply it");
         restart();
-        return;
+        return false;
     }
     let zone_dir = zonedir.clone().unwrap_or_else(|| config.directory.clone());
     let mut catalog = Catalog::new();
@@ -650,7 +665,7 @@ async fn reload_zones(
             Ok(n) => n,
             Err(e) => {
                 error!("reload aborted, bad zone name: {e}");
-                return;
+                return false;
             }
         };
         match zone.load(&zone_dir).await {
@@ -659,7 +674,7 @@ async fn reload_zones(
                 error!(
                     "reload aborted, zone {zone_name} failed to load (still serving the previous data): {e}"
                 );
-                return;
+                return false;
             }
         }
     }
@@ -668,6 +683,7 @@ async fn reload_zones(
         "reloaded {count} zone(s) without restarting (reload #{})",
         handler.reloads()
     );
+    true
 }
 
 struct ServerSetup<'a> {

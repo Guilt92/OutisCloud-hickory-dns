@@ -195,6 +195,29 @@ async fn test_prometheus_endpoint_startup() {
 }
 
 #[tokio::test]
+async fn test_health_and_ready_endpoints() {
+    subscribe();
+
+    let server = TestServer::start("example_forwarder.toml");
+    let port = server
+        .ports
+        .get_v4(ServerProtocol::PrometheusMetrics)
+        .expect("no prometheus_port");
+    let base = format!("http://127.0.0.1:{port}");
+
+    let health = reqwest::get(format!("{base}/health")).await.unwrap();
+    assert_eq!(health.status(), reqwest::StatusCode::OK);
+    assert_eq!(health.text().await.unwrap(), "ok\n");
+
+    let ready = reqwest::get(format!("{base}/ready")).await.unwrap();
+    assert_eq!(ready.status(), reqwest::StatusCode::OK);
+    assert_eq!(ready.text().await.unwrap(), "ready\n");
+
+    let missing = reqwest::get(format!("{base}/not-a-route")).await.unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn test_request_response() {
     subscribe();
 

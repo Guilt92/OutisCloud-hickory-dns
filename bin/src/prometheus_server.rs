@@ -1,5 +1,7 @@
 use std::future::{Ready, ready};
 
+use crate::readiness::Readiness;
+
 use http::header::CONTENT_TYPE;
 use hyper::{Request, Response, body::Incoming, service::Service};
 use hyper_util::{
@@ -25,13 +27,13 @@ pub(crate) struct PrometheusServer {
 impl PrometheusServer {
     /// Register a metrics recorder, and start an HTTP server with the provided listener to provide
     /// metrics to Prometheus.
-    pub(crate) fn new(listener: TcpListener) -> Result<Self, String> {
+    pub(crate) fn new(listener: TcpListener, readiness: Readiness) -> Result<Self, String> {
         // Set up metrics recorder.
         let handle = configure_buckets(PrometheusBuilder::new())
             .install_recorder()
             .map_err(|e| format!("failed to install prometheus endpoint {e}"))?;
 
-        let service = PrometheusService::new(handle);
+        let service = PrometheusService::new(handle, readiness);
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
         let shutdown = GracefulShutdown::new();
@@ -83,13 +85,16 @@ impl PrometheusServer {
 #[derive(Clone)]
 struct PrometheusService {
     handle: PrometheusHandle,
+    readiness: Readiness,
 }
 
 impl PrometheusService {
-    fn new(handle: PrometheusHandle) -> Self {
-        Self { handle }
+    fn new(handle: PrometheusHandle, readiness: Readiness) -> Self {
+        Self { handle, readiness }
     }
 }
+
+const READY_MAX_AGE_SECS: u64 = 300;
 
 impl Service<Request<Incoming>> for PrometheusService {
     type Response = Response<String>;
@@ -99,7 +104,28 @@ impl Service<Request<Incoming>> for PrometheusService {
     type Future =
         Ready<Result<Response<String>, Box<dyn std::error::Error + Send + Sync + 'static>>>;
 
-    fn call(&self, _req: Request<Incoming>) -> Self::Future {
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        let path = req.uri().path();
+        if path == "/health" {
+            return ready(Ok(Response::builder()
+                .status(http::StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body("ok\n".to_string())
+                .expect("static header/body")));
+        }
+        if path == "/ready" {
+            let (status, body) = if self.readiness.is_ready(READY_MAX_AGE_SECS) {
+                (http::StatusCode::OK, "ready\n")
+            } else {
+                (http::StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
+            };
+            return ready(Ok(Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(body.to_string())
+                .expect("static header/body")));
+        }
+
         let response_builder =
             Response::builder().header(CONTENT_TYPE, "text/plain; version=0.0.4");
         match response_builder.body(self.handle.render()) {
