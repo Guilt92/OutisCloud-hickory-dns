@@ -461,6 +461,71 @@ async fn publish(
     }
 }
 
+fn idempotency_key(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|key| !key.is_empty() && key.len() <= 255)
+        .map(str::to_string)
+}
+
+async fn idempotency_replay(
+    db: &Pool,
+    key: &str,
+    user: &str,
+    endpoint: &str,
+) -> Option<HttpResponse> {
+    let row = db
+        .query_opt(
+            "SELECT status, response FROM idempotency_keys \
+         WHERE key = $1 AND CAST(user_id AS varchar) = $2 AND endpoint = $3 AND expires_at > now()",
+            &[&key, &user, &endpoint],
+        )
+        .await
+        .ok()
+        .flatten()?;
+    let status = row.get::<_, i32>(0) as u16;
+    let response: serde_json::Value = row.get(1);
+    let code =
+        actix_web::http::StatusCode::from_u16(status).unwrap_or(actix_web::http::StatusCode::OK);
+    Some(HttpResponse::build(code).json(response))
+}
+
+async fn idempotency_store(
+    db: &Pool,
+    key: &str,
+    user: &str,
+    endpoint: &str,
+    status: u16,
+    response: &serde_json::Value,
+) {
+    let ttl = std::env::var("IDEMPOTENCY_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(86_400);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl);
+    if let Err(e) = db
+        .execute(
+            "INSERT INTO idempotency_keys (key, user_id, endpoint, status, response, expires_at) \
+         VALUES ($1, $2::text::uuid, $3, $4, $5, $6) \
+         ON CONFLICT (key, user_id, endpoint) DO NOTHING",
+            &[
+                &key,
+                &user,
+                &endpoint,
+                &(status as i32),
+                response,
+                &expires_at,
+            ],
+        )
+        .await
+    {
+        warn!("idempotency_store failed: {}", full_error_string(&e));
+    }
+}
+
 fn publish_failed(err: &str) -> HttpResponse {
     HttpResponse::InternalServerError().json(serde_json::json!({
         "error": "publish_failed",
@@ -1142,6 +1207,21 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
          INSERT INTO publish_state (id) VALUES (1) ON CONFLICT DO NOTHING;",
         )
         .await?;
+
+    // Idempotency key store (mirrors migrations/005_idempotency.sql)
+    client.batch_execute(
+        "CREATE TABLE IF NOT EXISTS idempotency_keys (
+            key TEXT NOT NULL,
+            user_id UUID NOT NULL,
+            endpoint TEXT NOT NULL,
+            status INT NOT NULL DEFAULT 200,
+            response JSONB,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (key, user_id, endpoint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires_at ON idempotency_keys(expires_at);"
+    ).await?;
 
     // Create indexes
     if let Err(e) = client
@@ -4073,6 +4153,13 @@ async fn create_zone(
         Some(t) => t,
         None => return unauthorized(),
     };
+    let db = &data.db;
+    let idem = idempotency_key(&req);
+    if let Some(key) = &idem {
+        if let Some(response) = idempotency_replay(db, key, &tok.claims.sub, "create_zone").await {
+            return response;
+        }
+    }
 
     // Validate and canonicalise the domain (lower-case, LDH labels, no root/TLD)
     let domain = match normalize_zone_domain(&body.domain) {
@@ -4312,7 +4399,7 @@ async fn create_zone(
     .await;
     ext::snapshot_zone(&data.db, &zone_id_str, Some(&tok.claims.sub), "created").await;
 
-    HttpResponse::Created().json(serde_json::json!({
+    let response = serde_json::json!({
         "id": zone_id_str,
         "domain": domain,
         "status": zone_status,
@@ -4322,7 +4409,11 @@ async fn create_zone(
         })),
         "nameservers": assigned_nameservers,
         "message": "Zone created successfully. Please configure the following nameservers at your domain registrar: ".to_string() + &assigned_nameservers.join(", ")
-    }))
+    });
+    if let Some(key) = idem {
+        idempotency_store(db, &key, &tok.claims.sub, "create_zone", 201, &response).await;
+    }
+    HttpResponse::Created().json(response)
 }
 
 #[derive(Deserialize)]
@@ -6635,6 +6726,35 @@ fn startup_problems(
 }
 
 /// When `METRICS_TOKEN` is set, `/metrics` requires `Authorization: Bearer <token>`.
+async fn api_rate_limit_middleware(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<actix_web::body::BoxBody>, actix_web::Error> {
+    let path = req.path().to_string();
+    if matches!(path.as_str(), "/health" | "/ready" | "/metrics") {
+        return Ok(next.call(req).await?.map_into_boxed_body());
+    }
+    let limit = std::env::var("API_RATE_LIMIT_PER_IP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(6000);
+    let peer = req
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if let Some(state) = req.app_data::<web::Data<AppState>>().cloned() {
+        let bucket = format!("api-global:{peer}");
+        if let Some(wait) = shared::limited(&state.db, &bucket, limit, 60, || true).await {
+            let response = HttpResponse::TooManyRequests()
+                .insert_header((header::RETRY_AFTER, wait.to_string()))
+                .json(serde_json::json!({"error": "rate_limited", "retry_after": wait}));
+            return Ok(req.into_response(response).map_into_boxed_body());
+        }
+    }
+    Ok(next.call(req).await?.map_into_boxed_body())
+}
+
 async fn metrics_guard(
     req: ServiceRequest,
     next: Next<impl MessageBody + 'static>,
@@ -6982,6 +7102,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(actix_web::middleware::from_fn(auth_middleware))
+            .wrap(actix_web::middleware::from_fn(api_rate_limit_middleware))
             .wrap(cors)
             .wrap(prometheus.clone())
             .wrap(actix_web::middleware::from_fn(metrics_guard))

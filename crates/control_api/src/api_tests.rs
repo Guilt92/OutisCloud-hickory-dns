@@ -7021,3 +7021,43 @@ async fn georule_list_supports_search_and_pagination() {
     assert_eq!(st, 200, "{raw}");
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn create_zone_idempotency_key_replays_first_response() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+
+    let first = test::TestRequest::post()
+        .uri("/api/v1/zones")
+        .insert_header(("Authorization", format!("Bearer {t}")))
+        .insert_header(("Idempotency-Key", "create-first"))
+        .set_json(serde_json::json!({"domain":"idem-first.example"}))
+        .to_request();
+    let response = test::call_service(&app, first).await;
+    assert_eq!(response.status(), 201);
+    let first_body: serde_json::Value = test::read_body_json(response).await;
+    let first_id = first_body["id"].as_str().unwrap().to_string();
+
+    let second = test::TestRequest::post()
+        .uri("/api/v1/zones")
+        .insert_header(("Authorization", format!("Bearer {t}")))
+        .insert_header(("Idempotency-Key", "create-first"))
+        .set_json(serde_json::json!({"domain":"idem-second.example"}))
+        .to_request();
+    let response = test::call_service(&app, second).await;
+    assert_eq!(response.status(), 201);
+    let second_body: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(second_body["id"], first_id);
+    assert_eq!(second_body["domain"], "idem-first.example");
+
+    let (_, _, raw) = call!(
+        app,
+        get,
+        "/api/v1/zones?q=idem-second.example",
+        Some(&t),
+        None
+    );
+    assert!(!raw.contains("idem-second.example"));
+    env.cleanup().await;
+}

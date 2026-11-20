@@ -172,6 +172,25 @@ Phase 6 exit gate: **COMPLETED_WITH_BLOCKERS**. Monitoring deployment is now tru
 
 ---
 
+## 0.7 Phase 7 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| API-001 — OpenAPI contract | **BLOCKED** | `utoipa` dependencies exist but no generated spec/route or linting. Minimum unblock: annotate routes and decide contract versioning. |
+| API-002 — idempotency keys | **PARTIAL** | Added `idempotency_keys` table (migration + runtime DDL), TTL/replay helpers, and `Idempotency-Key` support on `create_zone`. `create_zone_idempotency_key_replays_first_response` passes. Other mutating endpoints remain. |
+| API-003 — scoped API tokens | **BLOCKED** | Depends on OpenAPI contract and secret-handling decision (ARCH-007). |
+| API-004 — API-wide rate limits | **PARTIAL** | Added global per-IP middleware using the shared DB limiter with configurable `API_RATE_LIMIT_PER_IP`, 429 + `Retry-After`, and health/metrics exemptions. Tenant-level budgets and dedicated middleware tests remain. |
+| API-005 — signed webhooks | **BLOCKED** | Needs outbound HTTP client, SSRF-safe egress policy, signing keys and dead-letter store. |
+| API-006 — async jobs/bulk API | **BLOCKED** | Depends on API-002 completion and a job model. |
+| API-007 — pagination/error contract | **PARTIAL** | Search/pagination already exist for zones, users, records, audits and georules; remaining list endpoints and uniform error envelopes are not converted. |
+| API-008 — CLI/SDK | **BLOCKED** | Depends on API-001. |
+| API-009 — Terraform provider | **BLOCKED** | Depends on API-008 and external provider toolchain. |
+
+Phase 7 exit gate: **COMPLETED_WITH_BLOCKERS**. API-002 and API-004 are advanced but partial; full automation surface remains blocked.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.
