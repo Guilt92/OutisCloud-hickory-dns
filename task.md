@@ -1,5 +1,7 @@
 # OutisCloud DNS Platform — Benchmark, Architecture Assessment, and Multi-Phase Roadmap
 
+> **Current implementation status:** see §19 below. Earlier sections remain the canonical requirements and historical roadmap.
+
 **Repository:** `/home/outis/work-github/OutisCloud-hickory-dns`
 **Assessment date:** 2026-11-19
 **Code baseline:** `a028a360c` (`docs: record final platform QA commit state`)
@@ -1718,3 +1720,177 @@ OutisCloud should position itself as an **API-first, multi-tenant authoritative 
 - Rewriting Hickory or the control plane in a different language/framework as a prerequisite.
 
 **Final recommendation:** stabilize the core, make security and recovery real, then invest in transfers/routing/automation in that order. The platform already has a credible foundation; the fastest path to production quality is disciplined closure of the P0 gaps, not a broad feature race.
+
+---
+
+## 19. Current Implementation Status — 2026-11-20
+
+This section is authoritative and supersedes any conflicting status labels in earlier sections. Historical status text is preserved for auditability.
+
+Validation performed for this status update:
+- `cargo test -p control_api --bin control_api -- --test-threads=1`: 156 passed, 0 failed on isolated PostgreSQL 16.
+- `cargo test -p hickory-dns --lib`: 22 passed, 0 failed.
+- `cargo test -p hickory-dns --test integration test_health_and_ready_endpoints`: 1 passed, 0 failed.
+- `cargo test -p hickory-server --features sqlite --lib`: 32 passed, 0 failed.
+- `cargo test -p geodns --lib`: 22 passed, 0 failed.
+- `cargo test -p hickory-resolver --lib`: 78 passed, 0 failed, 3 ignored.
+- `cargo check -p hickory-dns --features h3-ring`: passed.
+- `node web/ui/tests/route-contract.cjs`: 58 frontend endpoints matched.
+- `npm --prefix web/ui run lint`: passed.
+- `python3 scripts/docs_check.py`: passed with 4 pre-existing broken-link warnings.
+- `cargo fmt --all -- --check` and `git diff --check`: clean.
+- `python3 scripts/secret_scan.py`: failed as expected; live-looking tracked secrets remain in `.env`, `env/api.env`, `env/db.env`, `env/grafana.env`, and `k8s/secret.yaml`. This is an active blocker, not a validation pass.
+
+### Phase-level status
+| Phase | Status | Counts | Gate note |
+|---|---|---|---|
+| 0 | PARTIALLY COMPLETED | COMPLETED: 5, PARTIALLY COMPLETED: 2, BLOCKED: 1 | ARCH-007 secret rotation remains blocked; phase gate not closed. |
+| 1 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 5, NEEDS VERIFICATION: 5 | Signed-transfer interop, H3 client, load/backpressure and incremental-reload proofs remain unverified. |
+| 2 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 7, NOT STARTED: 2 | Bulk import, RRset batch mutation and full lifecycle/export work remain open. |
+| 3 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 3, BLOCKED: 5 | Key custody, backup/restore, NSEC3/parent coordination and multi-signer remain blocked. |
+| 4 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 1, BLOCKED: 9 | Secondary/transfer/replication model blocked by schema, key custody and infrastructure decisions. |
+| 5 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 4, BLOCKED: 5 | Health monitors, pools/regions, licensed City data and traffic policy activation remain blocked. |
+| 6 | PARTIALLY COMPLETED | PARTIALLY COMPLETED: 3, NEEDS VERIFICATION: 3, BLOCKED: 3 | Analytics export, synthetic probes and runtime monitoring validation remain blocked/unverified. |
+| 7 | PARTIALLY COMPLETED | PARTIALLY COMPLETED: 5, BLOCKED: 5 | Scoped tokens, webhooks, jobs, SDK and Terraform provider remain blocked; API contract is partial. |
+| 8 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 4, BLOCKED: 5 | Identity federation, custom roles, tamper evidence and lifecycle email remain blocked. |
+| 9 | PARTIALLY COMPLETED | PARTIALLY COMPLETED: 5, BLOCKED: 3 | TLS certificates, secret rotation, user lifecycle encryption and SBOM/signing remain blocked/partial. |
+| 10 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 2, NEEDS VERIFICATION: 1, BLOCKED: 3 | Replication, HA, backup/PITR and capacity proof remain blocked/unverified. |
+| 11 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 8, NEEDS VERIFICATION: 2, BLOCKED: 1 | Permission-aware UX, notification center and re-audit of new controls remain open. |
+| 12 | BLOCKED | COMPLETED: 1, PARTIALLY COMPLETED: 1, NOT STARTED: 5, BLOCKED: 7 | Production-readiness gate not met; Phase 12 is BLOCKED. |
+
+### Task-level status
+| Phase | Task | Priority | Status | Evidence, test result, or exact blocker |
+|---|---|---|---|---|
+| 0 | ARCH-001 | P0 | COMPLETED | Migration-from-empty and SQL/runtime schema-drift tests pass on isolated PostgreSQL. |
+| 0 | ARCH-002 | P0 | PARTIALLY COMPLETED | Implemented: ADR-0001 exists. Remaining: durable outbox implementation deferred to PERF-001/002. |
+| 0 | ARCH-003 | P0 | PARTIALLY COMPLETED | Implemented: ADR-0005 selects a model. Remaining: benchmark and implementation pending. |
+| 0 | ARCH-004 | P0 | COMPLETED | Frontend route-contract and lint checks pass; dead controls removed. |
+| 0 | ARCH-005 | P1 | COMPLETED | Docs consistency check passes; README/DELIVERY_SUMMARY corrected. |
+| 0 | ARCH-006 | P0 | COMPLETED | ADR-0002 accepted; scope decision documented. |
+| 0 | ARCH-007 | P0 | BLOCKED | Tracked live-looking secrets require owner-provided values and coordinated rotation/untracking. |
+| 0 | ARCH-008 | P0 | COMPLETED | ADR-0003 accepted; topology/SLO/RPO/RTO targets documented. |
+| 1 | CORE-001 | P1 | NEEDS VERIFICATION | Implemented: TCP-only and chunked AXFR with TSIG MAC chaining implemented. Remaining: signed interop unvalidated. Verification gap: Signed AXFR multi-message interoperability against an independent implementation was not run. |
+| 1 | CORE-002 | P1 | NEEDS VERIFICATION | Implemented: Journal transactions, delta query and IXFR path exist. Remaining: SQLite end-to-end IXFR test pending. Verification gap: SQLite-backed end-to-end IXFR exchange was not run. |
+| 1 | CORE-003 | P1 | PARTIALLY COMPLETED | Implemented: NOTIFY ACK and bounded sender retry exist. Remaining: no peer config or secondary refresh. |
+| 1 | CORE-004 | P0 | COMPLETED | DNS /health and /ready integration test passes. |
+| 1 | CORE-005 | P1 | NEEDS VERIFICATION | Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run. |
+| 1 | CORE-006 | P1 | COMPLETED | PII redaction unit test passes. |
+| 1 | CORE-007 | P2 | PARTIALLY COMPLETED | Implemented: Resolver cache default raised and boundary documented. Remaining: cache-hit/miss/expiry suite not extended. |
+| 1 | CORE-008 | P1 | PARTIALLY COMPLETED | Implemented: Existing dig/delv/conformance labs. Remaining: dual-stack and malformed-packet cases not unified. |
+| 1 | CORE-009 | P2 | PARTIALLY COMPLETED | Implemented: Forwarding/recursion boundary documented. Remaining: trust-anchor and hardening work pending. |
+| 1 | CORE-010 | P1 | NEEDS VERIFICATION | Implemented: H3 features, CLI/config and listener wired. Remaining: no H3 client integration test. Verification gap: DoH3 client integration test was not run. |
+| 1 | CORE-011 | P2 | PARTIALLY COMPLETED | Implemented: Record-type policy documented. Remaining: advanced types and UI round-trip tests pending. |
+| 4 | CORE-012 | P2 | COMPLETED | Dynamic-update policy documented; prerequisite/prescan tests exist. |
+| 1 | CORE-013 | P1 | NEEDS VERIFICATION | Implemented: Per-zone fingerprint reload implemented. Remaining: no load proof under write pressure. Verification gap: Incremental reload proof under write pressure was not run. |
+| 2 | ZONE-001 | P1 | PARTIALLY COMPLETED | Implemented: JSON import dry-run and row errors implemented. Remaining: BIND parser and byte-size cap pending. |
+| 2 | ZONE-002 | P1 | NOT STARTED | No backend route or job model. |
+| 2 | ZONE-003 | P2 | PARTIALLY COMPLETED | Implemented: Clone API implemented and tested. Remaining: UI template picker pending. |
+| 2 | ZONE-004 | P2 | PARTIALLY COMPLETED | Implemented: Zone description/tags API and UI exist. Remaining: server-side tag filter pending. |
+| 2 | ZONE-005 | P0 | PARTIALLY COMPLETED | Implemented: TXT verification hardened with retry/rate limits. Remaining: NS-delegation proof pending. |
+| 2 | ZONE-006 | P1 | PARTIALLY COMPLETED | Implemented: Active/suspended lifecycle implemented. Remaining: hold/archive semantics pending. |
+| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Implemented: Revision diff endpoint and UI exist. Remaining: full snapshots, retention config and failure visibility pending. |
+| 2 | REC-001 | P2 | PARTIALLY COMPLETED | Implemented: Record comment/tags columns and API exist. Remaining: editor integration pending. |
+| 2 | REC-002 | P0 | COMPLETED | Publish-failure rollback API tests pass. |
+| 2 | REC-003 | P1 | NOT STARTED | No batch/RRset mutation endpoint. |
+| 11 | REC-004 | P3 | COMPLETED | Apex-alias non-goal documented in docs/RECORD_TYPES.md. |
+| 11 | REC-005 | P1 | PARTIALLY COMPLETED | Implemented: Delete confirmation added. Remaining: record diff/history and bulk safeguards pending. |
+| 3 | DNSSEC-001 | P0 | BLOCKED | Needs KMS/HSM decision and approved key-store migration. |
+| 3 | DNSSEC-002 | P1 | PARTIALLY COMPLETED | Implemented: Manual CSK rollover works. Remaining: scheduler/KSK-ZSK/emergency rollover pending. |
+| 3 | DNSSEC-003 | P2 | BLOCKED | Needs signed-zone content design and parent-side coordination policy. |
+| 3 | DNSSEC-004 | P0 | BLOCKED | Depends on DNSSEC-001; encrypted backup format/restore drill unavailable. |
+| 3 | DNSSEC-005 | P3 | BLOCKED | Requires multi-operator product decision and external coordination. |
+| 3 | DNSSEC-006 | P1 | PARTIALLY COMPLETED | Implemented: DS output and guidance exist. Remaining: parent verification and alerts pending. |
+| 3 | DNSSEC-007 | P2 | COMPLETED | GeoDNS/DNSSEC exclusion enforced by guards and covered by tests. |
+| 3 | DNSSEC-008 | P1 | COMPLETED | Rollover algorithm carry and new-key protection API test passes. |
+| 3 | DNSSEC-009 | P1 | PARTIALLY COMPLETED | Implemented: Local negative tests exist. Remaining: NSEC3 and expired-signature cases pending. |
+| 4 | SECONDARY-001 | P1 | BLOCKED | Requires secondary-zone schema, refresh engine and UI lifecycle decision. |
+| 4 | SECONDARY-002 | P1 | BLOCKED | Depends on SECONDARY-001 and TRANSFER-001; no peer/timer model. |
+| 4 | SECONDARY-003 | P2 | BLOCKED | Depends on SECONDARY-002; split-brain policy undecided. |
+| 4 | SECONDARY-004 | P1 | BLOCKED | Depends on SECONDARY-002/TRANSFER-003. |
+| 4 | TRANSFER-001 | P1 | PARTIALLY COMPLETED | Implemented: Per-zone axfr_policy field and endpoint exist. Remaining: config emission and AllowSigned enforcement pending. |
+| 4 | TRANSFER-002 | P1 | BLOCKED | Depends on DNSSEC-001/ARCH-007; SIG(0) removed upstream; external signed interop required. |
+| 4 | TRANSFER-003 | P1 | BLOCKED | Depends on TRANSFER-001 completion; no transfer audit/metrics events. |
+| 4 | XFR-006 | P3 | COMPLETED | ADR-0007 documents catalog zones as out of scope. |
+| 4 | REPL-001 | P1 | BLOCKED | Depends on ARCH-007; mTLS and separate agent signing keys require key infrastructure. |
+| 4 | REPL-002 | P0 | BLOCKED | Requires topology/infrastructure choice and deferred publication outbox. |
+| 4 | REPL-003 | P1 | BLOCKED | Depends on REPL-002. |
+| 5 | GEO-001 | P2 | PARTIALLY COMPLETED | Implemented: Deterministic weighted policy engine exists. Remaining: DNS/API/UI propagation pending. |
+| 5 | GEO-002 | P2 | PARTIALLY COMPLETED | Implemented: Engine accepts injected health state. Remaining: real health-driven failover pending. |
+| 5 | GEO-003 | P2 | PARTIALLY COMPLETED | Implemented: Dataset watcher/atomic install/staleness exist. Remaining: licensed City data is external. |
+| 5 | GEO-004 | P2 | BLOCKED | Requires policy/version schema and activation design. |
+| 5 | GEO-005 | P2 | PARTIALLY COMPLETED | Implemented: GeoRule search/pagination added. Remaining: UI search/precedence display pending. |
+| 5 | TRAF-001 | P2 | COMPLETED | Deterministic policy engine has 3 passing unit tests. |
+| 5 | TRAF-002 | P3 | BLOCKED | Requires external location/latency data sources. |
+| 5 | TRAF-003 | P3 | BLOCKED | Requires pool/region schema design. |
+| 5 | TRAF-004 | P2 | BLOCKED | Depends on TRAF-003. |
+| 5 | HLTH-001 | P2 | BLOCKED | Requires new probe scheduler and SSRF-safe network policy. |
+| 6 | HLTH-002 | P1 | BLOCKED | Depends on HLTH-001 and monitoring stack. |
+| 6 | ANA-001 | P2 | PARTIALLY COMPLETED | Implemented: Query-log redaction/level controls exist. Remaining: structured sampling/persistence/export pending. |
+| 6 | ANA-002 | P1 | PARTIALLY COMPLETED | Implemented: RCODE counters exist. Remaining: latency histogram/history tables pending. |
+| 6 | ANA-003 | P2 | BLOCKED | Requires export format/tenant-scope decision. |
+| 6 | MON-001 | P0 | NEEDS VERIFICATION | Implemented: Scrape config corrected. Remaining: no runtime Prometheus scrape smoke test. Verification gap: Runtime Prometheus scrape smoke test was not run. |
+| 6 | MON-002 | P1 | NEEDS VERIFICATION | Implemented: Alertmanager config/rules added. Remaining: no runtime delivery test. Verification gap: Runtime Alertmanager delivery test was not run. |
+| 6 | MON-003 | P1 | NEEDS VERIFICATION | Implemented: Grafana dashboard JSON added. Remaining: no runtime provisioning test. Verification gap: Runtime Grafana provisioning test was not run. |
+| 6 | MON-004 | P1 | PARTIALLY COMPLETED | Implemented: API metrics token protection exists. Remaining: DNS exporter relies on internal network isolation. |
+| 6 | MON-005 | P1 | BLOCKED | Multi-location probes require external infrastructure. |
+| 8 | CUST-001 | P1 | BLOCKED | Requires email provider, user-status schema and invite/reset token model. |
+| 8 | CUST-002 | P3 | BLOCKED | Requires external IdP/OIDC/SAML dependency and demand approval. |
+| 8 | CUST-003 | P3 | BLOCKED | Depends on CUST-002. |
+| 8 | TEN-001 | P1 | COMPLETED | Quota reservation concurrency and usage tests pass. |
+| 8 | TEN-002 | P3 | BLOCKED | Depends on RBAC-001 permission catalog. |
+| 8 | TEN-003 | P0 | PARTIALLY COMPLETED | Implemented: Deterministic tenant matrix exists. Remaining: analytics/agents/search cases pending. |
+| 8 | RBAC-001 | P3 | BLOCKED | Requires permission catalog tables and policy engine across handlers. |
+| 8 | RBAC-002 | P1 | COMPLETED | Per-user password reset and session-revocation test passes. |
+| 7 | API-001 | P1 | PARTIALLY COMPLETED | Implemented: OpenAPI spec route with component schemas exists. Remaining: full route annotation and lint pending. |
+| 7 | API-002 | P1 | PARTIALLY COMPLETED | Implemented: create_zone idempotency implemented/tested. Remaining: other mutating endpoints pending. |
+| 7 | API-003 | P1 | BLOCKED | Depends on API-001 completion and ARCH-007 secret decision. |
+| 7 | API-004 | P1 | PARTIALLY COMPLETED | Implemented: Global per-IP limit middleware added. Remaining: tenant budgets and middleware test pending. |
+| 7 | API-005 | P2 | BLOCKED | Requires outbound HTTP client, SSRF-safe egress, signing keys and dead-letter store. |
+| 7 | API-006 | P2 | BLOCKED | Depends on API-002 completion and job model. |
+| 7 | API-007 | P1 | PARTIALLY COMPLETED | Implemented: Pagination exists for several lists. Remaining: remaining lists and error envelopes pending. |
+| 7 | API-008 | P2 | BLOCKED | Depends on API-001 completion. |
+| 7 | API-009 | P3 | BLOCKED | Depends on API-008 and external provider toolchain. |
+| 7 | API-010 | P1 | PARTIALLY COMPLETED | Implemented: Frontend route-contract script exists. Remaining: CI enforcement/schema drift checks pending. |
+| 8 | AUD-001 | P1 | PARTIALLY COMPLETED | Implemented: Audit detail and CSV export endpoints tested. Remaining: UI detail/export wiring pending. |
+| 8 | AUD-002 | P0 | PARTIALLY COMPLETED | Implemented: Broad audit coverage exists. Remaining: coverage-matrix ADR and failure-policy decision pending. |
+| 8 | AUD-003 | P2 | PARTIALLY COMPLETED | Implemented: Retention configurable. Remaining: archive/SIEM target external. |
+| 12 | BAK-002 | P0 | BLOCKED | Requires PostgreSQL backup/PITR storage target and restore drill. |
+| 3 | BAK-003 | P0 | BLOCKED | Depends on DNSSEC-001; no encrypted key export/restore target. |
+| 12 | BAK-004 | P0 | BLOCKED | Depends on BAK-002/BAK-003. |
+| 12 | BAK-005 | P0 | COMPLETED | ADR-0003 documents RPO/RTO targets; drills remain blocked. |
+| 9 | SEC-001 | P0 | BLOCKED | Requires certificate issuance and reverse-proxy deployment topology. |
+| 9 | SEC-002 | P0 | BLOCKED | Requires CA/certificate provisioning and connection-string migration. |
+| 9 | SEC-003 | P0 | PARTIALLY COMPLETED | Implemented: Rotation tool added. Remaining: real secret rotation blocked by owner credentials. |
+| 9 | SEC-004 | P1 | BLOCKED | Depends on key custody decision and user lifecycle schema. |
+| 9 | SEC-005 | P1 | PARTIALLY COMPLETED | Implemented: Login/DNS/API/verification limits exist. Remaining: tenant abuse scoring pending. |
+| 9 | SEC-006 | P1 | PARTIALLY COMPLETED | Implemented: DNSSEC and agent keys separate. Remaining: JWT remains single trust anchor pending rotation. |
+| 9 | SEC-007 | P0 | PARTIALLY COMPLETED | Implemented: Per-source governor and admission limits exist. Remaining: full RRL coverage pending. |
+| 9 | SEC-008 | P1 | PARTIALLY COMPLETED | Implemented: Secret/docs checks and dependency audits exist. Remaining: SBOM and image signing pending. |
+| 10 | PERF-001 | P0 | PARTIALLY COMPLETED | Implemented: ADR state machine exists. Remaining: outbox implementation pending. |
+| 10 | PERF-002 | P0 | PARTIALLY COMPLETED | Implemented: ADR selected concurrency model. Remaining: benchmark/implementation pending. |
+| 10 | PERF-003 | P1 | COMPLETED | Overview/query-count tests and local 5,000-zone benchmark exist. |
+| 10 | PERF-004 | P1 | NEEDS VERIFICATION | Implemented: Admission limits implemented. Remaining: capacity proof pending. Verification gap: High-concurrency capacity proof was not run. |
+| 10 | HA-001 | P0 | BLOCKED | Requires multi-replica infrastructure and publication outbox. |
+| 12 | HA-002 | P0 | BLOCKED | Depends on HA-001 and shared publication state. |
+| 10 | HA-003 | P1 | BLOCKED | Requires redundant DNS/anycast/multi-region infrastructure. |
+| 10 | HA-004 | P0 | BLOCKED | Depends on HA-001/HA-003 failure evidence. |
+| 12 | HA-005 | P1 | BLOCKED | Requires chaos/failure-injection environment. |
+| 12 | HA-006 | P0 | BLOCKED | Depends on HA-005 and BAK-004 drills. |
+| 11 | ADM-001 | P1 | PARTIALLY COMPLETED | Implemented: Metadata UI added. Remaining: truthful health/lifecycle controls still partial. |
+| 11 | ADM-002 | P0 | PARTIALLY COMPLETED | Implemented: Zone management UX advanced. Remaining: clone/suspend controls not surfaced. |
+| 11 | ADM-003 | P1 | PARTIALLY COMPLETED | Implemented: Audit backend endpoints exist. Remaining: UI drawer/export wiring pending. |
+| 11 | ADM-004 | P1 | PARTIALLY COMPLETED | Implemented: Viewer enforcement exists. Remaining: full permission-aware catalog depends on RBAC-001. |
+| 11 | ADM-005 | P2 | BLOCKED | Requires notification model and settings schema. |
+| 11 | UX-001 | P1 | NEEDS VERIFICATION | Implemented: Existing a11y suite passes. Remaining: new metadata/reset UI not re-audited. Verification gap: New metadata and password-reset UI controls have not been re-audited. |
+| 11 | CUI-001 | P2 | PARTIALLY COMPLETED | Implemented: Customer dashboard exists. Remaining: onboarding/error polish pending. |
+| 11 | CUI-002 | P2 | PARTIALLY COMPLETED | Implemented: Analytics UX exists. Remaining: provenance/export/missing-data polish pending. |
+| 11 | CUI-003 | P1 | NEEDS VERIFICATION | Implemented: Existing WCAG checks pass. Remaining: new controls need another audit. Verification gap: New customer-facing controls have not been re-audited. |
+| 11 | CUI-004 | P2 | PARTIALLY COMPLETED | Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass. |
+| 12 | OPS-001 | P0 | BLOCKED | Requires TLS reverse proxy, certificates and production topology decision. |
+| 12 | OPS-002 | P1 | BLOCKED | Requires Kubernetes/RWX storage and validated manifests. |
+| 12 | OPS-003 | P0 | NOT STARTED | CI action refs, test DB service and release gates not repaired. |
+| 12 | OPS-004 | P1 | PARTIALLY COMPLETED | Implemented: Monitoring configs added. Remaining: deployment and on-call runbooks incomplete. |
+| 12 | OPS-005 | P1 | NOT STARTED | Incident/rollback/cert/GeoIP/failover runbooks not written. |
+| 12 | OPS-006 | P1 | NOT STARTED | Certificate lifecycle and GeoIP automation not implemented. |
+| 12 | OPS-007 | P2 | NOT STARTED | Status page, release signing, SBOM publication and diagnostics bundle not implemented. |
+| 12 | OPS-008 | P0 | NOT STARTED | Production-readiness review not passed; P0 gate still open. |
