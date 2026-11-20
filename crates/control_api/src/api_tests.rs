@@ -6615,3 +6615,82 @@ async fn record_delete_publish_failure_restores_record() {
     std::fs::create_dir_all(env.dir.path()).unwrap();
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn import_dry_run_writes_nothing() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "dryrun.example").await;
+    let before = std::fs::read_to_string(env.zone_file("dryrun.example")).unwrap();
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/import"),
+        Some(&t),
+        j(serde_json::json!({"dry_run":true,"records":[
+            {"name":"one","record_type":"A","value":"192.0.2.1"},
+            {"name":"two","record_type":"TXT","value":"hello"}
+        ]}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["dry_run"], true);
+    assert_eq!(body["would_import"], 2);
+
+    let (_, list, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        None
+    );
+    assert!(list.as_array().unwrap().iter().all(|r| {
+        let name = r["name"].as_str().unwrap_or_default();
+        name != "one" && name != "two"
+    }));
+    assert_eq!(
+        std::fs::read_to_string(env.zone_file("dryrun.example")).unwrap(),
+        before
+    );
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn import_reports_all_row_errors() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "rowerrors.example").await;
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/import"),
+        Some(&t),
+        j(serde_json::json!({"records":[
+            {"name":"bad1","record_type":"A","value":"999.0.2.1"},
+            {"name":"bad2","record_type":"A","value":"not-an-ip"}
+        ]}))
+    );
+    assert_eq!(st, 400, "{raw}");
+    let errors = body["errors"].as_array().expect("errors array");
+    assert_eq!(errors.len(), 2, "{raw}");
+    assert_eq!(errors[0]["row"], 0);
+    assert_eq!(errors[1]["row"], 1);
+
+    let (_, list, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        None
+    );
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["name"] != "bad1" && r["name"] != "bad2")
+    );
+    env.cleanup().await;
+}

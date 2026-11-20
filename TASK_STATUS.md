@@ -74,7 +74,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 
 | Task | Status | Evidence |
 |---|---|---|
-| ZONE-001 — BIND import/export | **PARTIAL** | JSON import/export with transaction and rollback exists; BIND parsing, dry-run and per-row errors do not. |
+| ZONE-001 — BIND import/export | **PARTIAL** | Added `dry_run` previews and per-row error arrays to JSON import; `import_dry_run_writes_nothing` and `import_reports_all_row_errors` pass. Full `control_api` suite passes 145/145 with PostgreSQL. BIND zone-file parsing and byte-size cap remain. |
 | ZONE-002 — multi-zone bulk import | **TODO** | No backend route; dead UI control was removed in Phase 0. |
 | ZONE-003 — zone templates | **TODO** | No template/clone API or schema. |
 | ZONE-004 — metadata/tags | **TODO** | No tags/metadata columns or server-side filters. |
@@ -88,7 +88,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | REC-005 — confirmation/diff safeguards | **PARTIAL** | Added record-delete confirmation dialog; stale bulk routes in `web/ui/SETUP.md` corrected. Record diff/history and bulk-delete safeguards remain. |
 | ZONE-008 / REC-006 | **N/A** | These IDs appear only as feature-matrix IDs or phase-range shorthand, not as defined tasks. |
 
-Phase 2 exit gate is **not closed**; only REC-002 is complete. ZONE-002/003/004/006, REC-001/003/004 and full ZONE-001/005/007/REC-005 remain open.
+Phase 2 exit gate is **not closed**; REC-002 is complete and ZONE-001/REC-005 are advanced but partial. ZONE-002/003/004/006, REC-001/003/004 and full ZONE-001/005/007/REC-005 remain open.
 
 
 ---

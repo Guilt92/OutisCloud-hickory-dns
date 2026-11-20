@@ -5542,6 +5542,8 @@ async fn export_zone(
 #[derive(Deserialize)]
 struct ImportZoneReq {
     records: Vec<ImportRecordReq>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Deserialize)]
@@ -5609,11 +5611,12 @@ async fn import_zone(
     };
     let mut has_soa = existing.iter().any(|r| r.rtype.eq_ignore_ascii_case("SOA"));
 
-    // FAIL-FAST: validate ALL records before importing any
+    // Validate ALL records before importing any; collect every row error.
     let mut candidate = existing;
     let mut fresh: Vec<RecordRow> = Vec::new();
     let mut skipped = 0usize;
-    for record in body.records.iter() {
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    for (index, record) in body.records.iter().enumerate() {
         let rec = match validate_record_input(
             &access.domain,
             &record.name,
@@ -5624,26 +5627,32 @@ async fn import_zone(
         ) {
             Ok(r) => r,
             Err(e) => {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Import validation failed",
-                    "details": format!("Record {}: {}", record.name, e)
+                errors.push(serde_json::json!({
+                    "row": index,
+                    "name": record.name,
+                    "error": e,
                 }));
+                continue;
             }
         };
         if rec.rtype == "NS" {
             if let Err(e) = validate_ns_value(&rec.value, &allowed_ns) {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Import validation failed",
-                    "details": format!("Record {}: {}", record.name, e.message)
+                errors.push(serde_json::json!({
+                    "row": index,
+                    "name": record.name,
+                    "error": e.message,
                 }));
+                continue;
             }
         }
         if rec.rtype == "SOA" {
             if has_soa {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Import validation failed",
-                    "details": "zone already has an SOA record"
+                errors.push(serde_json::json!({
+                    "row": index,
+                    "name": record.name,
+                    "error": "zone already has an SOA record",
                 }));
+                continue;
             }
             has_soa = true;
         }
@@ -5659,16 +5668,32 @@ async fn import_zone(
         candidate.push(rec.clone());
         fresh.push(rec);
     }
-    if fresh.is_empty() {
-        return HttpResponse::Ok().json(serde_json::json!({
-            "imported": 0, "skipped": skipped, "zone_id": zone_id,
-            "message": "No new records (all were duplicates)"
+    if !errors.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Import validation failed",
+            "details": format!("{} row(s) failed validation", errors.len()),
+            "errors": errors,
         }));
     }
     if let Err(e) = precheck_zone_change(db, &access.domain, candidate).await {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "Import validation failed",
             "details": format!("Hickory zone parser validation failed: {}", e)
+        }));
+    }
+    if body.dry_run {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "dry_run": true,
+            "zone_id": zone_id,
+            "would_import": fresh.len(),
+            "skipped": skipped,
+            "errors": [],
+        }));
+    }
+    if fresh.is_empty() {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "imported": 0, "skipped": skipped, "zone_id": zone_id,
+            "message": "No new records (all were duplicates)"
         }));
     }
 
