@@ -52,16 +52,16 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 
 ### Phase 1 exit gate
 
-**Not closed.** CORE-004 and CORE-006 are DONE; CORE-001/002/003/005/008 are PARTIAL; CORE-007/009/010/011/012/013 remain TODO. Remaining genuine blockers:
+**Not closed.** CORE-004 and CORE-006 are DONE; CORE-001/002/003/005/008/010/013 are PARTIAL; CORE-007/009/011/012 remain TODO. Remaining genuine blockers:
 
 | Blocker | Impact | Required action | Safe alternative |
 |---|---|---|---|
-| `TSigResponseContext::sign` was single-use and request-MAC anchored | Signed multi-message transfers could not be correct | Added `with_previous_mac` and per-chunk signing; compile and unsigned tests pass | Independent signed-transfer client validation is still pending |
+| Signed transfers lack independent client validation | Protocol correctness of MAC chaining is not externally proven | Run a signed AXFR/IXFR exchange against `dig`/Knot/BIND | Unsigned multi-message tests and compile checks pass; implementation follows RFC 8945 chaining |
 | SQLite journal transactions and delta query are now implemented (CORE-002) | End-to-end SQLite IXFR evidence is still missing | Add a SQLite-handler IXFR integration test | Journal delta unit test and in-memory NOTIMP test already pass |
 | No peer/notify configuration or secondary refresh engine (CORE-003) | NOTIFY can be acknowledged and retried but cannot trigger a refresh | Add peer config and secondary zone state in Phase 4 | Keep ACK-only NOTIFY with bounded sender retry; no false refresh claim |
 | No H3 CLI/config/client harness (CORE-010) | DoH3 cannot be claimed in the binary | Wire H3 features, config, flags, and an integration test | Remove false README claims (done) |
 | No catalog identity accessor for partial swaps (CORE-013) | Per-zone incremental reload cannot be proven | Add per-zone fingerprinting and `upsert`/`remove`-only reload path | Keep atomic full-catalog reload with last-known-good |
-| No high-concurrency load harness (CORE-005) | Admission limits are implemented but not capacity-proven | Add a repeatable backpressure test | Keep conservative env-configurable defaults |
+| No high-concurrency load harness (CORE-005) | Admission limits are implemented but not capacity-proven | Add a repeatable backpressure test with controlled fan-out | Keep conservative env-configurable defaults and monitor rejection logs |
 
 
 ---
