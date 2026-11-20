@@ -6910,3 +6910,46 @@ async fn zone_lifecycle_suspend_and_activate() {
     assert_eq!(st, 400);
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn dnssec_rollover_carries_algorithm_and_protects_new_key() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "dnssec-hardening.example").await;
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/enable"),
+        Some(&t),
+        j(serde_json::json!({"algorithm":"ED25519"}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(body["keys"][0]["algorithm"], "ED25519");
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/rollover"),
+        Some(&t),
+        j(serde_json::json!({}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(
+        body["keys"][1]["algorithm"], "ED25519",
+        "rollover must carry the live algorithm"
+    );
+    let new_tag = body["keys"][1]["key_tag"].as_i64().unwrap() as i32;
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/dnssec/rollover/complete"),
+        Some(&t),
+        j(serde_json::json!({"retire_key_tag": new_tag}))
+    );
+    assert_eq!(st, 409, "{raw}");
+    assert_eq!(body["error"], "cannot_retire_new_key");
+    env.cleanup().await;
+}

@@ -11,6 +11,7 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
   const [msg, setMsg] = React.useState(null)
   const [busy, setBusy] = React.useState(false)
   const [confirmDs, setConfirmDs] = React.useState(false)
+  const [confirmRetireDs, setConfirmRetireDs] = React.useState(false)
   const err = (e) => setMsg({ bad: true, text: e.response?.data?.details || e.response?.data?.error || e.message })
 
   const load = React.useCallback(async () => {
@@ -31,6 +32,7 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
 
   if (!info) return <p className="text-sm text-muted">{msg ? msg.text : 'Loading…'}</p>
   const rolling = info.keys.length > 1
+  const currentAlgorithm = info.keys.find(k => k.status === 'active' || k.status === 'new')?.algorithm || algorithm
   return (
     <div className="space-y-3" data-testid="dnssec-tab">
       {msg && <div role={msg.bad ? 'alert' : 'status'} className={`text-sm px-3.5 py-2.5 rounded-[14px] border ${msg.bad ? 'border-danger-500/30 text-danger-600' : 'border-success-500/25 text-success-700'}`}>{msg.text}</div>}
@@ -53,6 +55,12 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
       )}
       {!info.enabled && <p className="text-xs text-muted">GeoDNS and DNSSEC cannot be combined on one zone: signed zones are served statically.</p>}
 
+      {rolling && canManage && (
+        <label className="text-xs flex items-center gap-2">
+          <input type="checkbox" checked={confirmRetireDs} onChange={e => setConfirmRetireDs(e.target.checked)} />
+          The replacement DS is published at the registrar and the old DS has expired from caches
+        </label>
+      )}
       {info.keys.map(k => (
         <div key={k.key_tag} className="border border-line rounded-[14px] p-3 text-xs space-y-1 bg-surface-2/60">
           <div><b>Key {k.key_tag}</b> · {k.algorithm} · {k.status === 'new' ? 'new (rollover)' : k.status}</div>
@@ -63,12 +71,12 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
             </div>
           ))}
           <div><span className="text-muted">DNSKEY:</span><code className="block break-all select-all">{k.dnskey}</code></div>
-          {rolling && canManage && <button className="btn-sm btn-ghost" disabled={busy} onClick={async () => { if (await askConfirm({ title: `Retire key ${k.key_tag}?`, message: 'Only do this after the DS for the other key is published and the old DS has expired from caches.', confirmLabel: 'Retire key' })) act('rollover/complete', { retire_key_tag: k.key_tag }, `Key ${k.key_tag} retired`) }}>Retire this key</button>}
+          {rolling && canManage && k.status !== 'new' && <button className="btn-sm btn-ghost" disabled={busy || !confirmRetireDs} title={confirmRetireDs ? '' : 'Confirm the replacement DS is published first'} onClick={async () => { if (await askConfirm({ title: `Retire key ${k.key_tag}?`, message: 'Only do this after the DS for the other key is published and the old DS has expired from caches.', confirmLabel: 'Retire key' })) act('rollover/complete', { retire_key_tag: k.key_tag }, `Key ${k.key_tag} retired`) }}>Retire this key</button>}
         </div>
       ))}
 
       {info.enabled && canManage && !rolling && (
-        <button className="btn-sm btn-ghost" disabled={busy} onClick={() => act('rollover', { algorithm: 'ECDSAP256SHA256' }, 'Rollover started - publish the new DS, then retire the old key')}>Start key rollover</button>
+        <button className="btn-sm btn-ghost" disabled={busy} onClick={() => act('rollover', { algorithm: currentAlgorithm }, 'Rollover started - publish the new DS, then retire the old key')}>Start key rollover</button>
       )}
       {info.enabled && canManage && (
         <div className="border-t border-line pt-3">

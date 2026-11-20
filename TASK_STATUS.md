@@ -93,6 +93,25 @@ Phase 2 exit gate is **not closed**; REC-002 and REC-004 are complete; ZONE-001/
 
 ---
 
+## 0.3 Phase 3 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| DNSSEC-001 — encrypted/KMS key store | **BLOCKED** | Requires KMS/HSM decision and secret-handling authorization (ARCH-007). Current keys are plaintext PEM files with restricted mode; no DB plaintext. Minimum unblock: owner-approved key-store design plus migration window. |
+| DNSSEC-002 — automatic key lifecycle | **PARTIAL** | Manual CSK enable/rollover/complete works; scheduler, KSK/ZSK split and emergency rollover remain. |
+| DNSSEC-003 — NSEC3/CDS/CDNSKEY/parent polling | **BLOCKED** | Requires signed-zone content design and parent-side coordination policy. NSEC proofs work; NSEC3 exposure and parent polling do not. |
+| DNSSEC-004 — encrypted backup/restore | **BLOCKED** | Depends on DNSSEC-001. Backup format and restore drill cannot be safely designed without key-store decision. |
+| DNSSEC-005 — multi-signer DNSSEC | **BLOCKED** | Requires multi-operator product decision and external coordination. |
+| DNSSEC-006 — DS verification/alerts | **PARTIAL** | DS records and operator guidance exist; parent verification and alerts depend on Phase 6 monitoring. |
+| DNSSEC-007 — GeoDNS + DNSSEC | **DONE** | Permanent exclusion implemented in `enable_dnssec`, `generate_all` and GeoRule guards; documented in UI/help. |
+| DNSSEC-008 — rollover UI/API hardening | **DONE** | Rollover now carries the live key algorithm; API refuses retiring a `new` key; UI hides retire action for new keys and requires a DS-publication checkbox. `dnssec_rollover_carries_algorithm_and_protects_new_key` passes. |
+| DNSSEC-009 — negative/conformance tests | **PARTIAL** | Local fail-closed, wrong trust-anchor, NSEC/NXDOMAIN/NODATA and algorithm-change tests exist. NSEC3 and expired-signature cases remain in upstream suites. |
+
+Phase 3 exit gate: **COMPLETED_WITH_BLOCKERS**. All safely implementable work is complete; key custody, backup, NSEC3 parent coordination, multi-signer, and external DS/alert validation remain explicitly BLOCKED.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.

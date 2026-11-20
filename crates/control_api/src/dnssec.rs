@@ -377,9 +377,13 @@ pub async fn enable_dnssec(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let alg_s = body
-        .and_then(|b| b.algorithm.clone())
-        .unwrap_or_else(|| DEFAULT_ALGORITHM.to_string());
+    let alg_s = match body.and_then(|b| b.algorithm.clone()) {
+        Some(algorithm) => algorithm,
+        None => data.db.query_opt(
+            "SELECT algorithm FROM dnssec_keys WHERE CAST(zone_id AS varchar) = $1 AND status <> 'retired' ORDER BY created_at DESC LIMIT 1",
+            &[&zone_id],
+        ).await.ok().flatten().map(|r| r.get::<_, String>(0)).unwrap_or_else(|| DEFAULT_ALGORITHM.to_string()),
+    };
     let Some(algorithm) = parse_algorithm(&alg_s) else {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": "algorithm must be ECDSAP256SHA256, ECDSAP384SHA384 or ED25519"}));
     };
@@ -475,9 +479,21 @@ pub async fn rollover_dnssec(
             serde_json::json!({"error": "a rollover is already in progress; complete it first"}),
         );
     }
-    let alg_s = body
-        .and_then(|b| b.algorithm.clone())
-        .unwrap_or_else(|| DEFAULT_ALGORITHM.to_string());
+    let alg_s = match body.and_then(|b| b.algorithm.clone()) {
+        Some(algorithm) => algorithm,
+        None => data
+            .db
+            .query_opt(
+                "SELECT algorithm FROM dnssec_keys WHERE CAST(zone_id AS varchar) = $1 \
+                 AND status <> 'retired' ORDER BY created_at DESC LIMIT 1",
+                &[&zone_id],
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|row| row.get::<_, String>(0))
+            .unwrap_or_else(|| DEFAULT_ALGORITHM.to_string()),
+    };
     let Some(algorithm) = parse_algorithm(&alg_s) else {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "unsupported algorithm"}));
@@ -522,7 +538,7 @@ pub async fn complete_rollover(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let live = match data.db.query("SELECT key_tag, key_file FROM dnssec_keys WHERE CAST(zone_id AS varchar) = $1 AND status <> 'retired'", &[&zone_id]).await { Ok(r) => r, Err(e) => return db_err("complete", &e) };
+    let live = match data.db.query("SELECT key_tag, key_file, status FROM dnssec_keys WHERE CAST(zone_id AS varchar) = $1 AND status <> 'retired'", &[&zone_id]).await { Ok(r) => r, Err(e) => return db_err("complete", &e) };
     if live.len() < 2 {
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "no rollover in progress (only one key)"}));
@@ -534,6 +550,11 @@ pub async fn complete_rollover(
         return HttpResponse::NotFound()
             .json(serde_json::json!({"error": "no such active key tag"}));
     };
+    let victim_status: String = victim.get(2);
+    if victim_status == "new" {
+        return HttpResponse::Conflict()
+            .json(serde_json::json!({"error": "cannot_retire_new_key"}));
+    }
     let file: String = victim.get(1);
     if let Err(e) = data.db.execute(
         "UPDATE dnssec_keys SET status = 'retired', retired_at = now() WHERE CAST(zone_id AS varchar) = $1 AND key_tag = $2 AND status <> 'retired'", &[&zone_id, &body.retire_key_tag]).await { return db_err("retire", &e); }
