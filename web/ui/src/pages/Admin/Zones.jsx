@@ -31,6 +31,8 @@ export default function Zones(){
   const [geodnsEnabled, setGeodnsEnabled] = React.useState(false)
   const [editingZone, setEditingZone] = React.useState(null)
   const [editDomain, setEditDomain] = React.useState('')
+  const [editDescription, setEditDescription] = React.useState('')
+  const [editTags, setEditTags] = React.useState('')
   const [editGeodns, setEditGeodns] = React.useState(false)
   const [zoneNameservers, setZoneNameservers] = React.useState({})
   const [creating, setCreating] = React.useState(false)
@@ -91,12 +93,16 @@ export default function Zones(){
   const startEdit = (zone) => {
     setEditingZone(zone)
     setEditDomain(zone.domain)
+    setEditDescription(zone.description || '')
+    setEditTags((zone.tags || []).join(', '))
     setEditGeodns(zone.geodns_enabled || false)
   }
 
   const cancelEdit = () => {
     setEditingZone(null)
     setEditDomain('')
+    setEditDescription('')
+    setEditTags('')
   }
 
   const saveEdit = async () => {
@@ -107,6 +113,10 @@ export default function Zones(){
     try {
       const domain = editDomain.endsWith('.') ? editDomain : editDomain + '.'
       await api.put(`/api/v1/zones/${editingZone.id}`, { domain, geodns_enabled: editGeodns })
+      await api.put(`/api/v1/zones/${editingZone.id}/metadata`, {
+        description: editDescription,
+        tags: editTags.split(',').map(t => t.trim()).filter(Boolean),
+      })
       notify?.success('Zone updated')
       cancelEdit()
       load()
@@ -205,9 +215,17 @@ export default function Zones(){
           ) : (
             <div className="flex flex-col lg:flex-row lg:items-end gap-4">
               <div className="flex-1 max-w-md">
-                <FormField label="Domain">
-                  <input className="input" value={editDomain} onChange={e => setEditDomain(e.target.value)} />
-                </FormField>
+                <div className="space-y-2">
+                  <FormField label="Domain">
+                    <input className="input" value={editDomain} onChange={e => setEditDomain(e.target.value)} />
+                  </FormField>
+                  <FormField label="Description">
+                    <input className="input" value={editDescription} onChange={e => setEditDescription(e.target.value)} placeholder="What is this zone for?" />
+                  </FormField>
+                  <FormField label="Tags (comma separated)">
+                    <input className="input" value={editTags} onChange={e => setEditTags(e.target.value)} placeholder="prod, customer" />
+                  </FormField>
+                </div>
               </div>
               <div className="flex items-center gap-3 pb-0.5">
                 <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
@@ -276,6 +294,8 @@ export default function Zones(){
                     <tr>
                       <td className="font-medium text-ink">
                         {z.domain}
+                        {z.description && <span className="block text-xs font-normal text-muted">{z.description}</span>}
+                        {(z.tags || []).length > 0 && <span className="block text-xs font-normal text-muted">{(z.tags || []).join(', ')}</span>}
                         {user?.role === 'admin' && <span data-testid={`zone-tenant-${z.domain}`} className="block text-xs font-normal text-muted">{z.tenant_name ? `Tenant: ${z.tenant_name}` : 'Platform zone'}</span>}
                         {z.status === 'pending' && <span className="badge badge-warning ml-2">pending verification</span>}
                         {z.access && z.access !== 'admin' && z.access !== 'owner' && <span className="badge badge-info ml-2">shared: {z.access}</span>}

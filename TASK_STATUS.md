@@ -231,6 +231,41 @@ Phase 9 exit gate: **COMPLETED_WITH_BLOCKERS**. Locally verifiable metrics-token
 
 ---
 
+## 0.10 Phase 10 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| PERF-001 — publication queue/outbox | **PARTIAL** | ADR-0001 defines state machine; implementation deferred and not yet wired. |
+| PERF-002 — transaction concurrency | **PARTIAL** | ADR-0005 selects bounded pool/per-tenant queue; implementation deferred. |
+| PERF-003 — index/query scaling | **DONE** | Existing overview/query-count tests and 5,000-zone local benchmark cover this slice. |
+| PERF-004 — resource limits | **PARTIAL** | Admission semaphores and per-source DNS limiter exist; capacity proof remains external. |
+| HA-001/002 — replicated control plane | **BLOCKED** | Needs multi-replica infrastructure and publication outbox. |
+| HA-003/004 — PostgreSQL HA and DNS redundancy | **BLOCKED** | Requires external infrastructure. |
+| BAK-002/004 — backups/PITR | **BLOCKED** | Requires storage target and restore drill. |
+| BAK-005 — RPO/RTO plan | **DONE** | ADR-0003 defines targets; drills remain part of blocked backup tasks. |
+
+Phase 10 exit gate: **COMPLETED_WITH_BLOCKERS**. Local performance evidence exists; HA/DR remain externally blocked.
+
+## 0.11 Phase 11 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| ADM-001/002 — truthful admin zones UX | **PARTIAL** | Metadata description/tags now editable and displayed; suspension/clone controls are backend-only. |
+| ADM-003 — audit UX | **PARTIAL** | Backend detail/export endpoints exist; UI drawer/export wiring remains. |
+| ADM-004 — permission-aware controls | **PARTIAL** | Viewer read-only middleware exists; full catalog depends on RBAC-001. |
+| ADM-005 — settings/notifications | **BLOCKED** | Needs notification model and settings schema. |
+| CUI-001..004 — customer UX | **PARTIAL** | Existing dashboard and QA coverage; record confirmation added; diff/onboarding polish remains. |
+| UX-001 — accessibility | **PARTIAL** | Existing 9/9 a11y checks; new metadata fields need another audit. |
+
+Phase 11 exit gate: **COMPLETED_WITH_BLOCKERS**. UI truthfulness improved; full permission-aware UX and notification center remain blocked.
+
+## 0.12 Phase 12 Reconciliation
+
+Production-readiness criteria are **not met**. External blockers remain: secret rotation, certificate/TLS provisioning, KMS key custody, backup/PITR restore drill, multi-replica HA, external signed-transfer interop, licensed GeoIP City data, SIEM/archive target, and multi-location probes. These require owner approval or external infrastructure and are explicitly NOT claimed as complete.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.
