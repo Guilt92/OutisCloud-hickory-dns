@@ -78,7 +78,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 | ZONE-002 — multi-zone bulk import | **TODO** | No backend route; dead UI control was removed in Phase 0. |
 | ZONE-003 — zone templates | **TODO** | No template/clone API or schema. |
 | ZONE-004 — metadata/tags | **TODO** | No tags/metadata columns or server-side filters. |
-| ZONE-005 — ownership verification | **PARTIAL** | TXT challenge and pending gating work; NS-delegation proof, retry and rate limits are missing. |
+| ZONE-005 — ownership verification | **PARTIAL** | Added bounded retry/backoff and shared per-user/per-zone rate limiting to verification; `domain_verification_gates_publication` passes. NS-delegation proof remains unimplemented. |
 | ZONE-006 — suspend/hold/archive | **TODO** | Only active/pending/deleting statuses exist. |
 | ZONE-007 / BAK-01 — revisions/diff | **PARTIAL** | Added `GET /api/v1/zones/{id}/revisions/{rev}/diff` with added/removed/changed records and a History-tab Diff action. `revision_diff_reports_added_and_removed_records` passes. Complete snapshots, configurable retention, and failure visibility remain. |
 | REC-001 — record metadata | **TODO** | No comments/tags columns. |

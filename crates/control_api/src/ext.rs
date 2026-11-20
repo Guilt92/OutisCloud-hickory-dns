@@ -618,14 +618,36 @@ pub async fn verify_zone(
                 .json(serde_json::json!({"error": "zone has no verification token"}));
         }
     };
+    let bucket = format!("zone-verify:{}:{}", tok.claims.sub, zone_id);
+    if let Some(wait) = crate::shared::limited(&data.db, &bucket, 10, 60, || true).await {
+        return HttpResponse::TooManyRequests().json(
+            serde_json::json!({"error": "too many verification attempts", "retry_after": wait}),
+        );
+    }
+
     let fqdn = format!("{}.{}", CHALLENGE_LABEL, access.domain);
-    let found = match txt_lookup(data.verify_resolver, &fqdn).await {
-        Ok(v) => v,
-        Err(e) => {
-            return HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": "verification lookup failed", "details": e}));
+    let mut last_error = String::new();
+    let mut found = Vec::new();
+    for attempt in 0..3u32 {
+        match txt_lookup(data.verify_resolver, &fqdn).await {
+            Ok(values) => {
+                found = values;
+                last_error.clear();
+                break;
+            }
+            Err(error) => {
+                last_error = error;
+                if attempt + 1 < 3 {
+                    tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt + 1))).await;
+                }
+            }
         }
-    };
+    }
+    if !last_error.is_empty() {
+        return HttpResponse::BadGateway().json(
+            serde_json::json!({"error": "verification lookup failed", "details": last_error}),
+        );
+    }
     if !found.iter().any(|t| t.trim() == token) {
         return HttpResponse::UnprocessableEntity().json(serde_json::json!({
             "error": "verification token not found",
