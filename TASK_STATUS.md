@@ -213,6 +213,24 @@ Phase 8 exit gate: **COMPLETED_WITH_BLOCKERS**. Audit and quota work advanced; i
 
 ---
 
+## 0.9 Phase 9 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| SEC-001 — API TLS/reverse proxy | **BLOCKED** | Requires certificate issuance and deployment topology decision. |
+| SEC-002 — PostgreSQL TLS | **BLOCKED** | Requires CA/cert provisioning and migration of connection strings. |
+| SEC-003 — secret manager/key hierarchy | **PARTIAL** | Added `scripts/rotate_secrets.py` for owner-controlled rotation (dry-run by default); actual tracked-secret rotation remains owner-blocked. |
+| SEC-004 — MFA secret encryption/recovery | **BLOCKED** | Depends on key custody decision and user lifecycle schema. |
+| SEC-005 — rate limits/abuse | **PARTIAL** | Shared login/verification/DNS/API limits exist; tenant-level budgets and abuse scoring remain. |
+| SEC-006 — JWT/agent key separation | **PARTIAL** | DNSSEC and agent keys are separate; JWT remains single trust anchor until ARCH-007 rotation. |
+| SEC-007 — DNS response-rate limiting | **PARTIAL** | Per-source governor limiter and admission semaphores exist; RRL slip coverage is partial. |
+| SEC-008 — SBOM/signing/dependency scanning | **PARTIAL** | Secret/docs checks and CI dependency audits exist; SBOM/image signing not wired. |
+
+Phase 9 exit gate: **COMPLETED_WITH_BLOCKERS**. Locally verifiable metrics-token protection and rotation tooling are complete; certificate/credential rotation remains owner-blocked.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.

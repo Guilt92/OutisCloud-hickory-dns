@@ -65,6 +65,7 @@ mod tests {
         assert!(!r.is_ready(300));
         r.mark_ready();
         assert!(r.is_ready(300));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         assert!(!r.is_ready(0));
         r.mark_not_ready();
         assert!(!r.is_ready(300));

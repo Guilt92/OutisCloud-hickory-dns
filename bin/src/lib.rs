@@ -285,7 +285,11 @@ impl DnsServer {
                 .map_err(|err| format!("failed to look up local address: {err}"))?;
 
             // Set up Prometheus HTTP server.
-            let server = PrometheusServer::new(listener, readiness.clone())?;
+            let metrics_token = std::env::var("PROMETHEUS_TOKEN")
+                .or_else(|_| std::env::var("METRICS_TOKEN"))
+                .ok()
+                .filter(|token| !token.is_empty());
+            let server = PrometheusServer::new(listener, readiness.clone(), metrics_token)?;
             info!("listening for Prometheus metrics on {local_addr:?}");
             Some(server)
         } else {

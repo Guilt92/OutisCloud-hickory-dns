@@ -27,13 +27,17 @@ pub(crate) struct PrometheusServer {
 impl PrometheusServer {
     /// Register a metrics recorder, and start an HTTP server with the provided listener to provide
     /// metrics to Prometheus.
-    pub(crate) fn new(listener: TcpListener, readiness: Readiness) -> Result<Self, String> {
+    pub(crate) fn new(
+        listener: TcpListener,
+        readiness: Readiness,
+        metrics_token: Option<String>,
+    ) -> Result<Self, String> {
         // Set up metrics recorder.
         let handle = configure_buckets(PrometheusBuilder::new())
             .install_recorder()
             .map_err(|e| format!("failed to install prometheus endpoint {e}"))?;
 
-        let service = PrometheusService::new(handle, readiness);
+        let service = PrometheusService::new(handle, readiness, metrics_token);
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
         let shutdown = GracefulShutdown::new();
@@ -86,11 +90,25 @@ impl PrometheusServer {
 struct PrometheusService {
     handle: PrometheusHandle,
     readiness: Readiness,
+    metrics_token: Option<String>,
+}
+
+fn token_matches(got: &str, want: &str) -> bool {
+    got.len() == want.len()
+        && got
+            .bytes()
+            .zip(want.bytes())
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
 }
 
 impl PrometheusService {
-    fn new(handle: PrometheusHandle, readiness: Readiness) -> Self {
-        Self { handle, readiness }
+    fn new(handle: PrometheusHandle, readiness: Readiness, metrics_token: Option<String>) -> Self {
+        Self {
+            handle,
+            readiness,
+            metrics_token,
+        }
     }
 }
 
@@ -124,6 +142,24 @@ impl Service<Request<Incoming>> for PrometheusService {
                 .header(CONTENT_TYPE, "text/plain; charset=utf-8")
                 .body(body.to_string())
                 .expect("static header/body")));
+        }
+
+        if path == "/metrics" {
+            if let Some(want) = &self.metrics_token {
+                let got = req
+                    .headers()
+                    .get(http::header::AUTHORIZATION)
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|h| h.strip_prefix("Bearer "))
+                    .unwrap_or("");
+                if !token_matches(got, want) {
+                    return ready(Ok(Response::builder()
+                        .status(http::StatusCode::UNAUTHORIZED)
+                        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                        .body("unauthorized\n".to_string())
+                        .expect("static header/body")));
+                }
+            }
         }
 
         let response_builder =
@@ -179,3 +215,15 @@ const INTERNET_LATENCY_BUCKETS: &[f64] = &[
 const INTERNAL_LATENCY_BUCKETS: &[f64] = &[
     0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::token_matches;
+
+    #[test]
+    fn metrics_token_comparison_is_exact() {
+        assert!(token_matches("secret", "secret"));
+        assert!(!token_matches("secret", "secrex"));
+        assert!(!token_matches("secret", "secret2"));
+    }
+}
