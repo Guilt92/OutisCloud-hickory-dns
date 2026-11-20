@@ -7094,3 +7094,19 @@ async fn audit_detail_and_export_endpoints() {
     assert!(raw.contains("id,user_id,action"));
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn openapi_spec_is_published() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let (st, body, raw) = call!(app, get, "/openapi.json", None::<&str>, None);
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        body["openapi"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("3.")
+    );
+    assert!(body["components"]["schemas"].is_object());
+    env.cleanup().await;
+}

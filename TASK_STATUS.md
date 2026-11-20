@@ -176,7 +176,7 @@ Phase 6 exit gate: **COMPLETED_WITH_BLOCKERS**. Monitoring deployment is now tru
 
 | Task | Status | Evidence / blocker |
 |---|---|---|
-| API-001 — OpenAPI contract | **BLOCKED** | `utoipa` dependencies exist but no generated spec/route or linting. Minimum unblock: annotate routes and decide contract versioning. |
+| API-001 — OpenAPI contract | **PARTIAL** | Added `GET /openapi.json` with utoipa component schemas and a passing contract test. Full route annotation and breaking-change linting remain. |
 | API-002 — idempotency keys | **PARTIAL** | Added `idempotency_keys` table (migration + runtime DDL), TTL/replay helpers, and `Idempotency-Key` support on `create_zone`. `create_zone_idempotency_key_replays_first_response` passes. Other mutating endpoints remain. |
 | API-003 — scoped API tokens | **BLOCKED** | Depends on OpenAPI contract and secret-handling decision (ARCH-007). |
 | API-004 — API-wide rate limits | **PARTIAL** | Added global per-IP middleware using the shared DB limiter with configurable `API_RATE_LIMIT_PER_IP`, 429 + `Retry-After`, and health/metrics exemptions. Tenant-level budgets and dedicated middleware tests remain. |
@@ -186,7 +186,7 @@ Phase 6 exit gate: **COMPLETED_WITH_BLOCKERS**. Monitoring deployment is now tru
 | API-008 — CLI/SDK | **BLOCKED** | Depends on API-001. |
 | API-009 — Terraform provider | **BLOCKED** | Depends on API-008 and external provider toolchain. |
 
-Phase 7 exit gate: **COMPLETED_WITH_BLOCKERS**. API-002 and API-004 are advanced but partial; full automation surface remains blocked.
+Phase 7 exit gate: **COMPLETED_WITH_BLOCKERS**. API-001/002/004 are advanced but partial; full automation surface remains blocked.
 
 
 ---

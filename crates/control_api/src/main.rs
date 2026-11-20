@@ -6,7 +6,7 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::hea
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use utoipa::ToSchema;
+use utoipa::{OpenApi, ToSchema};
 mod db_pool;
 mod dns_builder;
 mod dns_manager;
@@ -6536,9 +6536,18 @@ async fn set_zone_transfer_policy(
     HttpResponse::Ok().json(serde_json::json!({"policy": canonical}))
 }
 
+#[derive(OpenApi)]
+#[openapi(components(schemas(ErrorResponse, ZoneWithOwner, AuditLogEntry)))]
+struct ApiDoc;
+
+async fn openapi_spec() -> impl Responder {
+    HttpResponse::Ok().json(ApiDoc::openapi())
+}
+
 fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/health", web::get().to(health))
         .route("/ready", web::get().to(ready))
+        .route("/openapi.json", web::get().to(openapi_spec))
         // Auth
         .route("/api/v1/auth/login", web::post().to(login))
         .route("/api/v1/auth/logout", web::post().to(logout))
