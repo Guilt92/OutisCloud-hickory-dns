@@ -770,6 +770,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
             zone_type TEXT NOT NULL DEFAULT 'primary',
             description TEXT NOT NULL DEFAULT '',
             tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+            axfr_policy TEXT NOT NULL DEFAULT 'Deny',
             geodns_enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now(),
@@ -1060,6 +1061,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
         "ALTER TABLE zones ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
+         ALTER TABLE zones ADD COLUMN IF NOT EXISTS axfr_policy TEXT NOT NULL DEFAULT 'Deny';
          ALTER TABLE records ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT '';
          ALTER TABLE records ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS verify_token TEXT;
@@ -6344,6 +6346,59 @@ async fn set_zone_lifecycle(
     HttpResponse::Ok().json(serde_json::json!({"status": desired}))
 }
 
+#[derive(Deserialize)]
+struct TransferPolicyReq {
+    policy: String,
+}
+
+async fn set_zone_transfer_policy(
+    path: web::Path<String>,
+    body: web::Json<TransferPolicyReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    let access = match zone_access(&data.db, &zone_id, &tok).await {
+        Ok(a) => a,
+        Err(response) => return response,
+    };
+    let policy = body.policy.trim().to_ascii_lowercase();
+    let canonical = match policy.as_str() {
+        "deny" => "Deny",
+        "allowall" | "allow_all" | "allow-all" => "AllowAll",
+        _ => return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "policy must be Deny or AllowAll; signed transfers require TSIG key custody"
+        })),
+    };
+    if let Err(e) = data
+        .db
+        .execute(
+            "UPDATE zones SET axfr_policy = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
+            &[&canonical, &zone_id],
+        )
+        .await
+    {
+        warn!("set_zone_transfer_policy: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "database error"}));
+    }
+    audit(
+        &data.db,
+        Some(&tok.claims.sub),
+        "set_zone_transfer_policy",
+        "zone",
+        Some(zone_id.clone()),
+        &req,
+        serde_json::json!({"zone": access.domain, "policy": canonical}),
+    )
+    .await;
+    HttpResponse::Ok().json(serde_json::json!({"policy": canonical}))
+}
+
 fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/health", web::get().to(health))
         .route("/ready", web::get().to(ready))
@@ -6395,6 +6450,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/v1/zones/{id}/lifecycle",
             web::put().to(set_zone_lifecycle),
+        )
+        .route(
+            "/api/v1/zones/{id}/transfer-policy",
+            web::put().to(set_zone_transfer_policy),
         )
         // Records
         .route("/api/v1/zones/{id}/records", web::post().to(create_record))

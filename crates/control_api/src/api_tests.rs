@@ -6953,3 +6953,42 @@ async fn dnssec_rollover_carries_algorithm_and_protects_new_key() {
     assert_eq!(body["error"], "cannot_retire_new_key");
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn zone_transfer_policy_endpoint_and_validation() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "transfer-policy.example").await;
+
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/transfer-policy"),
+        Some(&t),
+        j(serde_json::json!({"policy":"AllowAll"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["policy"], "AllowAll");
+    let stored: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT axfr_policy FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, "AllowAll");
+
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/transfer-policy"),
+        Some(&t),
+        j(serde_json::json!({"policy":"AllowSigned"}))
+    );
+    assert_eq!(st, 400);
+    env.cleanup().await;
+}

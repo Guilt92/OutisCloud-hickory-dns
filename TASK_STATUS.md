@@ -112,6 +112,27 @@ Phase 3 exit gate: **COMPLETED_WITH_BLOCKERS**. All safely implementable work is
 
 ---
 
+## 0.4 Phase 4 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| SECONDARY-001 — real secondary zone model | **BLOCKED** | Requires a secondary zone schema, refresh engine, and UI lifecycle. ADR-0002 accepts the scope but does not implement it. Minimum unblock: approve schema for primary peers and SOA timers. |
+| SECONDARY-002 — peer config/timers | **BLOCKED** | Depends on SECONDARY-001 and TRANSFER-001. Low-level AXFR/IXFR client exists; no scheduler/peer model. |
+| SECONDARY-003 — promotion/conflict handling | **BLOCKED** | Depends on SECONDARY-002. Split-brain policy needs a product decision. |
+| SECONDARY-004 — freshness/lag/errors | **BLOCKED** | Depends on SECONDARY-002/TRANSFER-003. |
+| TRANSFER-001 — ACL/policy management | **PARTIAL** | Added per-zone `axfr_policy` column, PUT endpoint with Deny/AllowAll validation and audit. Configuration emission and AllowSigned/TSIG enforcement remain blocked by key custody. |
+| TRANSFER-002 — TSIG CRUD/rotation | **BLOCKED** | Depends on DNSSEC-001/ARCH-007 (KMS/key custody) and external signed-transfer interop. |
+| TRANSFER-003 — transfer audit/metrics | **BLOCKED** | Depends on TRANSFER-001 completion. |
+| XFR-006 — catalog zones | **DONE** | ADR-0007 documents catalog zones as an explicit non-goal; docs check passes. |
+| REPL-002 — replicated publication topology | **BLOCKED** | Needs topology/infrastructure decision plus deferred publication outbox (PERF-001/002) and multi-replica evidence. |
+| REPL-003 — replica consistency/drift | **BLOCKED** | Depends on REPL-002. |
+| CORE-012 — dynamic update policy | **DONE** | Documented SQLite-only, TSIG-required, SIG(0)-unavailable policy; prerequisite/prescan tests already exist. |
+
+Phase 4 exit gate: **COMPLETED_WITH_BLOCKERS**. All locally implementable slices are complete; full secondary/transfer/replication work remains explicitly BLOCKED.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.
