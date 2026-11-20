@@ -1581,6 +1581,106 @@ pub async fn list_audit(
         })
 }
 
+pub async fn get_audit(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "admin access required"}));
+    }
+    let id = path.into_inner();
+    match data.db.query_opt(
+        "SELECT CAST(id AS varchar), COALESCE(CAST(user_id AS varchar), ''), action, resource_type, \
+         COALESCE(resource_id, ''), COALESCE(details::text, ''), COALESCE(ip_address, ''), \
+         COALESCE(user_agent, ''), created_at::text FROM audit_logs WHERE CAST(id AS varchar) = $1",
+        &[&id],
+    ).await {
+        Ok(Some(row)) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            data: Some(AuditLogEntry {
+                id: row.get(0),
+                user_id: Some(row.get::<_, String>(1)).filter(|s| !s.is_empty()),
+                action: row.get(2),
+                resource_type: row.get(3),
+                resource_id: Some(row.get::<_, String>(4)).filter(|s| !s.is_empty()),
+                details: row.get(5),
+                ip_address: Some(row.get::<_, String>(6)).filter(|s| !s.is_empty()),
+                created_at: row.get(8),
+            }),
+            error: None,
+        }),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "audit entry not found"})),
+        Err(e) => {
+            warn!("audit detail: {}", full_error_string(&e));
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+        }
+    }
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+pub async fn export_audit(
+    q: web::Query<AuditQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    if tok.claims.role != "admin" {
+        return HttpResponse::Forbidden()
+            .json(serde_json::json!({"error": "admin access required"}));
+    }
+    let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
+    let since: Option<String> = q
+        .since
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339());
+    let where_sql = "($1::text IS NULL OR action = $1) AND ($2::text IS NULL OR CAST(user_id AS varchar) = $2) \
+                     AND ($3::text IS NULL OR resource_type = $3) AND ($4::text IS NULL OR created_at >= $4::text::timestamptz)";
+    let rows = match data.db.query(&format!(
+        "SELECT CAST(id AS varchar), COALESCE(CAST(user_id AS varchar), ''), action, resource_type, \
+         COALESCE(resource_id, ''), COALESCE(details::text, ''), COALESCE(ip_address, ''), created_at::text \
+         FROM audit_logs WHERE {} ORDER BY created_at DESC LIMIT $5", where_sql),
+        &[&q.action, &q.user_id, &q.resource_type, &since, &limit]).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("audit export: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"}));
+        }
+    };
+    let mut csv =
+        String::from("id,user_id,action,resource_type,resource_id,details,ip_address,created_at\n");
+    for row in rows {
+        let fields: Vec<String> = (0..8)
+            .map(|i| csv_field(&row.get::<_, String>(i)))
+            .collect();
+        csv.push_str(&fields.join(","));
+        csv.push('\n');
+    }
+    HttpResponse::Ok()
+        .content_type("text/csv; charset=utf-8")
+        .insert_header((
+            "Content-Disposition",
+            "attachment; filename=audit-export.csv",
+        ))
+        .body(csv)
+}
+
 /// Delete audit rows older than `days`; returns the number removed.
 pub async fn purge_audit(db: &Pool, days: i64) -> Result<u64, tokio_postgres::Error> {
     db.execute(

@@ -191,6 +191,28 @@ Phase 7 exit gate: **COMPLETED_WITH_BLOCKERS**. API-002 and API-004 are advanced
 
 ---
 
+## 0.8 Phase 8 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| CUST-001 — invite/suspend/reset lifecycle | **BLOCKED** | Requires email provider (buy decision), user-status schema and invite/reset token model. Local suspend slice is possible but incomplete. |
+| CUST-002 — SSO | **BLOCKED** | Requires IdP/OIDC/SAML dependency and external provider; demand-gated. |
+| CUST-003 — SCIM | **BLOCKED** | Depends on CUST-002 and identity-link schema. |
+| TEN-001 — quota race/usage | **DONE** | Atomic reservation, concurrency tests and tenant usage reporting already exist. |
+| TEN-002 — hierarchy/reseller | **BLOCKED** | Depends on RBAC-001 permission catalog. |
+| TEN-003 — cross-tenant tests | **PARTIAL** | Existing deterministic matrix covers zones/records/georules; analytics/agents/search matrix remains. |
+| RBAC-001 — custom roles/permissions | **BLOCKED** | Requires permission catalog tables and policy engine across every handler. |
+| RBAC-002 — user role/per-user reset | **PARTIAL** | `user` role accepted; backend per-user reset route and UI action not yet added. |
+| AUD-001 — detail/filters/export | **PARTIAL** | Added admin-only `GET /audit/logs/{id}` and `GET /audit/logs/export` with CSV quoting and filters. `audit_detail_and_export_endpoints` passes. UI detail drawer/export wiring remains. |
+| AUD-002 — coverage/failure policy | **PARTIAL** | Broad audit coverage and route contract inventory exist; coverage matrix ADR and failure-policy decision remain. |
+| AUD-003 — retention/archive | **PARTIAL** | Configurable retention exists; archive/SIEM target is external. |
+| AUD-004 — tamper-evident storage | **BLOCKED** | Needs hash-chain/WORM design decision. |
+
+Phase 8 exit gate: **COMPLETED_WITH_BLOCKERS**. Audit and quota work advanced; identity federation and custom-role work remain blocked.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.

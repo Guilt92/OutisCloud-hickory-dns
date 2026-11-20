@@ -7061,3 +7061,36 @@ async fn create_zone_idempotency_key_replays_first_response() {
     assert!(!raw.contains("idem-second.example"));
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn audit_detail_and_export_endpoints() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "audit-api.example").await;
+    assert!(!zid.is_empty());
+
+    let (_, list, _) = call!(app, get, "/api/v1/audit/logs", Some(&t), None);
+    let id = list["data"][0]["id"].as_str().unwrap().to_string();
+
+    let (st, detail, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/audit/logs/{id}"),
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(detail["data"]["id"], id);
+
+    let (st, _, raw) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs/export?limit=10",
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(raw.contains("id,user_id,action"));
+    env.cleanup().await;
+}

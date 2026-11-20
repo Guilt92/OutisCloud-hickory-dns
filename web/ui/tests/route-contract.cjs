@@ -38,6 +38,8 @@ const ALLOWED = [
   /^\/api\/v1\/georules\/resolve$/,
   /^\/api\/v1\/config\/push$/,
   /^\/api\/v1\/audit\/logs$/,
+  /^\/api\/v1\/audit\/logs\/export$/,
+  /^\/api\/v1\/audit\/logs\/\*$/,
   /^\/api\/v1\/tenants$/,
   /^\/api\/v1\/tenants\/\*$/,
   /^\/api\/v1\/tenants\/\*\/members$/,

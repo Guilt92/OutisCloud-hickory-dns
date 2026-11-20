@@ -6627,6 +6627,11 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/v1/config/push", web::post().to(push_config_to_agents))
         // Audit Logs
         .route("/api/v1/audit/logs", web::get().to(ext::list_audit))
+        .route(
+            "/api/v1/audit/logs/export",
+            web::get().to(ext::export_audit),
+        )
+        .route("/api/v1/audit/logs/{id}", web::get().to(ext::get_audit))
         .configure(ext::configure)
         .configure(tenants::configure)
         // DNSSEC
