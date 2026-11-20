@@ -1,0 +1,36 @@
+{
+  "uid": "outiscloud-overview",
+  "title": "OutisCloud Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Published zones",
+      "targets": [{"expr": "outis_zones_published", "refId": "A"}],
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Failed publications",
+      "targets": [{"expr": "outis_zones_failed", "refId": "A"}],
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "DNS responses by code",
+      "targets": [{"expr": "sum by (code) (rate(hickory_response_codes_total[5m]))", "refId": "A"}],
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Agents out of sync",
+      "targets": [{"expr": "outis_agents_out_of_sync", "refId": "A"}],
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 6}
+    }
+  ]
+}

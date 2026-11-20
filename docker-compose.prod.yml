@@ -26,6 +26,9 @@ services:
   
   grafana:
     ports: []
+
+  alertmanager:
+    ports: []
   
   # Add TLS termination via reverse proxy (nginx, traefik, etc.)
   # Example nginx config would handle:

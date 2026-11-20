@@ -1,5 +1,4 @@
-# Example alerting rules for the OutisCloud control plane (not loaded by default;
-# reference this file from prometheus.yml `rule_files:` when you enable Prometheus).
+# OutisCloud alerting rules (loaded by deploy/prometheus/prometheus.yml).
 groups:
   - name: outis-publication
     rules:
@@ -9,6 +8,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "{{ $value }} zone(s) failed to publish; their previous data is still served"
+          runbook_url: "https://github.com/Guilt92/OutisCloud-hickory-dns/blob/main/docs/OPERATIONS.md#monitoring"
       - alert: ControlPlaneNotPublishing
         expr: time() - outis_last_publish_timestamp_seconds > 86400 and outis_last_publish_timestamp_seconds > 0
         for: 10m
@@ -29,3 +29,20 @@ groups:
         expr: outis_db_connections_healthy < 1
         for: 2m
         labels: { severity: critical }
+
+  - name: outis-dns
+    rules:
+      - alert: DNSReadinessFailing
+        expr: probe_success{job="hickory-dns"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "DNS readiness probe is failing"
+          runbook_url: "https://github.com/Guilt92/OutisCloud-hickory-dns/blob/main/docs/OPERATIONS.md#monitoring"
+      - alert: HighServFailRate
+        expr: rate(hickory_response_codes_total{code="ServFail"}[5m]) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Elevated SERVFAIL rate"
+          runbook_url: "https://github.com/Guilt92/OutisCloud-hickory-dns/blob/main/docs/OPERATIONS.md#monitoring"

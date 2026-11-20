@@ -41,3 +41,15 @@ Growth: one row per zone, dimension value and sample interval. At 60 s sampling,
 
 ## Environment variables (new in phase 7)
 `DNS_LOOKUP_RESOLVERS`, `DNS_LOOKUP_TIMEOUT_MS`, `DNS_LOOKUP_DEADLINE_MS`, `ANALYTICS_LEASE_SECS` (control API) · `DNS_ZONE_BREAKDOWN`, `GEOIP_MAX_AGE_DAYS` (DNS server). `DNS_LOOKUP_RATE_PER_MIN` and the login limits are now shared across replicas.
+
+
+## Monitoring
+
+Prometheus scrapes the DNS exporter at `dns-server:9000/metrics` and the control API at
+`control-api:8080/metrics`. Alert rules are loaded from `deploy/prometheus/outis-alerts.yml`
+and delivered through Alertmanager. Grafana dashboards are provisioned from
+`deploy/grafana/provisioning`. The DNS `/health` and `/ready` endpoints are served from the
+same exporter listener; `/ready` returns 503 when the catalog is stale or listeners failed.
+
+The metrics endpoints are intended for the internal Docker network only. Do not expose
+ports 9000/9090/9093 publicly without authentication and network policy.

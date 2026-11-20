@@ -154,6 +154,24 @@ Phase 5 exit gate: **COMPLETED_WITH_BLOCKERS**. TRAF-001 is complete; remaining 
 
 ---
 
+## 0.6 Phase 6 Reconciliation
+
+| Task | Status | Evidence / blocker |
+|---|---|---|
+| ANA-001 — structured query log pipeline | **PARTIAL** | Redaction and level controls exist; sampling/persistence/export require privacy design. |
+| ANA-002 — latency/error history | **PARTIAL** | RCODE/NXDOMAIN/SERVFAIL counters exist; latency histogram and history tables remain. |
+| ANA-003 — analytics export | **BLOCKED** | Rollups, retention and tenant-scoped analytics exist; export endpoint not yet implemented. Minimum unblock: confirm export format and tenant scope. |
+| MON-001 — scrape targets/path | **DONE** | Corrected Prometheus scrape to `dns-server:9000`, added `control-api:8080`, enabled Prometheus/Grafana/Alertmanager services, set DNS exporter bind to `0.0.0.0:9000`, DNS healthcheck now uses `/ready`. |
+| MON-002 — alert rules/Alertmanager | **DONE** | Loaded `outis-alerts.yml`, added Alertmanager config/service, DNS readiness and SERVFAIL alerts with runbook links. |
+| MON-003 — dashboards | **DONE** | Provisioned Grafana dashboard definition with publication, DNS response and agent-sync panels. |
+| MON-004 — metrics protection | **PARTIAL** | API metrics require `METRICS_TOKEN`; DNS exporter still relies on internal network isolation. TLS/mTLS needs reverse-proxy decision. |
+| MON-005 — synthetic probes | **BLOCKED** | Multi-location validation needs external infrastructure; local probe runner remains future work. |
+
+Phase 6 exit gate: **COMPLETED_WITH_BLOCKERS**. Monitoring deployment is now truthful and locally verifiable by config validation; external delivery and multi-location probes remain blocked.
+
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.
