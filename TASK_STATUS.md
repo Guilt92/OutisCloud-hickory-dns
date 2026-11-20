@@ -600,6 +600,33 @@ Validation performed for this status update:
 
 ---
 
+## 0.15 Source-Verified Corrections to Status Matrix
+
+This section supersedes conflicting rows in §0.14. It was produced by direct source, route, test-name, ADR and config verification.
+
+| Task | Corrected status | Verified correction |
+|---|---|---|
+| ARCH-001 | PARTIALLY COMPLETED | PostgreSQL migration/runtime parity was verified; SQLite verification is not applicable to the PostgreSQL-only control plane. |
+| CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes; Helm DNS-server probes are not wired. |
+| CORE-006 | PARTIALLY COMPLETED | Level toggle and default redaction are implemented and tested; sampling is not implemented. |
+| BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
+| SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
+| SEC-005 | NOT STARTED | No CSP, secure-cookie option, token-storage change or browser security test exists. |
+| SEC-006 | NOT STARTED | No abuse scoring, zone holds/locks or transfer-protection operator workflow exists. |
+| RBAC-002 | PARTIALLY COMPLETED | User role and per-user reset are tested; effective-permission display is not implemented. |
+| PERF-003 | PARTIALLY COMPLETED | A repeatable 5,000-zone harness and results exist; required 1k/10k/50k scenarios and SLO thresholds are absent. |
+| PERF-004 | PARTIALLY COMPLETED | DNS admission limits and tenant quotas exist; per-tenant/zone cardinality limits, fair queuing and 429 tests are absent. |
+| HA-001 | PARTIALLY COMPLETED | Multi-replica lab and advisory publication lock exist; shared/versioned zone state, deterministic writer and convergence proof are absent. |
+| HA-004 | PARTIALLY COMPLETED | Health/readiness endpoints exist; publication-aware readiness, graceful drain, maintenance mode and rolling-restart tests are absent. |
+| ADM-001 | PARTIALLY COMPLETED | Dashboard empty/error/disabled/publication states exist; SLO target display and browser truth tests are absent. |
+| ADM-003 | PARTIALLY COMPLETED | Record delete confirmation exists; type-aware forms, record diff/history UX and keyboard/a11y tests remain incomplete. |
+| ADM-004 | PARTIALLY COMPLETED | Audit filters/pagination/export and server/status UX exist; row detail and full permission-aware catalog remain. |
+| UX-001 | PARTIALLY COMPLETED | Viewer/editor/admin UI permission tests exist; systematic no-hidden-403/404 contract and new-control checks remain. |
+| OPS-002 | PARTIALLY COMPLETED | Helm namespace/ConfigMap/probes/Ingress scaffolding exists; RWX zone volume, DNS/agent/DB templates and manifest validation are absent. |
+| OPS-006 | PARTIALLY COMPLETED | GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent. |
+
+---
+
 ## 1. Executive summary
 
 The confirmed in-scope audit findings are implemented and covered by executed regression tests. A follow-up platform pass resolved the previously blocked live hot-reload check: the failure was caused by stale debug binaries, not by the current source. The rebuilt release stack now passes DNS publication for zone creation, record updates, and record deletions, followed by all supported lookup types in the browser.
