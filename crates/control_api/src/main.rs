@@ -6091,6 +6091,178 @@ async fn set_record_metadata(
     }
 }
 
+#[derive(Deserialize)]
+struct CloneZoneReq {
+    domain: String,
+}
+
+async fn clone_zone(
+    path: web::Path<String>,
+    body: web::Json<CloneZoneReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let source_id = path.into_inner();
+    let access = match zone_access_at(&data.db, &source_id, &tok, Level::Read).await {
+        Ok(a) => a,
+        Err(response) => return response,
+    };
+    let domain = match normalize_zone_domain(&body.domain) {
+        Ok(d) => d,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message})),
+    };
+    if tok.claims.role != "admin" {
+        match zone_overlaps_other_owner(&data.db, &domain, &tok.claims.sub, None).await {
+            Ok(true) => {
+                return HttpResponse::Conflict()
+                    .json(serde_json::json!({"error": "domain overlaps another zone"}));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                warn!("clone overlap check: {}", full_error_string(&e));
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "database error"}));
+            }
+        }
+    }
+    let rows = match data
+        .db
+        .query(
+            "SELECT name, record_type, value, ttl, priority FROM records \
+         WHERE CAST(zone_id AS varchar) = $1 ORDER BY created_at, id",
+            &[&source_id],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("clone source records: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let source_domain_trimmed = access.domain.trim_end_matches('.').to_ascii_lowercase();
+    let target_domain_trimmed = domain.trim_end_matches('.').to_ascii_lowercase();
+    let mut names = Vec::new();
+    let mut types = Vec::new();
+    let mut values = Vec::new();
+    let mut ttls = Vec::new();
+    let mut priorities = Vec::new();
+    for row in &rows {
+        let value: String = row.get(2);
+        names.push(row.get::<_, String>(0));
+        types.push(row.get::<_, String>(1));
+        values.push(value.replace(&source_domain_trimmed, &target_domain_trimmed));
+        ttls.push(row.get::<_, i32>(3));
+        priorities.push(row.get::<_, Option<i32>>(4).unwrap_or(0));
+    }
+    let candidate: Vec<RecordRow> = names
+        .iter()
+        .zip(types.iter())
+        .zip(values.iter())
+        .zip(ttls.iter())
+        .zip(priorities.iter())
+        .map(|((((n, t), v), ttl), p)| RecordRow {
+            name: n.clone(),
+            rtype: t.clone(),
+            value: v.clone(),
+            ttl: *ttl,
+            priority: *p,
+        })
+        .collect();
+    if let Err(e) = precheck_zone_change(&data.db, &domain, candidate).await {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "cloned zone is invalid", "details": e}));
+    }
+
+    let zone_id = Uuid::new_v4().to_string();
+    let status = if data.verify_domains && tok.claims.role != "admin" {
+        "pending"
+    } else {
+        "active"
+    };
+    let verify_token = if status == "pending" {
+        Some(ext::new_verify_token())
+    } else {
+        None
+    };
+    let tx = match data.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("clone transaction: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let c = tx.client();
+    if let Err(e) = c.batch_execute("BEGIN").await {
+        warn!("clone begin: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "database error"}));
+    }
+    if let Err(e) = c.execute(
+        "INSERT INTO zones (id, domain, owner, zone_type, status, verify_token, geodns_enabled, ecs_enabled) \
+         SELECT $1::text::uuid, $2, $3::text::uuid, zone_type, $4, $5, geodns_enabled, ecs_enabled \
+         FROM zones WHERE CAST(id AS varchar) = $6",
+        &[&zone_id, &domain, &tok.claims.sub, &status, &verify_token, &source_id],
+    ).await {
+        let _ = c.batch_execute("ROLLBACK").await;
+        let err = full_error_string(&e);
+        return if err.contains("unique") || err.contains("duplicate") {
+            HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}))
+        } else {
+            HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to clone zone"}))
+        };
+    }
+    if !names.is_empty() {
+        let ids: Vec<String> = names.iter().map(|_| Uuid::new_v4().to_string()).collect();
+        let zone_ids: Vec<String> = names.iter().map(|_| zone_id.clone()).collect();
+        if let Err(e) = c.execute(
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) \
+             SELECT u.id::text::uuid, u.z::text::uuid, u.n, u.t, u.v, u.ttl, u.p \
+             FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) \
+                  AS u(id, z, n, t, v, ttl, p)",
+            &[&ids, &zone_ids, &names, &types, &values, &ttls, &priorities],
+        ).await {
+            let _ = c.batch_execute("ROLLBACK").await;
+            warn!("clone records: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to clone zone"}));
+        }
+    }
+    if let Err(e) = c.batch_execute("COMMIT").await {
+        warn!("clone commit: {}", full_error_string(&e));
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "failed to clone zone"}));
+    }
+    drop(tx);
+    if let Err(e) = publish(&data.dns_manager, &data.db, Some(&domain)).await {
+        let _ = data
+            .db
+            .execute(
+                "DELETE FROM zones WHERE CAST(id AS varchar) = $1",
+                &[&zone_id],
+            )
+            .await;
+        return publish_failed_rolled_back(&e);
+    }
+    ext::snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "cloned zone").await;
+    audit(
+        &data.db,
+        Some(&tok.claims.sub),
+        "clone_zone",
+        "zone",
+        Some(zone_id.clone()),
+        &req,
+        serde_json::json!({"source": access.domain, "domain": domain}),
+    )
+    .await;
+    HttpResponse::Created().json(serde_json::json!({"id": zone_id, "domain": domain, "status": status, "records": names.len()}))
+}
+
 fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/health", web::get().to(health))
         .route("/ready", web::get().to(ready))
@@ -6138,6 +6310,7 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             "/api/v1/zones/{id}/metadata",
             web::put().to(set_zone_metadata),
         )
+        .route("/api/v1/zones/{id}/clone", web::post().to(clone_zone))
         // Records
         .route("/api/v1/zones/{id}/records", web::post().to(create_record))
         .route("/api/v1/zones/{id}/records", web::get().to(list_records))

@@ -6827,3 +6827,46 @@ async fn zone_and_record_metadata_roundtrip() {
     assert_eq!(comment, "web front door");
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn clone_zone_copies_records_with_rewritten_domain() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &t, "source.example").await;
+    call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.1","ttl":300}))
+    );
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/clone"),
+        Some(&t),
+        j(serde_json::json!({"domain":"copy.example"}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    assert_eq!(body["domain"], "copy.example");
+    let new_id = body["id"].as_str().expect("clone response id").to_string();
+    let (_, records, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{new_id}/records"),
+        Some(&t),
+        None
+    );
+    assert!(
+        records
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "www")
+    );
+    let zone_file = std::fs::read_to_string(env.zone_file("copy.example")).unwrap();
+    assert!(zone_file.contains("copy.example"));
+    env.cleanup().await;
+}

@@ -76,7 +76,7 @@ The phase exit gate is **not closed**. ARCH-001/004/005/006/008 are DONE; ARCH-0
 |---|---|---|
 | ZONE-001 — BIND import/export | **PARTIAL** | Added `dry_run` previews and per-row error arrays to JSON import; `import_dry_run_writes_nothing` and `import_reports_all_row_errors` pass. Full `control_api` suite passes 145/145 with PostgreSQL. BIND zone-file parsing and byte-size cap remain. |
 | ZONE-002 — multi-zone bulk import | **TODO** | No backend route; dead UI control was removed in Phase 0. |
-| ZONE-003 — zone templates | **TODO** | No template/clone API or schema. |
+| ZONE-003 — zone templates | **PARTIAL** | Added `POST /api/v1/zones/{id}/clone` with domain validation, record cloning, domain rewriting, publish rollback, and audit. `clone_zone_copies_records_with_rewritten_domain` passes. UI template picker remains. |
 | ZONE-004 — metadata/tags | **PARTIAL** | Added `description`/`tags` columns to zones and runtime/migration DDL, `PUT /api/v1/zones/{id}/metadata`, validation/dedup, and audit. UI filters and server-side tag filtering remain. |
 | ZONE-005 — ownership verification | **PARTIAL** | Added bounded retry/backoff and shared per-user/per-zone rate limiting to verification; `domain_verification_gates_publication` passes. NS-delegation proof remains unimplemented. |
 | ZONE-006 — suspend/hold/archive | **TODO** | Only active/pending/deleting statuses exist. |
