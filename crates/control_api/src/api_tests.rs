@@ -7149,3 +7149,262 @@ async fn per_user_password_reset_revokes_sessions() {
     assert_eq!(st, 200);
     env.cleanup().await;
 }
+
+#[actix_web::test]
+async fn api_tokens_are_scoped_revocable_and_can_rotate() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/tokens",
+        Some(&admin),
+        j(serde_json::json!({"name":"read only","scopes":["zones:read"],"expires_in_days":30}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let token = body["token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("ocd_"));
+    assert!(!raw.contains("token_hash"));
+
+    let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&token), None);
+    assert_eq!(st, 200, "read scope must allow GET");
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/zones",
+        Some(&token),
+        j(serde_json::json!({"domain":"token-denied.test"}))
+    );
+    assert_eq!(st, 403, "read scope must not allow writes");
+
+    let id = body["id"].as_str().unwrap().to_string();
+    let (st, rotated, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/tokens/{id}/rotate"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 201, "{raw}");
+    let new_token = rotated["token"].as_str().unwrap().to_string();
+    assert_ne!(new_token, token);
+    let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&token), None);
+    assert_eq!(st, 401, "rotated token must stop working");
+    let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&new_token), None);
+    assert_eq!(st, 200);
+
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tokens/{}", rotated["id"].as_str().unwrap()),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200);
+    let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&new_token), None);
+    assert_eq!(st, 401);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn bulk_import_runs_as_a_durable_job() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+
+    let payload = serde_json::json!({
+        "dry_run": true,
+        "zones": [{
+            "domain": "bulk.test",
+            "records": [
+                {"name":"www","record_type":"A","value":"192.0.2.20","ttl":300},
+                {"name":"@","record_type":"TXT","value":"hello","ttl":300}
+            ]
+        }]
+    });
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones/bulk-import",
+        Some(&admin),
+        j(payload.clone())
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["valid"], true);
+
+    let mut payload = payload;
+    payload["dry_run"] = serde_json::json!(false);
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/zones/bulk-import",
+        Some(&admin),
+        j(payload)
+    );
+    assert_eq!(st, 202, "{raw}");
+    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let row = env
+        .state
+        .db
+        .query_one(
+            "SELECT input FROM jobs WHERE CAST(id AS varchar) = $1",
+            &[&job_id],
+        )
+        .await
+        .unwrap();
+    let input: serde_json::Value = row.get(0);
+    let result = zone_ops::run_bulk_import_job(&env.state, &job_id, &env.admin, Some(input))
+        .await
+        .expect("job executes");
+    assert_eq!(result["zones_succeeded"], 1, "{result}");
+    automation::job_finish(&env.state.db, &job_id, "completed", Some(&result), None).await;
+
+    let (st, job, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/jobs/{job_id}"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(job["status"], "completed");
+    assert_eq!(job["progress"], 1);
+    assert_eq!(job["result"]["zones_succeeded"], 1);
+    let zone_id = result["results"][0]["zone_id"].as_str().unwrap().to_string();
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zone_id}"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200);
+    assert!(env.zone_file("bulk.test").is_file());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn bind_import_and_rrset_batch_are_atomic() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &admin, "bind.test").await;
+
+    let zone_text = "$TTL 300\nwww 300 IN A 192.0.2.10\nmail 300 IN MX 10 mail.bind.test.\n";
+    let (st, body, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/import-bind"),
+        Some(&admin),
+        j(serde_json::json!({"zone_text": zone_text}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["imported"], 2);
+    assert!(env
+        .zone_file("bind.test")
+        .is_file());
+
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/import-bind"),
+        Some(&admin),
+        j(serde_json::json!({"zone_text":"evil.other.test. 300 IN A 192.0.2.1\n"}))
+    );
+    assert_eq!(st, 400, "records outside the zone are rejected");
+
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/rrsets"),
+        Some(&admin),
+        j(serde_json::json!({
+            "rrsets": [{
+                "name":"www","record_type":"A","ttl":120,
+                "values":[{"value":"192.0.2.11"},{"value":"192.0.2.12"}]
+            }]
+        }))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["records_added"], 2);
+    assert_eq!(body["records_removed"], 1);
+    let text = std::fs::read_to_string(env.zone_file("bind.test")).unwrap();
+    assert!(text.contains("192.0.2.11") && text.contains("192.0.2.12"));
+    assert!(!text.contains("192.0.2.10"), "{text}");
+
+    let (st, body, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/rrsets"),
+        Some(&admin),
+        j(serde_json::json!({
+            "rrsets": [{"name":"www","record_type":"A","values":[{"value":"not-an-ip"}]}]
+        }))
+    );
+    assert_eq!(st, 400);
+    assert!(body["errors"].as_array().is_some());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn hold_archive_and_restore_control_serving_and_writes() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &admin, "lifecycle.test").await;
+
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/lifecycle"),
+        Some(&admin),
+        j(serde_json::json!({"status":"held","hold_reason":"billing review"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["status"], "held");
+    assert_eq!(body["hold_reason"], "billing review");
+    assert!(env.zone_file("lifecycle.test").is_file(), "held zones stay served");
+
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&admin),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.30","ttl":300}))
+    );
+    assert_eq!(st, 201);
+
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/lifecycle"),
+        Some(&admin),
+        j(serde_json::json!({"status":"archived"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        !env.zone_file("lifecycle.test").exists(),
+        "archived zones must not be served"
+    );
+    let (st, _, _) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&admin),
+        j(serde_json::json!({"name":"api","record_type":"A","value":"192.0.2.31","ttl":300}))
+    );
+    assert_eq!(st, 409, "archived zones are read-only");
+
+    let (st, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/lifecycle"),
+        Some(&admin),
+        j(serde_json::json!({"status":"active"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(env.zone_file("lifecycle.test").is_file());
+    env.cleanup().await;
+}

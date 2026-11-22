@@ -7,6 +7,7 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
+mod automation;
 mod db_pool;
 mod dns_builder;
 mod dns_manager;
@@ -18,6 +19,7 @@ mod metrics;
 mod shared;
 mod tenants;
 mod zone_file_generator;
+mod zone_ops;
 use actix_cors::Cors;
 use actix_web_prom::PrometheusMetricsBuilder;
 use argon2::password_hash::SaltString;
@@ -325,6 +327,8 @@ struct ZoneAccess {
     domain: String,
     /// "admin", "owner", "editor" or "viewer"
     role: String,
+    /// Lifecycle state from `zones.status` ("active", "held", "suspended", ...).
+    status: String,
 }
 
 /// What a caller wants to do with a zone.
@@ -355,7 +359,8 @@ async fn zone_access_at(
         .query_opt(
             "SELECT z.domain, COALESCE(CAST(z.owner AS varchar), ''), \
                     (SELECT m.role FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2), \
-                    (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2) \
+                    (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2), \
+                    COALESCE(z.status, 'active') \
              FROM zones z WHERE CAST(z.id AS varchar) = $1",
             &[&zone_id, &tok.claims.sub],
         )
@@ -366,6 +371,7 @@ async fn zone_access_at(
             let owner: String = r.try_get(1).unwrap_or_default();
             let member: Option<String> = r.try_get(2).unwrap_or(None);
             let tenant_member: Option<String> = r.try_get(3).unwrap_or(None);
+            let status: String = r.try_get(4).unwrap_or_else(|_| "active".to_string());
             let rank = |x: &str| match x {
                 "owner" => 3,
                 "editor" => 2,
@@ -396,9 +402,18 @@ async fn zone_access_at(
                 }
             };
             if granted >= need {
+                // Archived zones are read-only for everyone except admins. The
+                // owner may still delete or restore the zone (Level::Owner).
+                if status == "archived" && need == Level::Write {
+                    return Err(HttpResponse::Conflict().json(serde_json::json!({
+                        "error": "zone is archived",
+                        "details": "restore the zone before changing its records"
+                    })));
+                }
                 Ok(ZoneAccess {
                     domain,
                     role: role.to_string(),
+                    status,
                 })
             } else {
                 Err(HttpResponse::Forbidden().json(serde_json::json!({"error": "access denied", "details": "insufficient permission on this zone"})))
@@ -1159,6 +1174,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
     client.batch_execute(dnssec::SCHEMA).await?;
     client.batch_execute(tenants::SCHEMA).await?;
     client.batch_execute(shared::SCHEMA).await?;
+    client.batch_execute(automation::SCHEMA).await?;
     // users: MFA and session generation
     client.batch_execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
@@ -2498,6 +2514,95 @@ fn auth_from_header(req: &HttpRequest, secret: &str) -> Option<TokenData<Claims>
     .ok()
 }
 
+/// Authenticate a bearer credential (JWT session or `ocd_` personal API
+/// token), enforcing revocation, session generation, account existence, token
+/// scopes and the read-only viewer role.
+pub(crate) async fn authenticate_request(
+    req: &HttpRequest,
+    state: &AppState,
+) -> Result<automation::AuthCtx, (actix_web::http::StatusCode, &'static str)> {
+    use actix_web::http::StatusCode;
+    let token = bearer_token(req).ok_or((StatusCode::UNAUTHORIZED, "unauthorized"))?;
+    if token.starts_with("ocd_") {
+        let ctx = automation::authenticate_api_token(&state.db, &token)
+            .await
+            .map_err(|m| {
+                if m == "database error" {
+                    (StatusCode::SERVICE_UNAVAILABLE, m)
+                } else {
+                    (StatusCode::UNAUTHORIZED, m)
+                }
+            })?;
+        let scopes = ctx.scopes.clone().unwrap_or_default();
+        if !automation::scope_permits(&scopes, req.method(), req.path()) {
+            return Err((StatusCode::FORBIDDEN, "insufficient token scope"));
+        }
+        if ctx.claims.role == "viewer"
+            && !is_read_method(req.method())
+            && !viewer_may_write(req.path())
+        {
+            return Err((StatusCode::FORBIDDEN, "read-only account"));
+        }
+        return Ok(ctx);
+    }
+    let mut td = decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map_err(|_| (StatusCode::UNAUTHORIZED, "unauthorized"))?;
+    let th = hash_token(&token);
+    let row = state
+        .db
+        .query_opt(
+            "SELECT u.role, u.token_version, \
+                    EXISTS (SELECT 1 FROM token_blacklist b WHERE b.token_hash = $2 \
+                            AND b.token_type = 'access' AND b.expires_at > now()) \
+             FROM users u WHERE CAST(u.id AS varchar) = $1",
+            &[&td.claims.sub, &th],
+        )
+        .await
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "database error"))?;
+    let Some(r) = row else {
+        return Err((StatusCode::UNAUTHORIZED, "user no longer exists"));
+    };
+    let revoked: bool = r.try_get(2).unwrap_or(true);
+    if revoked {
+        return Err((StatusCode::UNAUTHORIZED, "token revoked"));
+    }
+    let current_version: i64 = r.try_get(1).unwrap_or(-1);
+    if td.claims.ver != current_version {
+        return Err((StatusCode::UNAUTHORIZED, "session expired"));
+    }
+    td.claims.role = r
+        .try_get::<_, String>(0)
+        .unwrap_or_else(|_| "user".to_string());
+    if td.claims.role == "viewer"
+        && !is_read_method(req.method())
+        && !viewer_may_write(req.path())
+    {
+        return Err((StatusCode::FORBIDDEN, "read-only account"));
+    }
+    Ok(automation::AuthCtx {
+        claims: td.claims,
+        token_id: None,
+        scopes: None,
+    })
+}
+
+fn auth_failure_response(
+    status: actix_web::http::StatusCode,
+    detail: &'static str,
+) -> HttpResponse {
+    if status == actix_web::http::StatusCode::SERVICE_UNAVAILABLE {
+        HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({"error": "service_unavailable"}))
+    } else {
+        HttpResponse::build(status)
+            .json(serde_json::json!({"error": "unauthorized", "details": detail}))
+    }
+}
+
 /// Reject revoked tokens and tokens of deleted users, and pin the caller's
 /// role to the database value, before any handler runs.
 async fn auth_middleware(
@@ -2513,62 +2618,27 @@ async fn auth_middleware(
             .and_then(|s| s.strip_prefix("Bearer "))
             .map(|s| s.to_string());
         if let Some(token) = token {
-            // Only JWT-shaped bearer values are handled here; agent tokens are
-            // verified by the agent endpoints themselves.
-            if let Ok(mut td) = decode::<Claims>(
+            // Personal API tokens are always verified here. For JWT sessions we
+            // keep the historical behaviour of letting non-JWT-shaped bearer
+            // values reach the handler (public endpoints stay public).
+            let is_api_token = token.starts_with("ocd_");
+            let is_jwt = decode::<Claims>(
                 &token,
                 &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
                 &Validation::default(),
-            ) {
-                let th = hash_token(&token);
-                let row = state
-                    .db
-                    .query_opt(
-                        "SELECT u.role, u.token_version, \
-                                EXISTS (SELECT 1 FROM token_blacklist b WHERE b.token_hash = $2 \
-                                        AND b.token_type = 'access' AND b.expires_at > now()) \
-                         FROM users u WHERE CAST(u.id AS varchar) = $1",
-                        &[&td.claims.sub, &th],
-                    )
-                    .await;
-                match row {
-                    Ok(Some(r)) => {
-                        let revoked: bool = r.try_get(2).unwrap_or(true);
-                        if revoked {
-                            let resp = HttpResponse::Unauthorized()
-                                .json(serde_json::json!({"error": "unauthorized", "details": "token revoked"}));
-                            return Ok(req.into_response(resp).map_into_boxed_body());
-                        }
-                        let current_version: i64 = r.try_get(1).unwrap_or(-1);
-                        if td.claims.ver != current_version {
-                            let resp = HttpResponse::Unauthorized()
-                                .json(serde_json::json!({"error": "unauthorized", "details": "session expired"}));
-                            return Ok(req.into_response(resp).map_into_boxed_body());
-                        }
-                        td.claims.role = r
-                            .try_get::<_, String>(0)
-                            .unwrap_or_else(|_| "user".to_string());
-                        // "viewer" is advertised as read-only access: enforce it
-                        // for every state-changing request.
-                        if td.claims.role == "viewer"
-                            && !is_read_method(req.method())
-                            && !viewer_may_write(req.path())
-                        {
-                            let resp = HttpResponse::Forbidden()
-                                .json(serde_json::json!({"error": "forbidden", "details": "read-only account"}));
-                            return Ok(req.into_response(resp).map_into_boxed_body());
-                        }
-                        req.extensions_mut().insert(td);
+            )
+            .is_ok();
+            if is_api_token || is_jwt {
+                match authenticate_request(req.request(), &state).await {
+                    Ok(ctx) => {
+                        req.extensions_mut().insert(TokenData {
+                            header: Header::default(),
+                            claims: ctx.claims.clone(),
+                        });
+                        req.extensions_mut().insert(ctx);
                     }
-                    Ok(None) => {
-                        let resp = HttpResponse::Unauthorized()
-                            .json(serde_json::json!({"error": "unauthorized", "details": "user no longer exists"}));
-                        return Ok(req.into_response(resp).map_into_boxed_body());
-                    }
-                    Err(e) => {
-                        warn!("auth check database error: {}", e);
-                        let resp = HttpResponse::ServiceUnavailable()
-                            .json(serde_json::json!({"error": "service_unavailable"}));
+                    Err((status, detail)) => {
+                        let resp = auth_failure_response(status, detail);
                         return Ok(req.into_response(resp).map_into_boxed_body());
                     }
                 }
@@ -5753,7 +5823,7 @@ struct ImportZoneReq {
     dry_run: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 struct ImportRecordReq {
     name: String,
     record_type: String,
@@ -6465,6 +6535,11 @@ async fn clone_zone(
 #[derive(Deserialize)]
 struct ZoneLifecycleReq {
     status: String,
+    #[serde(default)]
+    hold_reason: Option<String>,
+    /// RFC 3339 timestamp after which the hold should be reviewed.
+    #[serde(default)]
+    hold_until: Option<String>,
 }
 
 async fn set_zone_lifecycle(
@@ -6483,36 +6558,73 @@ async fn set_zone_lifecycle(
         Err(response) => return response,
     };
     let desired = body.status.trim().to_ascii_lowercase();
-    if !matches!(desired.as_str(), "active" | "suspended") {
+    if !matches!(
+        desired.as_str(),
+        "active" | "suspended" | "held" | "archived"
+    ) {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "status must be active or suspended"
+            "error": "status must be active, suspended, held or archived"
         }));
     }
-    let current: String = match data
+    let hold_reason = body
+        .hold_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(reason) = hold_reason {
+        if reason.len() > 500 {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "hold_reason is too long"}));
+        }
+    }
+    let hold_until = match body.hold_until.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(s) => match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
+            Err(_) => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "hold_until must be an RFC 3339 timestamp"
+                }));
+            }
+        },
+    };
+    let current = match data
         .db
         .query_one(
-            "SELECT status FROM zones WHERE CAST(id AS varchar) = $1",
+            "SELECT status, hold_reason, hold_until, archived_at FROM zones WHERE CAST(id AS varchar) = $1",
             &[&zone_id],
         )
         .await
     {
-        Ok(row) => row.get(0),
+        Ok(row) => row,
         Err(e) => {
             warn!("set_zone_lifecycle lookup: {}", full_error_string(&e));
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "database error"}));
         }
     };
-    if current == "pending" && desired == "active" {
+    let current_status: String = current.get(0);
+    if current_status == "pending" && desired == "active" {
         return HttpResponse::Conflict().json(serde_json::json!({
             "error": "pending zones must be verified before activation"
         }));
     }
+    if desired == "held" && hold_reason.is_none() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "hold_reason is required when putting a zone on hold"
+        }));
+    }
+    let (new_reason, new_until, new_archived) = match desired.as_str() {
+        "held" => (hold_reason, hold_until, None),
+        "archived" => (hold_reason, hold_until, Some(chrono::Utc::now())),
+        _ => (None, None, None),
+    };
     if let Err(e) = data
         .db
         .execute(
-            "UPDATE zones SET status = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
-            &[&desired, &zone_id],
+            "UPDATE zones SET status = $1, hold_reason = $2, hold_until = $3, \
+                    archived_at = $4, updated_at = now() WHERE CAST(id AS varchar) = $5",
+            &[&desired, &new_reason, &new_until, &new_archived, &zone_id],
         )
         .await
     {
@@ -6524,8 +6636,15 @@ async fn set_zone_lifecycle(
         let _ = data
             .db
             .execute(
-                "UPDATE zones SET status = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
-                &[&current, &zone_id],
+                "UPDATE zones SET status = $1, hold_reason = $2, hold_until = $3, \
+                        archived_at = $4, updated_at = now() WHERE CAST(id AS varchar) = $5",
+                &[
+                    &current_status,
+                    &current.get::<_, Option<String>>(1),
+                    &current.get::<_, Option<chrono::DateTime<chrono::Utc>>>(2),
+                    &current.get::<_, Option<chrono::DateTime<chrono::Utc>>>(3),
+                    &zone_id,
+                ],
             )
             .await;
         return publish_failed_rolled_back(&e);
@@ -6537,10 +6656,18 @@ async fn set_zone_lifecycle(
         "zone",
         Some(zone_id.clone()),
         &req,
-        serde_json::json!({"zone": access.domain, "from": current, "to": desired}),
+        serde_json::json!({
+            "zone": access.domain, "from": current_status, "to": desired,
+            "hold_reason": hold_reason, "hold_until": hold_until
+        }),
     )
     .await;
-    HttpResponse::Ok().json(serde_json::json!({"status": desired}))
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": desired,
+        "hold_reason": hold_reason,
+        "hold_until": hold_until.map(|d| d.to_rfc3339()),
+        "archived_at": new_archived.map(|d| d.to_rfc3339()),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -6647,11 +6774,14 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         // Zones
         .route("/api/v1/zones", web::get().to(list_zones))
         .route("/api/v1/zones", web::post().to(create_zone))
+        .route("/api/v1/zones/bulk-import", web::post().to(zone_ops::bulk_import))
         .route("/api/v1/zones/{id}", web::get().to(get_zone))
         .route("/api/v1/zones/{id}", web::put().to(update_zone))
         .route("/api/v1/zones/{id}", web::delete().to(delete_zone))
         .route("/api/v1/zones/{id}/export", web::get().to(export_zone))
         .route("/api/v1/zones/{id}/import", web::post().to(import_zone))
+        .route("/api/v1/zones/{id}/import-bind", web::post().to(zone_ops::import_bind))
+        .route("/api/v1/zones/{id}/rrsets", web::put().to(zone_ops::batch_rrsets))
         .route(
             "/api/v1/zones/{id}/metadata",
             web::put().to(set_zone_metadata),
@@ -6715,6 +6845,17 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/v1/audit/logs/{id}", web::get().to(ext::get_audit))
         .configure(ext::configure)
         .configure(tenants::configure)
+        // API tokens, durable jobs and webhooks
+        .route("/api/v1/tokens", web::get().to(automation::list_tokens))
+        .route("/api/v1/tokens", web::post().to(automation::create_token))
+        .route("/api/v1/tokens/{id}", web::delete().to(automation::revoke_token))
+        .route("/api/v1/tokens/{id}/rotate", web::post().to(automation::rotate_token))
+        .route("/api/v1/jobs", web::get().to(automation::list_jobs))
+        .route("/api/v1/jobs/{id}", web::get().to(automation::get_job))
+        .route("/api/v1/jobs/{id}/cancel", web::post().to(automation::cancel_job))
+        .route("/api/v1/webhooks", web::get().to(automation::list_webhooks))
+        .route("/api/v1/webhooks", web::post().to(automation::create_webhook))
+        .route("/api/v1/webhooks/{id}", web::delete().to(automation::delete_webhook))
         // DNSSEC
         .route(
             "/api/v1/zones/{id}/dnssec",
@@ -7147,6 +7288,9 @@ async fn main() -> std::io::Result<()> {
     // persistent analytics (global counters, per-zone counters when the DNS server exports them)
     shared::spawn_rate_limit_cleanup(app_state.db.clone());
     tenants::spawn_collector(app_state.db.clone(), app_state.dns_metrics_url.clone());
+    automation::recover_jobs(&app_state.db).await;
+    automation::spawn_job_worker(app_state.clone());
+    automation::spawn_webhook_worker(app_state.db.clone());
 
     // Load GeoIP DB if provided
     let geo_db = std::env::var("GEOIP_DB_PATH").ok().and_then(|p| {
@@ -7187,6 +7331,7 @@ async fn main() -> std::io::Result<()> {
         let cors = cors_middleware();
 
         App::new()
+            .wrap(actix_web::middleware::from_fn(automation::platform_middleware))
             .wrap(actix_web::middleware::from_fn(auth_middleware))
             .wrap(actix_web::middleware::from_fn(api_rate_limit_middleware))
             .wrap(cors)

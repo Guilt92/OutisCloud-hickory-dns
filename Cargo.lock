@@ -665,6 +665,7 @@ dependencies = [
  "rand 0.9.5",
  "rand_core 0.6.4",
  "regex",
+ "reqwest",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -3012,6 +3013,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "webpki-roots",
 ]
 
 [[package]]

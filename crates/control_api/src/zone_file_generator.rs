@@ -687,7 +687,7 @@ pub async fn generate_all(
     let base = base_dir.to_string();
 
     let zones_rows = db
-        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed FROM zones WHERE COALESCE(status, 'active') = 'active' ORDER BY domain", &[])
+        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed FROM zones WHERE COALESCE(status, 'active') IN ('active', 'held') ORDER BY domain", &[])
         .await
         .context("failed to read zones")?;
 
@@ -720,7 +720,7 @@ pub async fn generate_all(
 
     let record_rows = db
         .query(
-            "SELECT CAST(r.zone_id AS varchar) AS zone_id, r.name, r.record_type, r.value, r.ttl, r.priority              FROM records r JOIN zones z ON z.id = r.zone_id              WHERE COALESCE(z.status, 'active') = 'active' ORDER BY r.zone_id, r.created_at, r.id",
+            "SELECT CAST(r.zone_id AS varchar) AS zone_id, r.name, r.record_type, r.value, r.ttl, r.priority              FROM records r JOIN zones z ON z.id = r.zone_id              WHERE COALESCE(z.status, 'active') IN ('active', 'held') ORDER BY r.zone_id, r.created_at, r.id",
             &[],
         )
         .await
@@ -740,7 +740,7 @@ pub async fn generate_all(
 
     let geo_rows = db
         .query(
-            "SELECT CAST(g.zone_id AS varchar) AS zone_id, g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type              FROM georules g JOIN zones z ON z.id = g.zone_id              WHERE COALESCE(z.status, 'active') = 'active'              ORDER BY g.zone_id, g.priority DESC, g.match_type, g.match_value, g.target, g.id",
+            "SELECT CAST(g.zone_id AS varchar) AS zone_id, g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type              FROM georules g JOIN zones z ON z.id = g.zone_id              WHERE COALESCE(z.status, 'active') IN ('active', 'held')              ORDER BY g.zone_id, g.priority DESC, g.match_type, g.match_value, g.target, g.id",
             &[],
         )
         .await

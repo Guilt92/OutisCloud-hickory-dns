@@ -520,15 +520,27 @@ pub fn new_verify_token() -> String {
     format!("outis-verify={}", Uuid::new_v4().simple())
 }
 
-/// TXT lookup of `name` against one resolver over UDP (with TCP retry on truncation is not needed: tokens are short).
+/// TXT lookup of `name` against one resolver over UDP.
 pub async fn txt_lookup(resolver: SocketAddr, name: &str) -> Result<Vec<String>, String> {
+    lookup_records(resolver, name, hickory_proto::rr::RecordType::TXT).await
+}
+
+/// Look up one record type against a single resolver over UDP. The response
+/// must come from the configured resolver and carry the matching transaction
+/// id; TXT values are joined into one string per record, NS names are returned
+/// lower-case without the trailing dot.
+pub async fn lookup_records(
+    resolver: SocketAddr,
+    name: &str,
+    rtype: hickory_proto::rr::RecordType,
+) -> Result<Vec<String>, String> {
     use hickory_proto::op::{Message, Query, ResponseCode};
-    use hickory_proto::rr::{Name, RData, RecordType};
+    use hickory_proto::rr::{Name, RData};
     let mut msg = Message::query();
     msg.set_recursion_desired(true);
     msg.add_query(Query::query(
         Name::from_utf8(format!("{}.", name.trim_end_matches('.'))).map_err(|e| e.to_string())?,
-        RecordType::TXT,
+        rtype,
     ));
     let wire = msg.to_vec().map_err(|e| e.to_string())?;
     let bind: SocketAddr = if resolver.is_ipv4() {
@@ -571,13 +583,26 @@ pub async fn txt_lookup(resolver: SocketAddr, name: &str) -> Result<Vec<String>,
                     .collect::<Vec<_>>()
                     .join(""),
             ),
-            _ => None,
+            RData::NS(ns) => Some(
+                ns.to_ascii()
+                    .trim_end_matches('.')
+                    .to_ascii_lowercase(),
+            ),
+            other => Some(other.to_string()),
         })
         .collect())
 }
 
+#[derive(Deserialize)]
+pub struct VerifyQuery {
+    /// `txt` (default) or `ns`.
+    #[serde(default)]
+    pub method: Option<String>,
+}
+
 pub async fn verify_zone(
     path: web::Path<String>,
+    query: web::Query<VerifyQuery>,
     data: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
@@ -625,11 +650,35 @@ pub async fn verify_zone(
         );
     }
 
-    let fqdn = format!("{}.{}", CHALLENGE_LABEL, access.domain);
+    let method = query
+        .method
+        .as_deref()
+        .unwrap_or("txt")
+        .trim()
+        .to_ascii_lowercase();
+    let (lookup_name, rtype, challenge) = match method.as_str() {
+        "txt" => (
+            format!("{}.{}", CHALLENGE_LABEL, access.domain),
+            hickory_proto::rr::RecordType::TXT,
+            format!(
+                "publish a TXT record at {}.{} with the value {}",
+                CHALLENGE_LABEL, access.domain, token
+            ),
+        ),
+        "ns" => (
+            access.domain.clone(),
+            hickory_proto::rr::RecordType::NS,
+            "point the domain's NS records at the configured authoritative nameservers".to_string(),
+        ),
+        _ => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "method must be txt or ns"}));
+        }
+    };
     let mut last_error = String::new();
     let mut found = Vec::new();
     for attempt in 0..3u32 {
-        match txt_lookup(data.verify_resolver, &fqdn).await {
+        match lookup_records(data.verify_resolver, &lookup_name, rtype).await {
             Ok(values) => {
                 found = values;
                 last_error.clear();
@@ -648,14 +697,39 @@ pub async fn verify_zone(
             serde_json::json!({"error": "verification lookup failed", "details": last_error}),
         );
     }
-    if !found.iter().any(|t| t.trim() == token) {
+    let matched = if method == "ns" {
+        let allowed = match crate::allowed_nameservers(&data.db).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("verify ns nameservers: {}", full_error_string(&e));
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "database error"}));
+            }
+        };
+        let allowed: Vec<String> = allowed
+            .iter()
+            .map(|n| n.trim_end_matches('.').to_ascii_lowercase())
+            .collect();
+        !found.is_empty()
+            && found.iter().all(|n| {
+                let n = n.trim_end_matches('.').to_ascii_lowercase();
+                allowed.contains(&n)
+            })
+    } else {
+        found.iter().any(|t| t.trim() == token)
+    };
+    if !matched {
         return HttpResponse::UnprocessableEntity().json(serde_json::json!({
-            "error": "verification token not found",
-            "details": format!("publish a TXT record at {} with the value {}", fqdn, token),
-            "found": found.len()
+            "error": "verification challenge not satisfied",
+            "details": challenge,
+            "method": method,
+            "found": found
         }));
     }
-    if let Err(e) = data.db.execute("UPDATE zones SET status = 'active', verified_at = now() WHERE CAST(id AS varchar) = $1", &[&zone_id]).await {
+    if let Err(e) = data.db.execute(
+        "UPDATE zones SET status = 'active', verified_at = now(), verified_via = $2, last_verified_at = now() WHERE CAST(id AS varchar) = $1",
+        &[&zone_id, &method],
+    ).await {
         warn!("verify: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"}));
     }
@@ -672,7 +746,7 @@ pub async fn verify_zone(
         serde_json::json!({"zone": access.domain}),
     )
     .await;
-    HttpResponse::Ok().json(serde_json::json!({"status": "active"}))
+    HttpResponse::Ok().json(serde_json::json!({"status": "active", "method": method}))
 }
 
 // ---------------------------------------------------------------------------
