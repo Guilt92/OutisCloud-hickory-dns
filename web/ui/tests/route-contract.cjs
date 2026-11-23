@@ -61,21 +61,43 @@ function walk(dir) {
 sourceRoots.forEach(walk)
 
 const found = new Set()
+const backendRoutes = new Set()
+const backendRoot = path.resolve(root, '../../crates/control_api/src')
+for (const entry of fs.readdirSync(backendRoot)) {
+  if (!entry.endsWith('.rs') || entry.endsWith('_tests.rs')) continue
+  const source = fs.readFileSync(path.join(backendRoot, entry), 'utf8')
+  const route = /\.route\(\s*"([^"]+)"\s*,\s*web::(get|post|put|patch|delete)\(\)/g
+  let match
+  while ((match = route.exec(source))) {
+    backendRoutes.add(`${match[2].toUpperCase()} ${match[1].replace(/\{[^}]+\}/g, '*')}`)
+  }
+}
 for (const file of files) {
   const text = fs.readFileSync(file, 'utf8')
-  const re = /api\.(?:get|post|put|delete|patch)\(\s*[`']([^`']+)[`']/g
+  const re = /api\.(get|post|put|delete|patch)\(\s*[`']([^`']+)[`']/g
   let m
   while ((m = re.exec(text))) {
-    const endpoint = m[1].replace(/\$\{[^}]+\}/g, '*')
-    found.add(endpoint)
+    if (m[2].includes('${path}')) {
+      const actions = [...text.matchAll(/\bact\('([^']+)'/g)]
+      if (!actions.length) throw new Error(`Unresolved dynamic API path in ${file}`)
+      for (const action of actions) {
+        found.add(`${m[1].toUpperCase()} ${m[2].replace('${path}', action[1]).replace(/\$\{[^}]+\}/g, '*')}`)
+      }
+    } else {
+      const endpoint = m[2].replace(/\$\{[^}]+\}/g, '*')
+      found.add(`${m[1].toUpperCase()} ${endpoint}`)
+    }
   }
 }
 
-const violations = [...found].filter((endpoint) => !ALLOWED.some((re) => re.test(endpoint))).sort()
+const violations = [...found].filter((route) => {
+  const endpoint = route.slice(route.indexOf(' ') + 1)
+  return !ALLOWED.some((re) => re.test(endpoint)) || !backendRoutes.has(route)
+}).sort()
 if (violations.length) {
   console.error('Frontend route contract violations:')
   for (const v of violations) console.error(`  ${v}`)
   process.exit(1)
 }
 
-console.log(`Route contract OK: ${found.size} frontend endpoints match backend routes`)
+console.log(`Route contract OK: ${found.size} frontend method/path pairs match backend routes`)

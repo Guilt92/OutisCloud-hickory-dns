@@ -1,5 +1,12 @@
 # Task Status — Audit Remediation and Platform QA
 
+## 2026-11-24 execution update
+
+**API-010 — API contract tests (P1): COMPLETED.** Strengthened `web/ui/tests/route-contract.cjs` to check each frontend HTTP method and path against registered Rust control API routes, including the DNSSEC action paths. `node web/ui/tests/route-contract.cjs` and `npm --prefix web/ui run test:routes` pass for 83 method/path pairs; `npm --prefix web/ui run lint` and `git diff --check` pass. The route check runs in CI. This static check does not verify response schemas or authorization behavior; those remain separate test concerns. The prior row in this document calling API-010 partial is historical.
+
+**Server validation:** `ssh -o BatchMode=yes germ` succeeded. The host is `fastcreate-472995`, Ubuntu/Linux kernel 6.8, with 7.8 GiB RAM and 6.1 GiB available on a 59 GiB root volume. Four application containers report healthy. Read-only HTTP checks returned 200 for control API `/health`, `/ready`, and the UI root. The server's staging/production designation was not established; treat it as production for safety. No deployment or data mutation was performed.
+
+
 **Repository:** `/home/outis/work-github/OutisCloud-hickory-dns`
 **Branch:** `main`
 **Last updated:** 2026-11-19

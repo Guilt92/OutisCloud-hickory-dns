@@ -1,5 +1,7 @@
 # OutisCloud DNS Platform — Benchmark, Architecture Assessment, and Multi-Phase Roadmap
 
+> **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The host's production/staging designation is unconfirmed, so no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
+
 > **Current implementation status:** see §19 below. Earlier sections remain the canonical requirements and historical roadmap.
 
 **Repository:** `/home/outis/work-github/OutisCloud-hickory-dns`
