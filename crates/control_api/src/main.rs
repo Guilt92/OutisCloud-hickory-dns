@@ -246,6 +246,10 @@ struct ZoneWithOwner {
     description: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    hold_reason: Option<String>,
+    #[serde(default)]
+    hold_until: Option<String>,
 }
 
 #[derive(Clone)]
@@ -4311,7 +4315,8 @@ async fn list_zones(
                 COALESCE(z.geodns_enabled, true), z.status, z.ecs_enabled, \
                 CASE WHEN $1 THEN 'admin' WHEN CAST(z.owner AS varchar) = $2 THEN 'owner' \
                      ELSE COALESCE(m.role, (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2), '') END, count(*) OVER(), \
-                CAST(z.tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = z.tenant_id), z.description, z.tags \
+                CAST(z.tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = z.tenant_id), z.description, z.tags, \
+                z.hold_reason, to_char(z.hold_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
          FROM zones z LEFT JOIN zone_members m ON m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2 \
          WHERE ({}) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
            AND ($6::text IS NULL OR z.tags ? $6) \
@@ -4345,6 +4350,8 @@ async fn list_zones(
                     tenant_name: r.try_get(11).unwrap_or(None),
                     description: r.try_get(12).unwrap_or_default(),
                     tags: r.try_get(13).unwrap_or_default(),
+                    hold_reason: r.try_get(14).unwrap_or(None),
+                    hold_until: r.try_get(15).unwrap_or(None),
                 })
                 .collect();
             HttpResponse::Ok()
@@ -5525,7 +5532,7 @@ async fn get_zone(
     };
 
     match data.db.query_one(
-        "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) as geodns_enabled, status, ecs_enabled, CAST(tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = zones.tenant_id), description, tags FROM zones WHERE CAST(id AS varchar) = $1",
+        "SELECT CAST(id AS varchar), domain, COALESCE(CAST(owner AS varchar), '') as owner, zone_type, created_at::text, COALESCE(geodns_enabled, true) as geodns_enabled, status, ecs_enabled, CAST(tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = zones.tenant_id), description, tags, hold_reason, to_char(hold_until, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM zones WHERE CAST(id AS varchar) = $1",
         &[&zone_id]
     ).await {
         Ok(row) => {
@@ -5542,6 +5549,8 @@ async fn get_zone(
                 tenant_name: row.try_get(9).unwrap_or(None),
                 description: row.try_get(10).unwrap_or_default(),
                 tags: row.try_get(11).unwrap_or_default(),
+                hold_reason: row.try_get(12).unwrap_or(None),
+                hold_until: row.try_get(13).unwrap_or(None),
                 access: access.role.clone(),
             };
 

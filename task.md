@@ -1782,16 +1782,16 @@ Validation performed for this status update:
 | 1 | CORE-011 | P2 | PARTIALLY COMPLETED | Implemented: Record-type policy documented. Remaining: advanced types and UI round-trip tests pending. |
 | 4 | CORE-012 | P2 | COMPLETED | Dynamic-update policy documented; prerequisite/prescan tests exist. |
 | 1 | CORE-013 | P1 | NEEDS VERIFICATION | Implemented: Per-zone fingerprint reload implemented. Remaining: no load proof under write pressure. Verification gap: Incremental reload proof under write pressure was not run. |
-| 2 | ZONE-001 | P1 | PARTIALLY COMPLETED | Implemented: JSON import dry-run and row errors implemented. Remaining: BIND parser and byte-size cap pending. |
-| 2 | ZONE-002 | P1 | NOT STARTED | No backend route or job model. |
-| 2 | ZONE-003 | P2 | PARTIALLY COMPLETED | Implemented: Clone API implemented and tested. Remaining: UI template picker pending. |
-| 2 | ZONE-004 | P2 | PARTIALLY COMPLETED | Implemented: Zone description/tags API and UI exist. Remaining: server-side tag filter pending. |
-| 2 | ZONE-005 | P0 | PARTIALLY COMPLETED | Implemented: TXT verification hardened with retry/rate limits. Remaining: NS-delegation proof pending. |
-| 2 | ZONE-006 | P1 | PARTIALLY COMPLETED | Implemented: Active/suspended lifecycle implemented. Remaining: hold/archive semantics pending. |
+| 2 | ZONE-001 | P1 | COMPLETED | JSON import dry-run/row errors plus BIND import (Hickory parser, `$ORIGIN`, quoted TXT, byte cap) tested; bulk import runs as a durable job. |
+| 2 | ZONE-002 | P1 | COMPLETED | Authenticated `POST /api/v1/zones/bulk-import` with limits, dry-run, per-zone row errors, durable job progress/cancel and UI. |
+| 2 | ZONE-003 | P2 | PARTIALLY COMPLETED | Implemented: Clone API + UI clone dialog with domain validation and audit. Remaining: built-in template picker. |
+| 2 | ZONE-004 | P2 | COMPLETED | Description/tags API, server-side `?tag=` filter with `X-Total-Count`, UI tag filter, and integration test. |
+| 2 | ZONE-005 | P0 | COMPLETED | TXT and NS-delegation verification (`method=txt|ns`), rate limits/retries, fail-safe pending state, and `verified_via` evidence. |
+| 2 | ZONE-006 | P1 | COMPLETED | active/held/suspended/archived lifecycle with hold reason/until, archived write blocking, serving effects, audit and integration tests. |
 | 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Implemented: Revision diff endpoint and UI exist. Remaining: full snapshots, retention config and failure visibility pending. |
 | 2 | REC-001 | P2 | PARTIALLY COMPLETED | Implemented: Record comment/tags columns and API exist. Remaining: editor integration pending. |
 | 2 | REC-002 | P0 | COMPLETED | Publish-failure rollback API tests pass. |
-| 2 | REC-003 | P1 | NOT STARTED | No batch/RRset mutation endpoint. |
+| 2 | REC-003 | P1 | COMPLETED | `PUT /api/v1/zones/{id}/rrsets` applies an all-or-nothing RRset batch with validation, audit and rollback. |
 | 11 | REC-004 | P3 | COMPLETED | Apex-alias non-goal documented in docs/RECORD_TYPES.md. |
 | 11 | REC-005 | P1 | PARTIALLY COMPLETED | Implemented: Delete confirmation added. Remaining: record diff/history and bulk safeguards pending. |
 | 3 | DNSSEC-001 | P0 | BLOCKED | Needs KMS/HSM decision and approved key-store migration. |
@@ -1799,7 +1799,7 @@ Validation performed for this status update:
 | 3 | DNSSEC-003 | P2 | BLOCKED | Needs signed-zone content design and parent-side coordination policy. |
 | 3 | DNSSEC-004 | P0 | BLOCKED | Depends on DNSSEC-001; encrypted backup format/restore drill unavailable. |
 | 3 | DNSSEC-005 | P3 | BLOCKED | Requires multi-operator product decision and external coordination. |
-| 3 | DNSSEC-006 | P1 | PARTIALLY COMPLETED | Implemented: DS output and guidance exist. Remaining: parent verification and alerts pending. |
+| 3 | DNSSEC-006 | P1 | COMPLETED | `GET .../dnssec/ds-status` queries parent DS, reports missing/stale records, and dispatches `dnssec.ds_mismatch` webhook alerts. |
 | 3 | DNSSEC-007 | P2 | COMPLETED | GeoDNS/DNSSEC exclusion enforced by guards and covered by tests. |
 | 3 | DNSSEC-008 | P1 | COMPLETED | Rollover algorithm carry and new-key protection API test passes. |
 | 3 | DNSSEC-009 | P1 | PARTIALLY COMPLETED | Implemented: Local negative tests exist. Remaining: NSEC3 and expired-signature cases pending. |
@@ -1823,8 +1823,8 @@ Validation performed for this status update:
 | 5 | TRAF-002 | P3 | BLOCKED | Requires external location/latency data sources. |
 | 5 | TRAF-003 | P3 | BLOCKED | Requires pool/region schema design. |
 | 5 | TRAF-004 | P2 | BLOCKED | Depends on TRAF-003. |
-| 5 | HLTH-001 | P2 | BLOCKED | Requires new probe scheduler and SSRF-safe network policy. |
-| 6 | HLTH-002 | P1 | BLOCKED | Depends on HLTH-001 and monitoring stack. |
+| 5 | HLTH-001 | P2 | COMPLETED | Health-check CRUD, public-IP-only DNS probes (SSRF-safe), scheduler, thresholds and persisted results with tests. |
+| 6 | HLTH-002 | P1 | COMPLETED | State machine with consecutive thresholds, result history/pruning, webhook/audit transitions and worker wired into startup. |
 | 6 | ANA-001 | P2 | PARTIALLY COMPLETED | Implemented: Query-log redaction/level controls exist. Remaining: structured sampling/persistence/export pending. |
 | 6 | ANA-002 | P1 | PARTIALLY COMPLETED | Implemented: RCODE counters exist. Remaining: latency histogram/history tables pending. |
 | 6 | ANA-003 | P2 | BLOCKED | Requires export format/tenant-scope decision. |
@@ -1844,9 +1844,9 @@ Validation performed for this status update:
 | 7 | API-001 | P1 | PARTIALLY COMPLETED | Implemented: OpenAPI spec route with component schemas exists. Remaining: full route annotation and lint pending. |
 | 7 | API-002 | P1 | PARTIALLY COMPLETED | Implemented: create_zone idempotency implemented/tested. Remaining: other mutating endpoints pending. |
 | 7 | API-003 | P1 | BLOCKED | Depends on API-001 completion and ARCH-007 secret decision. |
-| 7 | API-004 | P1 | PARTIALLY COMPLETED | Implemented: Global per-IP limit middleware added. Remaining: tenant budgets and middleware test pending. |
-| 7 | API-005 | P2 | BLOCKED | Requires outbound HTTP client, SSRF-safe egress, signing keys and dead-letter store. |
-| 7 | API-006 | P2 | BLOCKED | Depends on API-002 completion and job model. |
+| 7 | API-004 | P1 | COMPLETED | Global per-IP limiter plus tenant-scoped budgets in `platform_middleware` with 429/Retry-After and tests. |
+| 7 | API-005 | P2 | COMPLETED | Signed webhooks (HMAC), SSRF-safe target validation, durable deliveries with retry/backoff and dead-letter status. |
+| 7 | API-006 | P2 | COMPLETED | Durable jobs with progress/cancel/retention, bulk import endpoint, recovery worker and integration test. |
 | 7 | API-007 | P1 | PARTIALLY COMPLETED | Implemented: Pagination exists for several lists. Remaining: remaining lists and error envelopes pending. |
 | 7 | API-008 | P2 | BLOCKED | Depends on API-001 completion. |
 | 7 | API-009 | P3 | BLOCKED | Depends on API-008 and external provider toolchain. |
@@ -1865,7 +1865,7 @@ Validation performed for this status update:
 | 9 | SEC-005 | P1 | PARTIALLY COMPLETED | Implemented: Login/DNS/API/verification limits exist. Remaining: tenant abuse scoring pending. |
 | 9 | SEC-006 | P1 | PARTIALLY COMPLETED | Implemented: DNSSEC and agent keys separate. Remaining: JWT remains single trust anchor pending rotation. |
 | 9 | SEC-007 | P0 | PARTIALLY COMPLETED | Implemented: Per-source governor and admission limits exist. Remaining: full RRL coverage pending. |
-| 9 | SEC-008 | P1 | PARTIALLY COMPLETED | Implemented: Secret/docs checks and dependency audits exist. Remaining: SBOM and image signing pending. |
+| 9 | SEC-008 | P1 | PARTIALLY COMPLETED | Added `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, release checksum signing and provenance workflow. Remaining: image signature verification policy. |
 | 10 | PERF-001 | P0 | PARTIALLY COMPLETED | Implemented: ADR state machine exists. Remaining: outbox implementation pending. |
 | 10 | PERF-002 | P0 | PARTIALLY COMPLETED | Implemented: ADR selected concurrency model. Remaining: benchmark/implementation pending. |
 | 10 | PERF-003 | P1 | COMPLETED | Overview/query-count tests and local 5,000-zone benchmark exist. |
@@ -1877,7 +1877,7 @@ Validation performed for this status update:
 | 12 | HA-005 | P1 | BLOCKED | Requires chaos/failure-injection environment. |
 | 12 | HA-006 | P0 | BLOCKED | Depends on HA-005 and BAK-004 drills. |
 | 11 | ADM-001 | P1 | PARTIALLY COMPLETED | Implemented: Metadata UI added. Remaining: truthful health/lifecycle controls still partial. |
-| 11 | ADM-002 | P0 | PARTIALLY COMPLETED | Implemented: Zone management UX advanced. Remaining: clone/suspend controls not surfaced. |
+| 11 | ADM-002 | P0 | COMPLETED | Clone dialog, lifecycle (active/held/suspended/archived) controls, tag filtering and metadata editing surfaced in the zone console. |
 | 11 | ADM-003 | P1 | PARTIALLY COMPLETED | Implemented: Audit backend endpoints exist. Remaining: UI drawer/export wiring pending. |
 | 11 | ADM-004 | P1 | PARTIALLY COMPLETED | Implemented: Viewer enforcement exists. Remaining: full permission-aware catalog depends on RBAC-001. |
 | 11 | ADM-005 | P2 | BLOCKED | Requires notification model and settings schema. |
@@ -1888,11 +1888,11 @@ Validation performed for this status update:
 | 11 | CUI-004 | P2 | PARTIALLY COMPLETED | Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass. |
 | 12 | OPS-001 | P0 | BLOCKED | Requires TLS reverse proxy, certificates and production topology decision. |
 | 12 | OPS-002 | P1 | BLOCKED | Requires Kubernetes/RWX storage and validated manifests. |
-| 12 | OPS-003 | P0 | NOT STARTED | CI action refs, test DB service and release gates not repaired. |
-| 12 | OPS-004 | P1 | PARTIALLY COMPLETED | Implemented: Monitoring configs added. Remaining: deployment and on-call runbooks incomplete. |
-| 12 | OPS-005 | P1 | NOT STARTED | Incident/rollback/cert/GeoIP/failover runbooks not written. |
-| 12 | OPS-006 | P1 | NOT STARTED | Certificate lifecycle and GeoIP automation not implemented. |
-| 12 | OPS-007 | P2 | NOT STARTED | Status page, release signing, SBOM publication and diagnostics bundle not implemented. |
+| 12 | OPS-003 | P0 | COMPLETED | CI repaired: valid toolchain actions, Postgres service + `TEST_DATABASE_URL`, workspace clippy/tests, UI build/route contract, Docker contexts, audit/deny gates. |
+| 12 | OPS-004 | P1 | COMPLETED | Prometheus/Alertmanager/Grafana configs plus incident, rollback, certificate, GeoIP and failover runbooks. |
+| 12 | OPS-005 | P1 | COMPLETED | `docs/runbooks/` covers incident response, rollback, certificate lifecycle, GeoIP and failover/recovery. |
+| 12 | OPS-006 | P1 | PARTIALLY COMPLETED | GeoIP atomic refresh + certificate expiry checker (`scripts/check_certs.sh`) and lifecycle runbook. Remaining: ACME issuance automation is deployment-specific. |
+| 12 | OPS-007 | P2 | PARTIALLY COMPLETED | Added static status-page generator, CycloneDX SBOM script, signed release checksums/provenance workflow and redacted diagnostics bundle. Remaining: publish SBOM/provenance to a public transparency log. |
 | 12 | OPS-008 | P0 | NOT STARTED | Production-readiness review not passed; P0 gate still open. |
 
 ---

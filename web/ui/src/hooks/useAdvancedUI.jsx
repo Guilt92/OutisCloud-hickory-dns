@@ -29,7 +29,7 @@ export function usePagination(items, itemsPerPage = 10) {
 // Server-side pagination + search. Calls `<path>?limit&offset&q` and reads the
 // total from the X-Total-Count header; `normalize` maps the response body to a
 // list. Returns an object compatible with <PaginationControls/>.
-export function useServerPagination(api, path, { pageSize = 20, normalize = (d) => d || [] } = {}) {
+export function useServerPagination(api, path, { pageSize = 20, normalize = (d) => d || [], extraParams = {} } = {}) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -49,7 +49,7 @@ export function useServerPagination(api, path, { pageSize = 20, normalize = (d) 
     if (!path) return;
     const my = ++seq.current;
     setLoading(true);
-    const params = { limit: pageSize, offset: (page - 1) * pageSize };
+    const params = { limit: pageSize, offset: (page - 1) * pageSize, ...extraParams };
     if (debounced) params.q = debounced;
     api.get(path, { params })
       .then((r) => {
@@ -63,7 +63,7 @@ export function useServerPagination(api, path, { pageSize = 20, normalize = (d) 
       })
       .catch((e) => { if (my === seq.current) setError(e); })
       .finally(() => { if (my === seq.current) setLoading(false); });
-  }, [api, path, page, pageSize, debounced, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, path, page, pageSize, debounced, tick, JSON.stringify(extraParams)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const reload = useCallback(() => setTick((t) => t + 1), []);

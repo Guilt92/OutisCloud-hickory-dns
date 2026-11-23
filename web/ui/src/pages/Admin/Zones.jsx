@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 import api from '../../api/client'
 import { Link } from 'react-router-dom'
 import { useAuthStore } from '../../store'
-import { Globe, Plus, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square } from 'lucide-react'
+import { Globe, Plus, Search, Edit2, Trash2, RefreshCw, CheckSquare, Square, Copy } from 'lucide-react'
 import ZoneTools from '../../components/ZoneTools'
 import TransferZone from '../../components/TransferZone'
 import Notifications from '../../components/Notifications'
@@ -18,7 +18,10 @@ export default function Zones(){
   const canWrite = user?.role !== 'viewer'          // viewers are read-only
   const [toolsZone, setToolsZone] = React.useState(null)
   const [transferZone, setTransferZone] = React.useState(null)
-  const paged = useServerPagination(api, '/api/v1/zones', { pageSize: 10 })
+  const [cloneZone, setCloneZone] = React.useState(null)
+  const [cloneDomain, setCloneDomain] = React.useState('')
+  const [tagFilter, setTagFilter] = React.useState('')
+  const paged = useServerPagination(api, '/api/v1/zones', { pageSize: 10, extraParams: tagFilter.trim() ? { tag: tagFilter.trim() } : {} })
   const zones = paged.items
   const loading = paged.loading
   const notify = React.useContext(Notifications)
@@ -137,6 +140,28 @@ export default function Zones(){
     }
   }
 
+  const startClone = (zone) => {
+    setCloneZone(zone)
+    setCloneDomain('')
+  }
+
+  const submitClone = async () => {
+    const domain = cloneDomain.trim().replace(/\.$/, '')
+    if (!domain || validators.domain(domain)) {
+      notify?.error('Please enter a valid target domain')
+      return
+    }
+    try {
+      await api.post(`/api/v1/zones/${cloneZone.id}/clone`, { domain })
+      notify?.success(`Cloned to ${domain}`)
+      setCloneZone(null)
+      setCloneDomain('')
+      load()
+    } catch (e) {
+      notify?.error(apiErrorMessage(e, 'Error cloning zone'))
+    }
+  }
+
   const toggleZoneGeo = async (zone) => {
     try {
       await api.put(`/api/v1/zones/${zone.id}`, { geodns_enabled: !zone.geodns_enabled })
@@ -252,16 +277,26 @@ export default function Zones(){
         </div>
       </motion.div>}
 
-      {/* Search */}
+      {/* Search and tag filter */}
       <div>
-       <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none" />
+       <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search zones by domain..."
+            value={paged.query}
+            onChange={(e) => paged.setQuery(e.target.value)}
+            className="input pl-10"
+          />
+        </div>
         <input
           type="text"
-          placeholder="Search zones by domain..."
-          value={paged.query}
-          onChange={(e) => paged.setQuery(e.target.value)}
-          className="input pl-10"
+          placeholder="Filter by tag"
+          aria-label="Filter zones by tag"
+          value={tagFilter}
+          onChange={(e) => setTagFilter(e.target.value)}
+          className="input sm:max-w-[12rem]"
         />
        </div>
         {paged.total > 0 && (
@@ -361,6 +396,9 @@ export default function Zones(){
                           >
                             Records
                           </Link>
+                          {(z.access === 'admin' || z.access === 'owner') && canWrite && (
+                            <button onClick={() => startClone(z)} aria-label={`Clone ${z.domain}`} className="btn-sm btn-ghost"><Copy className="w-3.5 h-3.5" /></button>
+                          )}
                           <button onClick={() => setToolsZone(z)} aria-label={`Manage ${z.domain}`} className="btn-sm btn-ghost">Manage</button>
                           {user?.role === 'admin' && <button onClick={() => setTransferZone(z)} aria-label={`Transfer ${z.domain}`} className="btn-sm btn-ghost">Transfer</button>}
                           {(z.access === 'admin' || z.access === 'owner') && canWrite && (
@@ -394,6 +432,20 @@ export default function Zones(){
           <PaginationControls pagination={pagination} />
         </div>
       </div>
+      {cloneZone && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label={`Clone ${cloneZone.domain}`}>
+          <div className="bg-surface rounded-2xl border border-line p-5 w-full max-w-md space-y-3">
+            <h2 className="font-semibold">Clone {cloneZone.domain}</h2>
+            <p className="text-sm text-muted">Copies records, settings and DNSSEC configuration to a new zone.</p>
+            <label className="form-label" htmlFor="clone-domain">New domain</label>
+            <input id="clone-domain" className="input" value={cloneDomain} onChange={e => setCloneDomain(e.target.value)} placeholder="copy.example.com" autoFocus />
+            <div className="flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setCloneZone(null)}>Cancel</button>
+              <button className="btn-primary" disabled={!cloneDomain.trim()} onClick={submitClone}>Clone zone</button>
+            </div>
+          </div>
+        </div>
+      )}
       {transferZone && <TransferZone zone={transferZone} onClose={() => setTransferZone(null)} onDone={load} />}
       {toolsZone && <ZoneTools zone={toolsZone} onClose={() => setToolsZone(null)} onChanged={load} />}
     </div>

@@ -16,6 +16,9 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
   const [busy, setBusy] = React.useState(false)
   const [verification, setVerification] = React.useState(null)
   const [diff, setDiff] = React.useState(null)
+  const [status, setStatus] = React.useState(zone.status || 'active')
+  const [holdReason, setHoldReason] = React.useState(zone.hold_reason || '')
+  const [holdUntil, setHoldUntil] = React.useState(zone.hold_until ? String(zone.hold_until).slice(0, 10) : '')
   const owner = zone.access === 'admin' || zone.access === 'owner'
   const err = (e) => setMsg({ bad: true, text: e.response?.data?.details || e.response?.data?.error || e.message })
 
@@ -50,6 +53,19 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
     catch (e) { err(e) }
     setBusy(false)
   }
+  const saveLifecycle = async () => {
+    if (status === 'held' && !holdReason.trim()) { setMsg({ bad: true, text: 'A hold reason is required' }); return }
+    setBusy(true); setMsg(null)
+    try {
+      await api.put(`/api/v1/zones/${zone.id}/lifecycle`, {
+        status,
+        hold_reason: status === 'held' ? holdReason.trim() : null,
+        hold_until: status === 'held' && holdUntil ? holdUntil : null,
+      })
+      setMsg({ text: `Zone is now ${status}` }); onChanged && onChanged()
+    } catch (e) { err(e) }
+    setBusy(false)
+  }
   const verify = async () => {
     setBusy(true); setMsg(null)
     try { await api.post(`/api/v1/zones/${zone.id}/verify`, {}); setMsg({ text: 'Domain verified - zone is now active' }); onChanged && onChanged() }
@@ -57,7 +73,7 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
     setBusy(false)
   }
 
-  const tabs = [['sharing', 'Sharing'], ['history', 'History'], ['dnssec', 'DNSSEC'], ...(zone.status === 'pending' ? [['verify', 'Verification']] : [])]
+  const tabs = [['sharing', 'Sharing'], ['history', 'History'], ['lifecycle', 'Lifecycle'], ['dnssec', 'DNSSEC'], ...(zone.status === 'pending' ? [['verify', 'Verification']] : [])]
   return (
     <Modal open={true} onClose={onClose} title={`Manage ${zone.domain}`}>
       <div className="flex gap-2 mb-4">
@@ -87,6 +103,35 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
               <button className="btn-primary" disabled={busy || !username.trim()} onClick={share}>Share</button>
             </div>
           ) : <p className="text-sm text-muted">Only the zone owner can change sharing.</p>}
+        </div>
+      )}
+
+      {tab === 'lifecycle' && (
+        <div className="space-y-3 text-sm">
+          <p>Suspended and archived zones stop being served; held zones stay served while an operator investigates.</p>
+          <div>
+            <label className="form-label" htmlFor="zone-status">Status</label>
+            <select id="zone-status" className="select" value={status} onChange={e => setStatus(e.target.value)} disabled={!owner}>
+              <option value="active">Active</option>
+              <option value="held">Held (served, write-protected for operators)</option>
+              <option value="suspended">Suspended (not served)</option>
+              <option value="archived">Archived (read-only, not served)</option>
+            </select>
+          </div>
+          {status === 'held' && (
+            <>
+              <div>
+                <label className="form-label" htmlFor="hold-reason">Hold reason</label>
+                <input id="hold-reason" className="input" value={holdReason} onChange={e => setHoldReason(e.target.value)} placeholder="e.g. abuse investigation" />
+              </div>
+              <div>
+                <label className="form-label" htmlFor="hold-until">Hold until (optional)</label>
+                <input id="hold-until" type="date" className="input" value={holdUntil} onChange={e => setHoldUntil(e.target.value)} />
+              </div>
+            </>
+          )}
+          {!owner && <p className="text-muted">Only the zone owner can change lifecycle state.</p>}
+          <button className="btn-primary" disabled={!owner || busy} onClick={saveLifecycle}>Save lifecycle</button>
         </div>
       )}
 

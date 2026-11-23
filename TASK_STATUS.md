@@ -14,6 +14,53 @@
 
 ---
 
+## 0.15 Authoritative Current Status — 2026-11-23
+
+This section supersedes section 0.14 and earlier status wording. Repository commit
+`d9f0871cd` (preceded by `0c05e9909`) is pushed to `origin/main`.
+
+Validation for this update:
+- `TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:55433/postgres cargo test -p control_api --bin control_api -- --test-threads=1`: **171 passed, 0 failed** on isolated PostgreSQL 16.
+- `npm --prefix web/ui run lint`, `npm --prefix web/ui run build`, and `node web/ui/tests/route-contract.cjs`: pass (60 endpoints).
+- `scripts/check_certs.sh` exercised against generated certificates (critical/warning/OK paths).
+- `python3 scripts/docs_check.py`: passes with pre-existing broken-link warnings only.
+- Secret scan still fails by design: tracked live-looking secrets in `.env`, `env/api.env`, `env/db.env`, `env/grafana.env`, `k8s/secret.yaml` (ARCH-007 blocked).
+
+### Newly completed in this cycle
+| Task | Evidence |
+|---|---|
+| ZONE-001/002 | JSON/BIND import plus authenticated multi-zone bulk import with dry-run, limits, per-zone errors and durable job progress/cancel. |
+| ZONE-004 | Server-side `?tag=` filter with `X-Total-Count`, UI tag filter, integration test. |
+| ZONE-005 | TXT **and** NS-delegation proof with retries/rate limits, fail-safe pending state, `verified_via`. |
+| ZONE-006 | active/held/suspended/archived lifecycle, hold reason/until, archived write blocking, serving effects, audit tests. |
+| REC-003 | `PUT /api/v1/zones/{id}/rrsets` all-or-nothing RRset batch with rollback. |
+| DNSSEC-006 | Parent DS verification endpoint, missing/stale reporting, `dnssec.ds_mismatch` webhook alerts. |
+| HLTH-001/002 | Health-check CRUD, SSRF-safe public-IP DNS probes, scheduler/state machine, persisted results, worker, tests. |
+| API-004/005/006 | Tenant budgets, signed webhooks with SSRF-safe delivery and retries, durable jobs with progress/cancel/recovery. |
+| ADM-002 | Clone dialog, lifecycle controls and tag filtering surfaced in the zone console. |
+| OPS-003 | CI repaired: valid actions, Postgres service/`TEST_DATABASE_URL`, workspace clippy/tests, UI build/route contract, Docker contexts, audit/deny gates. |
+| OPS-004/005 | Monitoring configs plus incident, rollback, certificate, GeoIP and failover runbooks. |
+| SEC-008 (partial) | `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, signed release checksums/provenance workflow. |
+| OPS-006/007 (partial) | Certificate expiry checker, status-page generator, SBOM and redacted diagnostics bundle. |
+
+### Current counts (task.md status table)
+| Status | Count |
+|---|---|
+| COMPLETED | 34 |
+| PARTIALLY COMPLETED | 44 |
+| NEEDS VERIFICATION | 11 |
+| BLOCKED | 43 |
+| NOT STARTED | 1 (OPS-008) |
+
+### Remaining blockers (unchanged)
+ARCH-007 secret rotation, KMS/HSM custody (DNSSEC-001/004), secondary/replication
+(SECONDARY-001..004, REPL-001..003), multi-host HA/anycast (HA-001..006), database
+PITR/backup drills (BAK-002/003/004), TLS/CA topology (SEC-001/002, OPS-001),
+Kubernetes storage (OPS-002), external email/IdP/GeoIP City data, and the final
+production-readiness gate (OPS-008).
+
+---
+
 ## 0. Phase 0 Implementation Reconciliation
 
 Evidence-based reconciliation performed on 2026-11-19 against the current source tree, migrations, frontend routes, documentation, CI workflows, and executed tests. This matrix supersedes the historical status wording in the rest of this report.
