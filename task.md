@@ -1,7 +1,8 @@
 # OutisCloud DNS Platform — Benchmark, Architecture Assessment, and Multi-Phase Roadmap
 
 > **Further execution evidence, 2026-11-24:** CORE-006 query logging now supports level and sampling controls and redacts DEBUG/error paths; focused tests pass. ZONE-003 clone rewriting preserves TXT text while rewriting zone-local DNS targets; a unit test and isolated PostgreSQL clone integration test pass. ZONE-003 remains partial because built-in templates and NS/DNSSEC clone acceptance tests are absent. See the current entries in §20 and `TASK_STATUS.md`.
-> **Current corrected counts:** 34 COMPLETED, 48 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 2 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
+> **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. Secure cookies, token storage, and browser XSS/CSP checks remain, so the task is PARTIALLY COMPLETED.
+> **Current corrected counts:** 34 COMPLETED, 49 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
 
 > **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
 
@@ -1915,7 +1916,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | CORE-006 | COMPLETED | Query logging now supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; request, response, refused and parse-error paths redact addresses, and DEBUG query names are redacted. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
-| SEC-005 | NOT STARTED | No CSP, secure-cookie option, token-storage change or browser security test exists. |
+| SEC-005 | PARTIALLY COMPLETED | UI Nginx now emits a CSP for the SPA. `nginx -t` and a disposable-container HTTP header smoke test pass. Secure-cookie option, token-storage change, and browser XSS/CSP tests remain. |
 | SEC-006 | NOT STARTED | No abuse scoring, zone holds/locks or transfer-protection operator workflow exists. |
 | RBAC-002 | PARTIALLY COMPLETED | User role and per-user reset are tested; effective-permission display is not implemented. |
 | PERF-003 | PARTIALLY COMPLETED | A repeatable 5,000-zone harness and results exist; required 1k/10k/50k scenarios and SLO thresholds are absent. |

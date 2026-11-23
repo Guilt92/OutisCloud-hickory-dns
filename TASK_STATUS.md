@@ -2,9 +2,11 @@
 
 ## 2026-11-24 execution update
 
-**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 48, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 2 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 49, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 1 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
 
 **CORE-006 — Query logging and PII (P1): COMPLETED.** Added `off`/`info`/`debug` query-log levels and `DNS_QUERY_LOG_SAMPLE_EVERY` to `crates/server/src/server/mod.rs`. DEBUG query names and refused/malformed client addresses now use the redaction setting. `docs/OPERATIONS.md` documents the controls. Two focused server tests pass; format and diff checks pass. No live DNS process was restarted.
+
+**SEC-005 — Browser hardening (P1): PARTIALLY COMPLETED.** Added a CSP to `web/ui/nginx.conf` for the SPA, with same-origin scripts/API connections, Google Fonts allowances, and blocked object embedding. `nginx -t` passed in a disposable Nginx container, and a local HTTP request returned the CSP, Referrer-Policy, and nosniff headers. The first syntax check lacked the Compose `control-api` hostname and failed DNS resolution; rerunning with a disposable host alias passed. Secure cookies, token-storage migration, and browser security tests remain.
 
 **ZONE-003 — Clone and templates (P2): PARTIALLY COMPLETED.** Fixed clone substitution in `crates/control_api/src/main.rs` so only zone-local DNS targets are rewritten, preserving opaque TXT values and unrelated domains. Added a unit test and extended the PostgreSQL-backed clone integration test in `crates/control_api/src/api_tests.rs`; both pass against local code, with the latter using a disposable PostgreSQL 16 container. The built-in template picker and NS/DNSSEC settings tests remain.
 
@@ -673,7 +675,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | CORE-006 | COMPLETED | Query logging supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; default address/name redaction also covers DEBUG and error paths. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
-| SEC-005 | NOT STARTED | No CSP, secure-cookie option, token-storage change or browser security test exists. |
+| SEC-005 | PARTIALLY COMPLETED | UI Nginx emits a CSP for the SPA. `nginx -t` and disposable-container HTTP header smoke test pass. Secure-cookie option, token-storage change, and browser XSS/CSP tests remain. |
 | SEC-006 | NOT STARTED | No abuse scoring, zone holds/locks or transfer-protection operator workflow exists. |
 | RBAC-002 | PARTIALLY COMPLETED | User role and per-user reset are tested; effective-permission display is not implemented. |
 | PERF-003 | PARTIALLY COMPLETED | A repeatable 5,000-zone harness and results exist; required 1k/10k/50k scenarios and SLO thresholds are absent. |

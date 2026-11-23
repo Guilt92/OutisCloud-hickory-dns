@@ -2,7 +2,7 @@
 
 ## A. Executive summary
 
-Roadmap: 133 tasks. Completed: 34; partially completed: 48; needs verification: 9; blocked: 40; not started: 2. Completion: 25.6%.
+Roadmap: 133 tasks. Completed: 34; partially completed: 49; needs verification: 9; blocked: 40; not started: 1. Completion: 25.6%.
 
 The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log level, sampling and redaction controls and fix ZONE-003 clone target rewriting. Other roadmap gaps remain.
 
@@ -121,7 +121,7 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **SEC-002 (P0, phase 9; BLOCKED):** Requires CA/certificate provisioning and connection-string migration.
 - **SEC-003 (P0, phase 9; PARTIALLY COMPLETED):** Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented.
 - **SEC-004 (P1, phase 9; BLOCKED):** Depends on key custody decision and user lifecycle schema.
-- **SEC-005 (P1, phase 9; NOT STARTED):** No CSP, secure-cookie option, token-storage change or browser security test exists.
+- **SEC-005 (P1, phase 9; PARTIALLY COMPLETED):** UI Nginx now sends a CSP, verified by syntax and live-header tests in disposable Nginx. Remaining: secure-cookie option, token-storage migration, and browser XSS/CSP tests.
 - **SEC-006 (P1, phase 9; NOT STARTED):** No abuse scoring, zone holds/locks or transfer-protection operator workflow exists.
 - **SEC-007 (P0, phase 9; PARTIALLY COMPLETED):** Implemented: Per-source governor and admission limits exist. Remaining: full RRL coverage pending.
 - **SEC-008 (P1, phase 9; PARTIALLY COMPLETED):** Added `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, release checksum signing and provenance workflow. Remaining: image signature verification policy.
@@ -168,6 +168,9 @@ The blocked entries in section C identify the missing dependency or decision. Se
 | `cargo test -p hickory-server --lib` | Local | Server library regression suite passes | 30 passed | PASS |
 | `python3 scripts/docs_check.py` | Local | Documentation consistency check completes | Completed; four existing broken-link warnings | PASS WITH WARNINGS |
 | `cargo fmt --all -- --check` | Local | Formatting clean | Exit 0 | PASS |
+| `docker run --rm --add-host control-api:127.0.0.1 -v web/ui/nginx.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t` | Disposable local Nginx | Configuration accepted | Syntax OK | PASS |
+| Initial `nginx -t` without a `control-api` DNS alias | Disposable local Nginx | Configuration accepted | Failed resolving `control-api`; the Compose service name was absent from the isolated container. Retried with a disposable host alias above. | ENVIRONMENT SETUP FAILURE |
+| `curl -fsSI http://127.0.0.1:18081/` against disposable Nginx | Local | HTTP 200 with CSP and security headers | HTTP 200; CSP, Referrer-Policy and nosniff present | PASS |
 | `dig @127.0.0.1 -p 53 example.com SOA +norecurse +time=2 +tries=1 +noall +comments` over UDP/TCP | germ test host | Authoritative server refuses unrelated zone | REFUSED on both transports | PASS |
 | `ssh -o BatchMode=yes germ` with hostname, kernel, service/resource and container inspection | germ | Reach host and inspect without mutation | Reached `fastcreate-472995`; four OutisCloud containers healthy; 7.8 GiB RAM; 6.1 GiB disk available | PASS |
 | `curl` to `127.0.0.1:8080/health`, `/ready`, and `127.0.0.1:8081/` over SSH | germ | HTTP 200 | HTTP 200 on all three | PASS |
@@ -176,8 +179,8 @@ No database migration, DNS transfer, DNSSEC rollover, backup/restore, load, or b
 
 ## F. Production readiness
 
-Implemented and locally tested: the strengthened API method/path contract, DNS query-log controls, and clone rewrite fix. Integration tested: the static frontend/backend route mapping and clone behavior against disposable PostgreSQL 16. Validated on available server: connectivity, container health reports, API health/readiness and UI HTTP response. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
+Implemented and locally tested: the strengthened API method/path contract, DNS query-log controls, clone rewrite fix, and UI CSP. Integration tested: the static frontend/backend route mapping and clone behavior against disposable PostgreSQL 16. Validated on available server: connectivity, container health reports, API health/readiness and UI HTTP response. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
 
 ## G. Git delivery
 
-Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the new code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`. The tracking/report commit follows separately. Push and remote synchronization are recorded after the final push. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
+Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
