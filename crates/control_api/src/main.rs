@@ -6500,6 +6500,104 @@ struct CloneZoneReq {
     domain: String,
 }
 
+fn rewrite_clone_target(value: &str, record_type: &str, source: &str, target: &str) -> String {
+    // Only target-bearing RR types contain domain names that should follow a clone.
+    // TXT and other opaque values must be copied byte-for-byte.
+    if !matches!(record_type, "CNAME" | "DNAME" | "NS" | "MX" | "PTR" | "SRV") {
+        return value.to_owned();
+    }
+    let (prefix, hostname) = if record_type == "SRV" {
+        match value.rsplit_once(' ') {
+            Some((prefix, hostname)) => (Some(prefix), hostname),
+            None => (None, value),
+        }
+    } else {
+        (None, value)
+    };
+    let trailing_dot = hostname.ends_with('.');
+    let bare = hostname.trim_end_matches('.');
+    let replacement = if bare.eq_ignore_ascii_case(source) {
+        Some(target.to_owned())
+    } else if bare.len() > source.len()
+        && bare[bare.len() - source.len()..].eq_ignore_ascii_case(source)
+        && bare.as_bytes()[bare.len() - source.len() - 1] == b'.'
+    {
+        Some(format!("{}{}", &bare[..bare.len() - source.len()], target))
+    } else {
+        None
+    };
+    match replacement {
+        Some(mut name) => {
+            if trailing_dot {
+                name.push('.');
+            }
+            match prefix {
+                Some(prefix) => format!("{prefix} {name}"),
+                None => name,
+            }
+        }
+        None => value.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod clone_target_tests {
+    use super::rewrite_clone_target;
+
+    #[test]
+    fn rewrites_only_dns_targets_inside_source_zone() {
+        assert_eq!(
+            rewrite_clone_target(
+                "www.source.example.",
+                "CNAME",
+                "source.example",
+                "copy.example"
+            ),
+            "www.copy.example."
+        );
+        assert_eq!(
+            rewrite_clone_target("SOURCE.EXAMPLE", "MX", "source.example", "copy.example"),
+            "copy.example"
+        );
+        assert_eq!(
+            rewrite_clone_target(
+                "10 5 443 sip.source.example.",
+                "SRV",
+                "source.example",
+                "copy.example"
+            ),
+            "10 5 443 sip.copy.example."
+        );
+        assert_eq!(
+            rewrite_clone_target(
+                "not-source.example.",
+                "CNAME",
+                "source.example",
+                "copy.example"
+            ),
+            "not-source.example."
+        );
+        assert_eq!(
+            rewrite_clone_target(
+                "www.source.example.evil.",
+                "CNAME",
+                "source.example",
+                "copy.example"
+            ),
+            "www.source.example.evil."
+        );
+        assert_eq!(
+            rewrite_clone_target(
+                "see source.example",
+                "TXT",
+                "source.example",
+                "copy.example"
+            ),
+            "see source.example"
+        );
+    }
+}
+
 async fn clone_zone(
     path: web::Path<String>,
     body: web::Json<CloneZoneReq>,
@@ -6560,7 +6658,12 @@ async fn clone_zone(
         let value: String = row.get(2);
         names.push(row.get::<_, String>(0));
         types.push(row.get::<_, String>(1));
-        values.push(value.replace(&source_domain_trimmed, &target_domain_trimmed));
+        values.push(rewrite_clone_target(
+            &value,
+            &row.get::<_, String>(1),
+            &source_domain_trimmed,
+            &target_domain_trimmed,
+        ));
         ttls.push(row.get::<_, i32>(3));
         priorities.push(row.get::<_, Option<i32>>(4).unwrap_or(0));
     }

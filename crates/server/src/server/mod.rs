@@ -717,18 +717,41 @@ fn concurrency_limit(name: &str, default: usize) -> usize {
 #[derive(Clone)]
 struct QueryLogConfig {
     enabled: bool,
+    debug: bool,
     redact: bool,
+    sample_every: u16,
 }
 
 impl QueryLogConfig {
     fn from_env() -> Self {
-        let enabled = std::env::var("DNS_QUERY_LOG_LEVEL")
-            .map(|v| v.trim().to_ascii_lowercase() != "off")
-            .unwrap_or(true);
+        let level = std::env::var("DNS_QUERY_LOG_LEVEL")
+            .unwrap_or_else(|_| "info".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        let enabled = level != "off";
+        let debug = level == "debug";
         let redact = std::env::var("DNS_QUERY_LOG_REDACT")
             .map(|v| v.trim().to_ascii_lowercase() != "false")
             .unwrap_or(true);
-        Self { enabled, redact }
+        let sample_every = std::env::var("DNS_QUERY_LOG_SAMPLE_EVERY")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(1);
+        Self {
+            enabled,
+            debug,
+            redact,
+            sample_every,
+        }
+    }
+
+    fn should_log(&self, request_id: u16) -> bool {
+        self.enabled && request_id % self.sample_every == 0
+    }
+
+    fn should_debug(&self, request_id: u16) -> bool {
+        self.debug && self.should_log(request_id)
     }
 }
 
@@ -788,7 +811,7 @@ impl<R: ResponseHandler> ResponseHandler for ReportingResponseHandler<R> {
         let additional_count = response_info.additional_count();
         let response_code = response_info.response_code();
 
-        if self.query_log.enabled {
+        if self.query_log.should_log(id) {
             info!(
                 "request:{id} src:{proto}://{addr} {op} qflags:{qflags} response:{code:?} rr:{answers}/{authorities}/{additionals} rflags:{rflags}",
                 id = rid,
@@ -864,12 +887,13 @@ impl<T: RequestHandler> ServerContext<T> {
     ) {
         let mut decoder = BinDecoder::new(&message_bytes);
         if !self.access.allow(src_addr.ip()) {
-            info!(
-                "request:Refused src:{proto}://{addr}#{port}",
-                proto = protocol,
-                addr = src_addr.ip(),
-                port = src_addr.port(),
-            );
+            if self.query_log.should_log(src_addr.port()) {
+                info!(
+                    "request:Refused src:{proto}://{addr}",
+                    proto = protocol,
+                    addr = log_addr(src_addr, self.query_log.redact),
+                );
+            }
 
             let Ok(header) = Header::read(&mut decoder) else {
                 // This will only fail if the message is less than twelve bytes long. Such messages are
@@ -923,12 +947,13 @@ impl<T: RequestHandler> ServerContext<T> {
                 return;
             }
             Err(error) => {
-                info!(
-                    "request:Failed src:{proto}://{addr}#{port} error:{error}",
-                    proto = protocol,
-                    addr = src_addr.ip(),
-                    port = src_addr.port(),
-                );
+                if self.query_log.should_log(src_addr.port()) {
+                    info!(
+                        "request:Failed src:{proto}://{addr} error:{error}",
+                        proto = protocol,
+                        addr = log_addr(src_addr, self.query_log.redact),
+                    );
+                }
                 return;
             }
         };
@@ -947,23 +972,25 @@ impl<T: RequestHandler> ServerContext<T> {
             .edns()
             .is_some_and(|edns| edns.flags().dnssec_ok);
 
-        debug!(
-            "request:{id} src:{proto}://{addr} type:{message_type} dnssec:{is_dnssec} {op} qflags:{qflags}",
-            id = id,
-            proto = request.protocol(),
-            addr = log_addr(request.src(), self.query_log.redact),
-            message_type = message_type,
-            is_dnssec = is_dnssec,
-            op = qop_code,
-            qflags = qflags
-        );
-        for query in request.queries().iter() {
+        if self.query_log.should_debug(id) {
             debug!(
-                "query:{query}:{qtype}:{class}",
-                query = query.name(),
-                qtype = query.query_type(),
-                class = query.query_class()
+                "request:{id} src:{proto}://{addr} type:{message_type} dnssec:{is_dnssec} {op} qflags:{qflags}",
+                id = id,
+                proto = request.protocol(),
+                addr = log_addr(request.src(), self.query_log.redact),
+                message_type = message_type,
+                is_dnssec = is_dnssec,
+                op = qop_code,
+                qflags = qflags
             );
+            for query in request.queries().iter() {
+                debug!(
+                    "query:{query}:{qtype}:{class}",
+                    query = log_query(query, self.query_log.redact),
+                    qtype = query.query_type(),
+                    class = query.query_class()
+                );
+            }
         }
 
         // The reporter will handle making sure to log the result of the request
@@ -997,17 +1024,18 @@ async fn error_response_handler(
     response_handler: impl ResponseHandler,
 ) {
     // debug for more info on why the message parsing failed
-    debug!(
-        "request:{id} src:{proto}://{addr}#{port} type:{message_type} {op}:{response_code}:{error}",
-        id = header.id(),
-        proto = protocol,
-        addr = src_addr.ip(),
-        port = src_addr.port(),
-        message_type = header.message_type(),
-        op = header.op_code(),
-        response_code = response_code,
-        error = error,
-    );
+    if query_log.should_debug(header.id()) {
+        debug!(
+            "request:{id} src:{proto}://{addr} type:{message_type} {op}:{response_code}:{error}",
+            id = header.id(),
+            proto = protocol,
+            addr = log_addr(src_addr, query_log.redact),
+            message_type = header.message_type(),
+            op = header.op_code(),
+            response_code = response_code,
+            error = error,
+        );
+    }
 
     // The reporter will handle making sure to log the result of the request
     let mut reporter = ReportingResponseHandler {
@@ -1329,6 +1357,31 @@ mod query_log_tests {
         assert_eq!(log_query(&query, true), "<redacted>");
         assert!(log_query(&query, false).contains("sensitive.example"));
     }
+
+    #[test]
+    fn query_log_sampling_is_deterministic_and_off_is_silent() {
+        let config = QueryLogConfig {
+            enabled: true,
+            debug: false,
+            redact: true,
+            sample_every: 10,
+        };
+        assert!(config.should_log(20));
+        assert!(!config.should_log(21));
+        assert!(!config.should_debug(20));
+        assert!(
+            QueryLogConfig {
+                debug: true,
+                ..config.clone()
+            }
+            .should_debug(20)
+        );
+        let off = QueryLogConfig {
+            enabled: false,
+            ..config
+        };
+        assert!(!off.should_log(20));
+    }
 }
 
 #[cfg(test)]
@@ -1343,7 +1396,9 @@ mod admission_tests {
             shutdown: CancellationToken::new(),
             query_log: QueryLogConfig {
                 enabled: false,
+                debug: false,
                 redact: true,
+                sample_every: 1,
             },
             udp_inflight: Arc::new(Semaphore::new(1)),
             tcp_connections: Arc::new(Semaphore::new(1)),

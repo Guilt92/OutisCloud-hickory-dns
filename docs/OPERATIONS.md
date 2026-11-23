@@ -1,5 +1,16 @@
 # OutisCloud DNS — architecture notes, configuration and migrations (phase 7)
 
+## DNS query logging
+
+`DNS_QUERY_LOG_LEVEL=info` (the default) logs response summaries;
+`DNS_QUERY_LOG_LEVEL=debug` also logs request details when the process tracing
+filter allows DEBUG; `off` disables per-query logs. Client addresses and query
+names are redacted by default; use `DNS_QUERY_LOG_REDACT=false` only for isolated
+debugging. `DNS_QUERY_LOG_SAMPLE_EVERY=N` logs roughly one in N requests using
+the DNS request ID (default `1`, valid range `1` to `65535`). Sampling covers
+request, response, malformed-packet, and refused-query logs. It controls log
+volume but is not a statistically independent sample.
+
 ## Components
 `hickory-dns` (authoritative DNS, hot reload, GeoDNS, DNSSEC) ← zone files + `named.toml` written by → `control_api` (REST API, PostgreSQL, tenants/quotas, analytics collector) ← `web/ui` (React). Agents (`crates/agent`) pull signed bundles from the API to replicas.
 PostgreSQL is the only shared state of the control plane.

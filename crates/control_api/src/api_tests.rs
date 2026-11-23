@@ -6879,6 +6879,26 @@ async fn clone_zone_copies_records_with_rewritten_domain() {
         Some(&t),
         j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.1","ttl":300}))
     );
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(
+            serde_json::json!({"name":"alias","record_type":"CNAME","value":"www.source.example.","ttl":300})
+        )
+    );
+    assert_eq!(st, 201, "{raw}");
+    let (st, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        j(
+            serde_json::json!({"name":"note","record_type":"TXT","value":"source.example","ttl":300})
+        )
+    );
+    assert_eq!(st, 201, "{raw}");
 
     let (st, body, raw) = call!(
         app,
@@ -6903,6 +6923,20 @@ async fn clone_zone_copies_records_with_rewritten_domain() {
             .unwrap()
             .iter()
             .any(|r| r["name"] == "www")
+    );
+    assert!(
+        records
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "alias" && r["value"] == "www.copy.example.")
+    );
+    assert!(
+        records
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "note" && r["value"] == "source.example")
     );
     let zone_file = std::fs::read_to_string(env.zone_file("copy.example")).unwrap();
     assert!(zone_file.contains("copy.example"));
