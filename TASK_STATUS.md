@@ -2,9 +2,17 @@
 
 ## 2026-11-24 execution update
 
+**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 48, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 2 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+
+**CORE-006 — Query logging and PII (P1): COMPLETED.** Added `off`/`info`/`debug` query-log levels and `DNS_QUERY_LOG_SAMPLE_EVERY` to `crates/server/src/server/mod.rs`. DEBUG query names and refused/malformed client addresses now use the redaction setting. `docs/OPERATIONS.md` documents the controls. Two focused server tests pass; format and diff checks pass. No live DNS process was restarted.
+
+**ZONE-003 — Clone and templates (P2): PARTIALLY COMPLETED.** Fixed clone substitution in `crates/control_api/src/main.rs` so only zone-local DNS targets are rewritten, preserving opaque TXT values and unrelated domains. Added a unit test and extended the PostgreSQL-backed clone integration test in `crates/control_api/src/api_tests.rs`; both pass against local code, with the latter using a disposable PostgreSQL 16 container. The built-in template picker and NS/DNSSEC settings tests remain.
+
+**germ DNS smoke:** `dig @127.0.0.1 -p 53 example.com SOA +norecurse +time=2 +tries=1 +noall +comments` over SSH returned REFUSED over both UDP and TCP. This confirms protocol response for an unrelated zone, not successful resolution of a hosted zone.
+
 **API-010 — API contract tests (P1): COMPLETED.** Strengthened `web/ui/tests/route-contract.cjs` to check each frontend HTTP method and path against registered Rust control API routes, including the DNSSEC action paths. `node web/ui/tests/route-contract.cjs` and `npm --prefix web/ui run test:routes` pass for 83 method/path pairs; `npm --prefix web/ui run lint` and `git diff --check` pass. The route check runs in CI. This static check does not verify response schemas or authorization behavior; those remain separate test concerns. The prior row in this document calling API-010 partial is historical.
 
-**Server validation:** `ssh -o BatchMode=yes germ` succeeded. The host is `fastcreate-472995`, Ubuntu/Linux kernel 6.8, with 7.8 GiB RAM and 6.1 GiB available on a 59 GiB root volume. Four application containers report healthy. Read-only HTTP checks returned 200 for control API `/health`, `/ready`, and the UI root. The server's staging/production designation was not established; treat it as production for safety. No deployment or data mutation was performed.
+**Server validation:** `ssh -o BatchMode=yes germ` succeeded. The host is `fastcreate-472995`, Ubuntu/Linux kernel 6.8, with 7.8 GiB RAM and 6.1 GiB available on a 59 GiB root volume. Four application containers report healthy. Read-only HTTP checks returned 200 for control API `/health`, `/ready`, and the UI root. The user identified germ as a test environment after the initial inspection; no deployment or data mutation was performed. No deployment or data mutation was performed.
 
 
 **Repository:** `/home/outis/work-github/OutisCloud-hickory-dns`
@@ -662,7 +670,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 |---|---|---|
 | ARCH-001 | PARTIALLY COMPLETED | PostgreSQL migration/runtime parity was verified; SQLite verification is not applicable to the PostgreSQL-only control plane. |
 | CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes; Helm DNS-server probes are not wired. |
-| CORE-006 | PARTIALLY COMPLETED | Level toggle and default redaction are implemented and tested; sampling is not implemented. |
+| CORE-006 | COMPLETED | Query logging supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; default address/name redaction also covers DEBUG and error paths. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
 | SEC-005 | NOT STARTED | No CSP, secure-cookie option, token-storage change or browser security test exists. |

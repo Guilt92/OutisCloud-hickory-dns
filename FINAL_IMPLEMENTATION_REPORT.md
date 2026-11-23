@@ -2,9 +2,9 @@
 
 ## A. Executive summary
 
-Roadmap: 133 tasks. Completed: 33; partially completed: 49; needs verification: 9; blocked: 40; not started: 2. Completion: 24.8%.
+Roadmap: 133 tasks. Completed: 34; partially completed: 48; needs verification: 9; blocked: 40; not started: 2. Completion: 25.6%.
 
-The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The new code change strengthens API-010 contract validation; it does not close the other roadmap gaps.
+The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log level, sampling and redaction controls and fix ZONE-003 clone target rewriting. Other roadmap gaps remain.
 
 ## B. Completed tasks
 
@@ -44,6 +44,8 @@ The following items are reported completed in the current roadmap matrix. The te
 - **OPS-004 (P1, phase 12):** Prometheus/Alertmanager/Grafana configs plus incident, rollback, certificate, GeoIP and failover runbooks.
 - **OPS-005 (P1, phase 12):** `docs/runbooks/` covers incident response, rollback, certificate lifecycle, GeoIP and failover/recovery.
 
+- **CORE-006 (P1, phase 1):** Query logs now support off/info/debug and sampled logging; DEBUG and error-path PII is redacted by default. `cargo test -p hickory-server --lib query_log_tests` passed 2/2. Implemented in commit `0835ca439a8656f88585656298c1e6dd69b37af7`.
+
 ## C. Remaining tasks
 
 Each entry gives the current status and the specific remaining gap recorded in the authoritative matrix. Dependencies and acceptance criteria are in `task.md` §18; these entries should be rechecked against code before implementation.
@@ -57,14 +59,13 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **CORE-003 (P1, phase 1; PARTIALLY COMPLETED):** Implemented: NOTIFY ACK and bounded sender retry exist. Remaining: no peer config or secondary refresh.
 - **CORE-004 (P0, phase 1; PARTIALLY COMPLETED):** DNS /health and /ready integration test passes; Helm DNS-server probes are not wired.
 - **CORE-005 (P1, phase 1; NEEDS VERIFICATION):** Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run.
-- **CORE-006 (P1, phase 1; PARTIALLY COMPLETED):** Level toggle and default redaction are implemented and tested; sampling is not implemented.
 - **CORE-007 (P2, phase 1; PARTIALLY COMPLETED):** Implemented: Resolver cache default raised and boundary documented. Remaining: cache-hit/miss/expiry suite not extended.
 - **CORE-008 (P1, phase 1; PARTIALLY COMPLETED):** Implemented: Existing dig/delv/conformance labs. Remaining: dual-stack and malformed-packet cases not unified.
 - **CORE-009 (P2, phase 1; PARTIALLY COMPLETED):** Implemented: Forwarding/recursion boundary documented. Remaining: trust-anchor and hardening work pending.
 - **CORE-010 (P1, phase 1; NEEDS VERIFICATION):** Implemented: H3 features, CLI/config and listener wired. Remaining: no H3 client integration test. Verification gap: DoH3 client integration test was not run.
 - **CORE-011 (P2, phase 1; PARTIALLY COMPLETED):** Implemented: Record-type policy documented. Remaining: advanced types and UI round-trip tests pending.
 - **CORE-013 (P1, phase 1; NEEDS VERIFICATION):** Implemented: Per-zone fingerprint reload implemented. Remaining: no load proof under write pressure. Verification gap: Incremental reload proof under write pressure was not run.
-- **ZONE-003 (P2, phase 2; PARTIALLY COMPLETED):** Implemented: Clone API + UI clone dialog with domain validation and audit. Remaining: built-in template picker.
+- **ZONE-003 (P2, phase 2; PARTIALLY COMPLETED):** Clone API/UI and audit exist. Clone target rewriting now preserves TXT and unrelated names; unit and disposable PostgreSQL integration tests pass. Remaining: built-in template picker and NS/DNSSEC settings acceptance tests.
 - **ZONE-007 (P1, phase 2; PARTIALLY COMPLETED):** Implemented: Revision diff endpoint and UI exist. Remaining: full snapshots, retention config and failure visibility pending.
 - **REC-005 (P1, phase 11; PARTIALLY COMPLETED):** Implemented: Delete confirmation added. Remaining: record diff/history and bulk safeguards pending.
 - **DNSSEC-001 (P0, phase 3; BLOCKED):** Needs KMS/HSM decision and approved key-store migration.
@@ -161,15 +162,22 @@ The blocked entries in section C identify the missing dependency or decision. Se
 | `npm --prefix web/ui run test:routes` | Local | Contract passes | 83 pairs matched | PASS |
 | `npm --prefix web/ui run lint` | Local | No ESLint errors | Exit 0 | PASS |
 | `git diff --check` | Local | No whitespace errors | Exit 0 | PASS |
+| `cargo test -p control_api --bin control_api clone_target_tests -- --test-threads=1` | Local | Only DNS targets change | 1 passed | PASS |
+| `TEST_DATABASE_URL=postgres://postgres:***@127.0.0.1:55435/roadmap_test cargo test -p control_api --bin control_api clone_zone_copies_records_with_rewritten_domain -- --test-threads=1` | Disposable local PostgreSQL 16 | CNAME rewritten, TXT preserved | 1 passed | PASS |
+| `cargo test -p hickory-server --lib query_log_tests` | Local | Redaction and sampling correct | 2 passed | PASS |
+| `cargo test -p hickory-server --lib` | Local | Server library regression suite passes | 30 passed | PASS |
+| `python3 scripts/docs_check.py` | Local | Documentation consistency check completes | Completed; four existing broken-link warnings | PASS WITH WARNINGS |
+| `cargo fmt --all -- --check` | Local | Formatting clean | Exit 0 | PASS |
+| `dig @127.0.0.1 -p 53 example.com SOA +norecurse +time=2 +tries=1 +noall +comments` over UDP/TCP | germ test host | Authoritative server refuses unrelated zone | REFUSED on both transports | PASS |
 | `ssh -o BatchMode=yes germ` with hostname, kernel, service/resource and container inspection | germ | Reach host and inspect without mutation | Reached `fastcreate-472995`; four OutisCloud containers healthy; 7.8 GiB RAM; 6.1 GiB disk available | PASS |
 | `curl` to `127.0.0.1:8080/health`, `/ready`, and `127.0.0.1:8081/` over SSH | germ | HTTP 200 | HTTP 200 on all three | PASS |
 
-No database migration, DNS transfer, DNSSEC rollover, backup/restore, load, or browser end-to-end test was run in this execution. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The live host’s production/staging designation remains unconfirmed.
+No database migration, DNS transfer, DNSSEC rollover, backup/restore, load, or browser end-to-end test was run in this execution. The disposable PostgreSQL container was stopped after the clone test. `cargo test -p hickory-server --lib` passed 30/30; `python3 scripts/docs_check.py` completed with four existing broken-link warnings. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The user confirmed germ is a test environment.
 
 ## F. Production readiness
 
-Implemented and locally tested: the strengthened API method/path contract. Integration tested: the static frontend/backend route mapping. Validated on available server: connectivity, container health reports, API health/readiness and UI HTTP response. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
+Implemented and locally tested: the strengthened API method/path contract, DNS query-log controls, and clone rewrite fix. Integration tested: the static frontend/backend route mapping and clone behavior against disposable PostgreSQL 16. Validated on available server: connectivity, container health reports, API health/readiness and UI HTTP response. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
 
 ## G. Git delivery
 
-Branch: `main`; upstream: `origin/main`. Starting head and remote both pointed to `dff3bb18c8f161ee099f593c992ee3f457bc7149`. This report and API-010 change are staged and committed separately from pre-existing user edits. See Git history for the delivery commit hash and `git status` for any remaining user-owned edits. No environment file, secret, or runtime DNS state is included in the delivery commit.
+Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the new code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`. The tracking/report commit follows separately. Push and remote synchronization are recorded after the final push. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.

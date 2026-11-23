@@ -1,6 +1,9 @@
 # OutisCloud DNS Platform — Benchmark, Architecture Assessment, and Multi-Phase Roadmap
 
-> **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The host's production/staging designation is unconfirmed, so no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
+> **Further execution evidence, 2026-11-24:** CORE-006 query logging now supports level and sampling controls and redacts DEBUG/error paths; focused tests pass. ZONE-003 clone rewriting preserves TXT text while rewriting zone-local DNS targets; a unit test and isolated PostgreSQL clone integration test pass. ZONE-003 remains partial because built-in templates and NS/DNSSEC clone acceptance tests are absent. See the current entries in §20 and `TASK_STATUS.md`.
+> **Current corrected counts:** 34 COMPLETED, 48 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 2 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
+
+> **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
 
 > **Current implementation status:** see §19 below. Earlier sections remain the canonical requirements and historical roadmap.
 
@@ -1909,7 +1912,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 |---|---|---|
 | ARCH-001 | PARTIALLY COMPLETED | PostgreSQL migration/runtime parity was verified; SQLite verification is not applicable to the PostgreSQL-only control plane. |
 | CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes; Helm DNS-server probes are not wired. |
-| CORE-006 | PARTIALLY COMPLETED | Level toggle and default redaction are implemented and tested; sampling is not implemented. |
+| CORE-006 | COMPLETED | Query logging now supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; request, response, refused and parse-error paths redact addresses, and DEBUG query names are redacted. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
 | SEC-005 | NOT STARTED | No CSP, secure-cookie option, token-storage change or browser security test exists. |
