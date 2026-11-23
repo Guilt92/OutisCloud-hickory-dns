@@ -1863,7 +1863,7 @@ Validation performed for this status update:
 | 9 | SEC-003 | P0 | PARTIALLY COMPLETED | Implemented: Rotation tool added. Remaining: real secret rotation blocked by owner credentials. |
 | 9 | SEC-004 | P1 | BLOCKED | Depends on key custody decision and user lifecycle schema. |
 | 9 | SEC-005 | P1 | PARTIALLY COMPLETED | Implemented: Login/DNS/API/verification limits exist. Remaining: tenant abuse scoring pending. |
-| 9 | SEC-006 | P1 | PARTIALLY COMPLETED | Implemented: DNSSEC and agent keys separate. Remaining: JWT remains single trust anchor pending rotation. |
+| 9 | SEC-006 | P1 | PARTIALLY COMPLETED | Implemented: DNSSEC/agent keys separate; `JWT_PREVIOUS_SECRETS` overlap window enables JWT rotation without logging everyone out. Remaining: scheduled automatic rotation. |
 | 9 | SEC-007 | P0 | PARTIALLY COMPLETED | Implemented: Per-source governor and admission limits exist. Remaining: full RRL coverage pending. |
 | 9 | SEC-008 | P1 | PARTIALLY COMPLETED | Added `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, release checksum signing and provenance workflow. Remaining: image signature verification policy. |
 | 10 | PERF-001 | P0 | PARTIALLY COMPLETED | Implemented: ADR state machine exists. Remaining: outbox implementation pending. |
@@ -1893,7 +1893,7 @@ Validation performed for this status update:
 | 12 | OPS-005 | P1 | COMPLETED | `docs/runbooks/` covers incident response, rollback, certificate lifecycle, GeoIP and failover/recovery. |
 | 12 | OPS-006 | P1 | PARTIALLY COMPLETED | GeoIP atomic refresh + certificate expiry checker (`scripts/check_certs.sh`) and lifecycle runbook. Remaining: ACME issuance automation is deployment-specific. |
 | 12 | OPS-007 | P2 | PARTIALLY COMPLETED | Added static status-page generator, CycloneDX SBOM script, signed release checksums/provenance workflow and redacted diagnostics bundle. Remaining: publish SBOM/provenance to a public transparency log. |
-| 12 | OPS-008 | P0 | NOT STARTED | Production-readiness review not passed; P0 gate still open. |
+| 12 | OPS-008 | P0 | PARTIALLY COMPLETED | Review documented in `docs/PRODUCTION_READINESS.md`; gate deliberately remains open on ARCH-007, TLS, backups, DNSSEC custody, HA and OPS-002. |
 
 ---
 

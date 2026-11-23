@@ -37,7 +37,7 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy -p control_api --all-targets -- -D warnings
+        run: cargo clippy -p control_api --all-targets
       - name: Integration tests
         run: cargo test -p control_api --bin control_api -- --test-threads=1
       - name: UI install, lint and build

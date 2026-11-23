@@ -64,3 +64,13 @@ ports 9000/9090/9093 publicly without authentication and network policy.
 
 Support bundles: `scripts/diagnostics_bundle.sh` (redacted logs, health, metrics).
 Release SBOMs: `scripts/release_sbom.sh dist/sbom`.
+
+## JWT secret rotation
+
+Set `JWT_SECRET` to the new value and list the old value(s) in
+`JWT_PREVIOUS_SECRETS` (comma separated) for one access-token lifetime (15
+minutes) or longer. New tokens are signed with `JWT_SECRET`; tokens signed with
+a previous secret are still verified during the overlap window, then stop
+working when the variable is cleared. Refresh tokens are hashed in the database
+and are not affected by this setting; rotate them by revoking sessions if the
+signing secret may have leaked.

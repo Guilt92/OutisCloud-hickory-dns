@@ -2506,17 +2506,46 @@ fn bearer_token(req: &HttpRequest) -> Option<&str> {
 /// (so demotions and deletions take effect immediately instead of when the
 /// 15 minute token expires). Without the middleware (unit tests of single
 /// handlers) it falls back to verifying the token signature only.
+fn jwt_secrets(primary: &str) -> Vec<String> {
+    let mut secrets = vec![primary.to_string()];
+    if let Ok(previous) = std::env::var("JWT_PREVIOUS_SECRETS") {
+        for secret in previous.split(',') {
+            let secret = secret.trim();
+            if !secret.is_empty() && !secrets.iter().any(|s| s == secret) {
+                secrets.push(secret.to_string());
+            }
+        }
+    }
+    secrets
+}
+
+/// Verify a JWT against the current secret first, then any previous secrets
+/// listed in `JWT_PREVIOUS_SECRETS` (comma separated). This allows an overlap
+/// window during rotation: new tokens are signed with the current secret while
+/// tokens issued before the change remain valid until they expire.
+fn decode_with_secrets(token: &str, secrets: &[String]) -> Option<TokenData<Claims>> {
+    for secret in secrets {
+        if let Ok(td) = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &Validation::default(),
+        ) {
+            return Some(td);
+        }
+    }
+    None
+}
+
+fn decode_access_token(token: &str, primary: &str) -> Option<TokenData<Claims>> {
+    decode_with_secrets(token, &jwt_secrets(primary))
+}
+
 fn auth_from_header(req: &HttpRequest, secret: &str) -> Option<TokenData<Claims>> {
     if let Some(verified) = req.extensions().get::<TokenData<Claims>>() {
         return Some(verified.clone());
     }
     let token = bearer_token(req)?;
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &Validation::default(),
-    )
-    .ok()
+    decode_access_token(token, secret)
 }
 
 /// Baseline browser security headers for every API response. HSTS is opt-in
@@ -2635,12 +2664,8 @@ pub(crate) async fn authenticate_request(
         }
         return Ok(ctx);
     }
-    let mut td = decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
-        &Validation::default(),
-    )
-    .map_err(|_| (StatusCode::UNAUTHORIZED, "unauthorized"))?;
+    let mut td = decode_access_token(&token, &state.jwt_secret)
+        .ok_or((StatusCode::UNAUTHORIZED, "unauthorized"))?;
     let th = hash_token(&token);
     let row = state
         .db
@@ -7604,6 +7629,29 @@ mod cors_tests {
 #[cfg(test)]
 mod security_tests {
     use super::*;
+
+    #[test]
+    fn previous_jwt_secret_is_accepted_during_rotation() {
+        let claims = Claims {
+            sub: "user-id".into(),
+            role: "admin".into(),
+            exp: (chrono::Utc::now() + chrono::Duration::minutes(5)).timestamp() as usize,
+            ver: 1,
+        };
+        let old = "previous-test-secret";
+        let new = "current-test-secret";
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(old.as_bytes()),
+        )
+        .unwrap();
+        let secrets = vec![new.to_string()];
+        assert!(decode_with_secrets(&token, &secrets).is_none());
+        let secrets = vec![new.to_string(), old.to_string()];
+        let got = decode_with_secrets(&token, &secrets).expect("previous secret accepted");
+        assert_eq!(got.claims.sub, "user-id");
+    }
 
     #[test]
     fn metrics_token_comparison_is_exact() {

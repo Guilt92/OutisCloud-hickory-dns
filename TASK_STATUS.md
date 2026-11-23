@@ -41,16 +41,16 @@ Validation for this update:
 | OPS-003 | CI repaired: valid actions, Postgres service/`TEST_DATABASE_URL`, workspace clippy/tests, UI build/route contract, Docker contexts, audit/deny gates. |
 | OPS-004/005 | Monitoring configs plus incident, rollback, certificate, GeoIP and failover runbooks. |
 | SEC-008 (partial) | `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, signed release checksums/provenance workflow. |
-| OPS-006/007 (partial) | Certificate expiry checker, status-page generator, SBOM and redacted diagnostics bundle. |
+| OPS-006/007/008 (partial) | Certificate expiry checker, status-page generator, SBOM, redacted diagnostics bundle and a documented production-readiness review (`docs/PRODUCTION_READINESS.md`) that keeps the P0 gate open. |
 
 ### Current counts (task.md status table)
 | Status | Count |
 |---|---|
 | COMPLETED | 34 |
-| PARTIALLY COMPLETED | 44 |
+| PARTIALLY COMPLETED | 45 |
 | NEEDS VERIFICATION | 11 |
 | BLOCKED | 43 |
-| NOT STARTED | 1 (OPS-008) |
+| NOT STARTED | 0 |
 
 ### Remaining blockers (unchanged)
 ARCH-007 secret rotation, KMS/HSM custody (DNSSEC-001/004), secondary/replication
