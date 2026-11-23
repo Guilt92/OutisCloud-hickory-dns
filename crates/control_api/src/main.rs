@@ -14,6 +14,7 @@ mod dns_manager;
 mod dns_validator;
 mod dnssec;
 mod ext;
+mod health;
 mod lookup;
 mod metrics;
 mod shared;
@@ -2514,6 +2515,91 @@ fn auth_from_header(req: &HttpRequest, secret: &str) -> Option<TokenData<Claims>
     .ok()
 }
 
+/// Baseline browser security headers for every API response. HSTS is opt-in
+/// because it is only meaningful when the public endpoint is HTTPS (typically
+/// terminated by the reverse proxy).
+async fn security_headers(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<actix_web::body::BoxBody>, actix_web::Error> {
+    let path = req.path().to_string();
+    let is_auth = path.starts_with("/api/v1/auth/");
+    let res = next.call(req).await?;
+    let mut res = res.map_into_boxed_body();
+    let headers = res.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        header::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("permissions-policy"),
+        header::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    if std::env::var("SECURITY_HSTS")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false)
+    {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            header::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
+    if is_auth {
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-store"),
+        );
+    }
+    Ok(res)
+}
+
+/// `/metrics` is scrape-only: when `METRICS_TOKEN` is configured it requires
+/// the same bearer token, preventing unauthenticated external access.
+fn metrics_authorized(req: &HttpRequest, expected: Option<&str>) -> bool {
+    let Some(want) = expected.filter(|t| !t.is_empty()) else {
+        return true;
+    };
+    let got = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .unwrap_or("");
+    got.as_bytes().len() == want.as_bytes().len()
+        && got
+            .as_bytes()
+            .iter()
+            .zip(want.as_bytes())
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
+}
+
+async fn metrics_endpoint(req: HttpRequest) -> impl Responder {
+    let expected = std::env::var("METRICS_TOKEN").ok();
+    if !metrics_authorized(&req, expected.as_deref()) {
+        return HttpResponse::Unauthorized().json(serde_json::json!({"error": "unauthorized"}));
+    }
+    let encoder = TextEncoder::new();
+    let metric_families = gather();
+    let mut buffer = Vec::new();
+    encoder.encode(&metric_families, &mut buffer).unwrap_or(());
+    HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4")
+        .body(buffer)
+}
+
 /// Authenticate a bearer credential (JWT session or `ocd_` personal API
 /// token), enforcing revocation, session generation, account existence, token
 /// scopes and the read-only viewer role.
@@ -2577,9 +2663,7 @@ pub(crate) async fn authenticate_request(
     td.claims.role = r
         .try_get::<_, String>(0)
         .unwrap_or_else(|_| "user".to_string());
-    if td.claims.role == "viewer"
-        && !is_read_method(req.method())
-        && !viewer_may_write(req.path())
+    if td.claims.role == "viewer" && !is_read_method(req.method()) && !viewer_may_write(req.path())
     {
         return Err((StatusCode::FORBIDDEN, "read-only account"));
     }
@@ -2595,8 +2679,7 @@ fn auth_failure_response(
     detail: &'static str,
 ) -> HttpResponse {
     if status == actix_web::http::StatusCode::SERVICE_UNAVAILABLE {
-        HttpResponse::ServiceUnavailable()
-            .json(serde_json::json!({"error": "service_unavailable"}))
+        HttpResponse::ServiceUnavailable().json(serde_json::json!({"error": "service_unavailable"}))
     } else {
         HttpResponse::build(status)
             .json(serde_json::json!({"error": "unauthorized", "details": detail}))
@@ -4222,6 +4305,7 @@ async fn list_zones(
     // Admins see every zone; others the zones they own or that were shared with them.
     let is_admin = tok.claims.role == "admin";
     let (limit, offset, qtext) = page.parts();
+    let tag = page.tag();
     let list_sql = format!(
         "SELECT CAST(z.id AS varchar), z.domain, COALESCE(CAST(z.owner AS varchar), '') as owner, z.zone_type, z.created_at::text, \
                 COALESCE(z.geodns_enabled, true), z.status, z.ecs_enabled, \
@@ -4230,6 +4314,7 @@ async fn list_zones(
                 CAST(z.tenant_id AS varchar), (SELECT name FROM tenants t WHERE t.id = z.tenant_id), z.description, z.tags \
          FROM zones z LEFT JOIN zone_members m ON m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2 \
          WHERE ({}) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
+           AND ($6::text IS NULL OR z.tags ? $6) \
          ORDER BY z.domain LIMIT $4::bigint OFFSET $5::bigint",
         tenants::ZONE_VISIBLE
     );
@@ -4237,7 +4322,7 @@ async fn list_zones(
         .db
         .query(
             &list_sql,
-            &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset],
+            &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset, &tag],
         )
         .await;
 
@@ -6774,14 +6859,23 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         // Zones
         .route("/api/v1/zones", web::get().to(list_zones))
         .route("/api/v1/zones", web::post().to(create_zone))
-        .route("/api/v1/zones/bulk-import", web::post().to(zone_ops::bulk_import))
+        .route(
+            "/api/v1/zones/bulk-import",
+            web::post().to(zone_ops::bulk_import),
+        )
         .route("/api/v1/zones/{id}", web::get().to(get_zone))
         .route("/api/v1/zones/{id}", web::put().to(update_zone))
         .route("/api/v1/zones/{id}", web::delete().to(delete_zone))
         .route("/api/v1/zones/{id}/export", web::get().to(export_zone))
         .route("/api/v1/zones/{id}/import", web::post().to(import_zone))
-        .route("/api/v1/zones/{id}/import-bind", web::post().to(zone_ops::import_bind))
-        .route("/api/v1/zones/{id}/rrsets", web::put().to(zone_ops::batch_rrsets))
+        .route(
+            "/api/v1/zones/{id}/import-bind",
+            web::post().to(zone_ops::import_bind),
+        )
+        .route(
+            "/api/v1/zones/{id}/rrsets",
+            web::put().to(zone_ops::batch_rrsets),
+        )
         .route(
             "/api/v1/zones/{id}/metadata",
             web::put().to(set_zone_metadata),
@@ -6845,17 +6939,33 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/v1/audit/logs/{id}", web::get().to(ext::get_audit))
         .configure(ext::configure)
         .configure(tenants::configure)
+        .configure(health::configure)
         // API tokens, durable jobs and webhooks
         .route("/api/v1/tokens", web::get().to(automation::list_tokens))
         .route("/api/v1/tokens", web::post().to(automation::create_token))
-        .route("/api/v1/tokens/{id}", web::delete().to(automation::revoke_token))
-        .route("/api/v1/tokens/{id}/rotate", web::post().to(automation::rotate_token))
+        .route(
+            "/api/v1/tokens/{id}",
+            web::delete().to(automation::revoke_token),
+        )
+        .route(
+            "/api/v1/tokens/{id}/rotate",
+            web::post().to(automation::rotate_token),
+        )
         .route("/api/v1/jobs", web::get().to(automation::list_jobs))
         .route("/api/v1/jobs/{id}", web::get().to(automation::get_job))
-        .route("/api/v1/jobs/{id}/cancel", web::post().to(automation::cancel_job))
+        .route(
+            "/api/v1/jobs/{id}/cancel",
+            web::post().to(automation::cancel_job),
+        )
         .route("/api/v1/webhooks", web::get().to(automation::list_webhooks))
-        .route("/api/v1/webhooks", web::post().to(automation::create_webhook))
-        .route("/api/v1/webhooks/{id}", web::delete().to(automation::delete_webhook))
+        .route(
+            "/api/v1/webhooks",
+            web::post().to(automation::create_webhook),
+        )
+        .route(
+            "/api/v1/webhooks/{id}",
+            web::delete().to(automation::delete_webhook),
+        )
         // DNSSEC
         .route(
             "/api/v1/zones/{id}/dnssec",
@@ -6877,19 +6987,12 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             "/api/v1/zones/{id}/dnssec/rollover/complete",
             web::post().to(dnssec::complete_rollover),
         )
-        // Metrics
         .route(
-            "/metrics",
-            web::get().to(|| async move {
-                let encoder = TextEncoder::new();
-                let metric_families = gather();
-                let mut buffer = Vec::new();
-                encoder.encode(&metric_families, &mut buffer).unwrap_or(());
-                HttpResponse::Ok()
-                    .content_type("text/plain; version=0.0.4")
-                    .body(buffer)
-            }),
-        );
+            "/api/v1/zones/{id}/dnssec/ds-status",
+            web::get().to(dnssec::ds_status),
+        )
+        // Metrics (optionally protected by METRICS_TOKEN)
+        .route("/metrics", web::get().to(metrics_endpoint));
 }
 
 /// Settings that must never reach production. Returns a human readable list.
@@ -7291,6 +7394,7 @@ async fn main() -> std::io::Result<()> {
     automation::recover_jobs(&app_state.db).await;
     automation::spawn_job_worker(app_state.clone());
     automation::spawn_webhook_worker(app_state.db.clone());
+    health::spawn_health_worker(app_state.db.clone());
 
     // Load GeoIP DB if provided
     let geo_db = std::env::var("GEOIP_DB_PATH").ok().and_then(|p| {
@@ -7331,7 +7435,10 @@ async fn main() -> std::io::Result<()> {
         let cors = cors_middleware();
 
         App::new()
-            .wrap(actix_web::middleware::from_fn(automation::platform_middleware))
+            .wrap(actix_web::middleware::from_fn(security_headers))
+            .wrap(actix_web::middleware::from_fn(
+                automation::platform_middleware,
+            ))
             .wrap(actix_web::middleware::from_fn(auth_middleware))
             .wrap(actix_web::middleware::from_fn(api_rate_limit_middleware))
             .wrap(cors)
@@ -7482,6 +7589,24 @@ mod cors_tests {
             Some(v) => std::env::set_var("ALLOWED_ORIGINS", v),
             None => std::env::remove_var("ALLOWED_ORIGINS"),
         }
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn metrics_token_comparison_is_exact() {
+        let req = actix_web::test::TestRequest::default()
+            .insert_header(("Authorization", "Bearer secret"))
+            .to_http_request();
+        assert!(metrics_authorized(&req, None));
+        assert!(metrics_authorized(&req, Some("secret")));
+        assert!(!metrics_authorized(&req, Some("secreu")));
+        assert!(!metrics_authorized(&req, Some("secret ")));
+        let none = actix_web::test::TestRequest::default().to_http_request();
+        assert!(!metrics_authorized(&none, Some("secret")));
     }
 }
 

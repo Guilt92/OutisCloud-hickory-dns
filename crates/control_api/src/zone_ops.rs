@@ -53,7 +53,10 @@ pub struct RrsetValue {
     pub priority: Option<i32>,
 }
 
-fn relative_name(name: &hickory_proto::rr::Name, origin: &hickory_proto::rr::Name) -> Option<String> {
+fn relative_name(
+    name: &hickory_proto::rr::Name,
+    origin: &hickory_proto::rr::Name,
+) -> Option<String> {
     let n = name.to_ascii().to_ascii_lowercase();
     let o = origin.to_ascii().to_ascii_lowercase();
     let nb = n.trim_end_matches('.');
@@ -171,7 +174,10 @@ pub async fn import_records(
     let allowed_ns = match super::allowed_nameservers(db).await {
         Ok(a) => a,
         Err(e) => {
-            warn!("import_records nameserver lookup: {}", full_error_string(&e));
+            warn!(
+                "import_records nameserver lookup: {}",
+                full_error_string(&e)
+            );
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "database error"}));
         }
@@ -206,7 +212,9 @@ pub async fn import_records(
         };
         if rec.rtype == "NS" {
             if let Err(e) = super::validate_ns_value(&rec.value, &allowed_ns) {
-                errors.push(serde_json::json!({"row": index, "name": record.name, "error": e.message}));
+                errors.push(
+                    serde_json::json!({"row": index, "name": record.name, "error": e.message}),
+                );
                 continue;
             }
         }
@@ -276,13 +284,8 @@ pub async fn import_records(
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": "database error"}));
     }
-    if let Err(resp) = tenants::reserve_zone_records_quota_tx(
-        c,
-        zone_id,
-        fresh.len() as i64,
-        false,
-    )
-    .await
+    if let Err(resp) =
+        tenants::reserve_zone_records_quota_tx(c, zone_id, fresh.len() as i64, false).await
     {
         let _ = c.batch_execute("ROLLBACK").await;
         return resp;
@@ -426,7 +429,7 @@ pub async fn bulk_import(
     let input = match serde_json::to_value(&body.0) {
         Ok(v) => v,
         Err(e) => {
-            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}))
+            return HttpResponse::BadRequest().json(serde_json::json!({"error": e.to_string()}));
         }
     };
     if let Err(e) = data
@@ -434,12 +437,7 @@ pub async fn bulk_import(
         .execute(
             "INSERT INTO jobs (id, user_id, kind, total, input) \
              VALUES ($1::text::uuid, $2::text::uuid, 'bulk_import', $3, $4)",
-            &[
-                &job_id,
-                &tok.claims.sub,
-                &(body.zones.len() as i32),
-                &input,
-            ],
+            &[&job_id, &tok.claims.sub, &(body.zones.len() as i32), &input],
         )
         .await
     {
@@ -478,7 +476,9 @@ async fn dry_run_bulk(
             Ok(d) => d,
             Err(e) => {
                 ok = false;
-                zones.push(serde_json::json!({"domain": z.domain, "valid": false, "error": e.message}));
+                zones.push(
+                    serde_json::json!({"domain": z.domain, "valid": false, "error": e.message}),
+                );
                 continue;
             }
         };
@@ -602,7 +602,11 @@ async fn import_one_zone(
                 header: Header::default(),
                 claims: Claims {
                     sub: user_id.to_string(),
-                    role: if is_admin { "admin".into() } else { "user".into() },
+                    role: if is_admin {
+                        "admin".into()
+                    } else {
+                        "user".into()
+                    },
                     exp: 0,
                     ver: 0,
                 },
@@ -736,7 +740,10 @@ async fn import_one_zone(
     drop(tx);
     if let Err(e) = publish(&state.dns_manager, db, Some(&domain)).await {
         let _ = db
-            .execute("DELETE FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id])
+            .execute(
+                "DELETE FROM zones WHERE CAST(id AS varchar) = $1",
+                &[&zone_id],
+            )
             .await;
         return Err(format!("publication failed: {e}"));
     }
@@ -766,8 +773,7 @@ pub async fn batch_rrsets(
         Err(response) => return response,
     };
     if body.rrsets.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "no rrsets supplied"}));
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "no rrsets supplied"}));
     }
     if body.rrsets.len() > 1000 {
         return HttpResponse::BadRequest()
@@ -792,7 +798,9 @@ pub async fn batch_rrsets(
             continue;
         }
         if spec.values.is_empty() {
-            errors.push(serde_json::json!({"rrset": i, "error": "an RRset must have at least one value"}));
+            errors.push(
+                serde_json::json!({"rrset": i, "error": "an RRset must have at least one value"}),
+            );
             continue;
         }
         if spec.values.len() > 500 {
@@ -833,9 +841,9 @@ pub async fn batch_rrsets(
     let mut candidate: Vec<RecordRow> = existing
         .iter()
         .filter(|r| {
-            !replace.iter().any(|(n, t)| {
-                r.name.eq_ignore_ascii_case(n) && r.rtype.eq_ignore_ascii_case(t)
-            })
+            !replace
+                .iter()
+                .any(|(n, t)| r.name.eq_ignore_ascii_case(n) && r.rtype.eq_ignore_ascii_case(t))
         })
         .cloned()
         .collect();
@@ -856,9 +864,9 @@ pub async fn batch_rrsets(
     let old: Vec<RecordRow> = existing
         .iter()
         .filter(|r| {
-            replace.iter().any(|(n, t)| {
-                r.name.eq_ignore_ascii_case(n) && r.rtype.eq_ignore_ascii_case(t)
-            })
+            replace
+                .iter()
+                .any(|(n, t)| r.name.eq_ignore_ascii_case(n) && r.rtype.eq_ignore_ascii_case(t))
         })
         .cloned()
         .collect();
@@ -891,7 +899,10 @@ pub async fn batch_rrsets(
         }
     }
     if !new_rows.is_empty() {
-        let ids: Vec<String> = new_rows.iter().map(|_| Uuid::new_v4().to_string()).collect();
+        let ids: Vec<String> = new_rows
+            .iter()
+            .map(|_| Uuid::new_v4().to_string())
+            .collect();
         let names: Vec<String> = new_rows.iter().map(|r| r.name.clone()).collect();
         let types: Vec<String> = new_rows.iter().map(|r| r.rtype.clone()).collect();
         let values: Vec<String> = new_rows.iter().map(|r| r.value.clone()).collect();

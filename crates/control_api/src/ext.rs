@@ -529,13 +529,13 @@ pub async fn txt_lookup(resolver: SocketAddr, name: &str) -> Result<Vec<String>,
 /// must come from the configured resolver and carry the matching transaction
 /// id; TXT values are joined into one string per record, NS names are returned
 /// lower-case without the trailing dot.
-pub async fn lookup_records(
+async fn query_message(
     resolver: SocketAddr,
     name: &str,
     rtype: hickory_proto::rr::RecordType,
-) -> Result<Vec<String>, String> {
+) -> Result<hickory_proto::op::Message, String> {
     use hickory_proto::op::{Message, Query, ResponseCode};
-    use hickory_proto::rr::{Name, RData};
+    use hickory_proto::rr::Name;
     let mut msg = Message::query();
     msg.set_recursion_desired(true);
     msg.add_query(Query::query(
@@ -567,11 +567,21 @@ pub async fn lookup_records(
         return Err("mismatched transaction id".into());
     }
     if resp.response_code() == ResponseCode::NXDomain {
-        return Ok(vec![]);
+        return Ok(resp);
     }
     if resp.response_code() != ResponseCode::NoError {
         return Err(format!("resolver answered {}", resp.response_code()));
     }
+    Ok(resp)
+}
+
+pub async fn lookup_records(
+    resolver: SocketAddr,
+    name: &str,
+    rtype: hickory_proto::rr::RecordType,
+) -> Result<Vec<String>, String> {
+    use hickory_proto::rr::RData;
+    let resp = query_message(resolver, name, rtype).await?;
     Ok(resp
         .answers()
         .iter()
@@ -583,12 +593,28 @@ pub async fn lookup_records(
                     .collect::<Vec<_>>()
                     .join(""),
             ),
-            RData::NS(ns) => Some(
-                ns.to_ascii()
-                    .trim_end_matches('.')
-                    .to_ascii_lowercase(),
-            ),
+            RData::NS(ns) => Some(ns.to_ascii().trim_end_matches('.').to_ascii_lowercase()),
             other => Some(other.to_string()),
+        })
+        .collect())
+}
+
+/// Query DS records at `name` (the parent side of a DNSSEC delegation).
+pub async fn lookup_ds(resolver: SocketAddr, name: &str) -> Result<Vec<serde_json::Value>, String> {
+    use hickory_proto::dnssec::rdata::DNSSECRData;
+    use hickory_proto::rr::{RData, RecordType};
+    let resp = query_message(resolver, name, RecordType::DS).await?;
+    Ok(resp
+        .answers()
+        .iter()
+        .filter_map(|r| match r.data() {
+            RData::DNSSEC(DNSSECRData::DS(ds)) => Some(serde_json::json!({
+                "key_tag": ds.key_tag(),
+                "algorithm": u8::from(ds.algorithm()),
+                "digest_type": u8::from(ds.digest_type()),
+                "digest": data_encoding::HEXLOWER.encode(ds.digest()),
+            })),
+            _ => None,
         })
         .collect())
 }
@@ -1565,6 +1591,7 @@ pub struct PageQuery {
     limit: Option<i64>,
     offset: Option<i64>,
     q: Option<String>,
+    tag: Option<String>,
 }
 impl PageQuery {
     /// (limit, offset, search text)
@@ -1577,6 +1604,14 @@ impl PageQuery {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
         )
+    }
+
+    /// Optional exact tag filter for list endpoints backed by `tags JSONB`.
+    pub fn tag(&self) -> Option<String> {
+        self.tag
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -1808,6 +1843,7 @@ mod unit {
             limit: Some(1000000),
             offset: Some(-5),
             q: None,
+            ..Default::default()
         }
         .parts();
         assert_eq!((bounded.0, bounded.1), (Some(1000), 0));
@@ -1815,6 +1851,7 @@ mod unit {
             limit: Some(0),
             offset: None,
             q: None,
+            ..Default::default()
         }
         .parts();
         assert_eq!(tiny.0, Some(1));

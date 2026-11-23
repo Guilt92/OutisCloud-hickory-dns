@@ -1,0 +1,36 @@
+name: release-artifacts
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  artifacts:
+    name: build, SBOM and sign release assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx,cargo-audit
+      - uses: sigstore/cosign-installer@v3
+      - name: Build release binaries
+        run: cargo build --release -p control_api -p hickory-dns
+      - name: SBOM
+        run: scripts/release_sbom.sh dist/sbom
+      - name: Checksums
+        run: |
+          mkdir -p dist
+          cp target/release/control_api target/release/hickory-dns dist/
+          (cd dist && sha256sum control_api hickory-dns sbom/* > SHA256SUMS)
+      - name: Sign checksums (keyless)
+        run: cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig dist/SHA256SUMS
+      - name: Publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber

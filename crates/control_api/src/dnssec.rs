@@ -316,6 +316,122 @@ pub async fn get_dnssec(
     }
 }
 
+fn ds_equal(expected: &serde_json::Value, found: &serde_json::Value) -> bool {
+    expected["key_tag"] == found["key_tag"]
+        && expected["algorithm"] == found["algorithm"]
+        && expected["digest_type"] == found["digest_type"]
+        && expected["digest"]
+            .as_str()
+            .zip(found["digest"].as_str())
+            .map(|(a, b)| a.eq_ignore_ascii_case(b))
+            .unwrap_or(false)
+}
+
+/// Verify that the parent publishes the DS records for every live key and
+/// report missing/stale entries (DNSSEC-006). Read-only: no state is changed.
+pub async fn ds_status(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let tok = match auth_from_header(&req, &data.jwt_secret) {
+        Some(t) => t,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    let access = match zone_access_at(&data.db, &zone_id, &tok, Level::Read).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let enabled: bool = match data
+        .db
+        .query_one(
+            "SELECT COALESCE(dnssec_enabled, false) FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+    {
+        Ok(r) => r.get(0),
+        Err(e) => return db_err("ds-status", &e),
+    };
+    if !enabled {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "enabled": false, "domain": access.domain, "published": false,
+            "message": "DNSSEC is not enabled for this zone"
+        }));
+    }
+    let rows = match data
+        .db
+        .query(
+            "SELECT key_tag, algorithm, public_key, status FROM dnssec_keys \
+             WHERE CAST(zone_id AS varchar) = $1 AND status <> 'retired'",
+            &[&zone_id],
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return db_err("ds-status keys", &e),
+    };
+    let mut expected = Vec::new();
+    for r in rows {
+        let tag: i32 = r.get(0);
+        let alg_s: String = r.get(1);
+        let pk_b64: String = r.get(2);
+        let status: String = r.get(3);
+        let alg = parse_algorithm(&alg_s).unwrap_or(Algorithm::ECDSAP256SHA256);
+        let pk = data_encoding::BASE64
+            .decode(pk_b64.as_bytes())
+            .unwrap_or_default();
+        for mut ds in ds_records(&access.domain, alg, &pk).unwrap_or_default() {
+            ds["key_tag"] = serde_json::json!(tag);
+            ds["key_status"] = serde_json::json!(status);
+            expected.push(ds);
+        }
+    }
+    let found = match ext::lookup_ds(data.verify_resolver, &access.domain).await {
+        Ok(v) => v,
+        Err(e) => {
+            return HttpResponse::BadGateway().json(serde_json::json!({
+                "error": "parent DS lookup failed", "details": e
+            }));
+        }
+    };
+    let missing: Vec<serde_json::Value> = expected
+        .iter()
+        .filter(|e| !found.iter().any(|f| ds_equal(e, f)))
+        .cloned()
+        .collect();
+    let stale: Vec<serde_json::Value> = found
+        .iter()
+        .filter(|f| !expected.iter().any(|e| ds_equal(e, f)))
+        .cloned()
+        .collect();
+    let published = !found.is_empty() && missing.is_empty() && stale.is_empty();
+    if !published {
+        automation::dispatch_event(
+            &data.db,
+            "dnssec.ds_mismatch",
+            "zone",
+            Some(&zone_id),
+            &serde_json::json!({
+                "zone_id": zone_id, "domain": access.domain,
+                "missing": missing, "stale": stale,
+            }),
+        )
+        .await;
+    }
+    HttpResponse::Ok().json(serde_json::json!({
+        "enabled": true,
+        "domain": access.domain,
+        "published": published,
+        "expected": expected,
+        "found": found,
+        "missing": missing,
+        "stale": stale,
+        "checked_at": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
 async fn publish(data: &AppState) -> Option<String> {
     match data.dns_manager.regenerate_zones(data.db.clone()).await {
         Ok(rep) if rep.failed.is_empty() => None,
@@ -705,6 +821,18 @@ mod unit_tests {
                     .starts_with("Example.COM. IN DS ")
             );
         }
+    }
+
+    #[test]
+    fn ds_comparison_is_case_insensitive_and_checks_all_fields() {
+        let a =
+            serde_json::json!({"key_tag": 1, "algorithm": 13, "digest_type": 2, "digest": "ABcd"});
+        let b =
+            serde_json::json!({"key_tag": 1, "algorithm": 13, "digest_type": 2, "digest": "abcd"});
+        assert!(ds_equal(&a, &b));
+        let mut c = b.clone();
+        c["key_tag"] = serde_json::json!(2);
+        assert!(!ds_equal(&a, &c));
     }
 
     #[test]

@@ -53,3 +53,14 @@ same exporter listener; `/ready` returns 503 when the catalog is stale or listen
 
 The metrics endpoints are intended for the internal Docker network only. Do not expose
 ports 9000/9090/9093 publicly without authentication and network policy.
+
+## Runbooks
+
+- `docs/runbooks/INCIDENT_RESPONSE.md` — severity, triage and communication.
+- `docs/runbooks/ROLLBACK.md` — application and database rollback.
+- `docs/runbooks/CERTIFICATE_LIFECYCLE.md` — TLS inventory, renewal and `scripts/check_certs.sh`.
+- `docs/runbooks/GEOIP.md` — MaxMind refresh and staleness handling.
+- `docs/runbooks/FAILOVER.md` — single-host recovery and manual promotion.
+
+Support bundles: `scripts/diagnostics_bundle.sh` (redacted logs, health, metrics).
+Release SBOMs: `scripts/release_sbom.sh dist/sbom`.

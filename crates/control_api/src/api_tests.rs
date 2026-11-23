@@ -111,6 +111,7 @@ macro_rules! app {
     ($env:expr) => {
         test::init_service(
             App::new()
+                .wrap(actix_web::middleware::from_fn(security_headers))
                 .wrap(actix_web::middleware::from_fn(auth_middleware))
                 .app_data(web::Data::new($env.state.clone()))
                 .app_data(web::Data::new($env.full.clone()))
@@ -6825,6 +6826,27 @@ async fn zone_and_record_metadata_roundtrip() {
         .unwrap()
         .get(0);
     assert_eq!(comment, "web front door");
+
+    let (st, body, raw) = call!(app, get, "/api/v1/zones?tag=customer", Some(&t), None);
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|z| z["id"] == zid.as_str()),
+        "tag filter includes the tagged zone: {raw}"
+    );
+    let (st, body, raw) = call!(app, get, "/api/v1/zones?tag=absent", Some(&t), None);
+    assert_eq!(st, 200, "{raw}");
+    assert!(
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|z| z["id"] != zid.as_str()),
+        "tag filter excludes untagged zones: {raw}"
+    );
     env.cleanup().await;
 }
 
@@ -7272,7 +7294,10 @@ async fn bulk_import_runs_as_a_durable_job() {
     assert_eq!(job["status"], "completed");
     assert_eq!(job["progress"], 1);
     assert_eq!(job["result"]["zones_succeeded"], 1);
-    let zone_id = result["results"][0]["zone_id"].as_str().unwrap().to_string();
+    let zone_id = result["results"][0]["zone_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let (st, _, _) = call!(
         app,
         get,
@@ -7302,9 +7327,7 @@ async fn bind_import_and_rrset_batch_are_atomic() {
     );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["imported"], 2);
-    assert!(env
-        .zone_file("bind.test")
-        .is_file());
+    assert!(env.zone_file("bind.test").is_file());
 
     let (st, _, _) = call!(
         app,
@@ -7365,7 +7388,10 @@ async fn hold_archive_and_restore_control_serving_and_writes() {
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["status"], "held");
     assert_eq!(body["hold_reason"], "billing review");
-    assert!(env.zone_file("lifecycle.test").is_file(), "held zones stay served");
+    assert!(
+        env.zone_file("lifecycle.test").is_file(),
+        "held zones stay served"
+    );
 
     let (st, _, _) = call!(
         app,
@@ -7406,5 +7432,122 @@ async fn hold_archive_and_restore_control_serving_and_writes() {
     );
     assert_eq!(st, 200, "{raw}");
     assert!(env.zone_file("lifecycle.test").is_file());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn health_checks_reject_private_targets_and_record_state() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+    let zid = make_zone(&env, &app, &admin, "health.test").await;
+
+    let (st, _, _) = call!(
+        app,
+        post,
+        "/api/v1/health-checks",
+        Some(&admin),
+        j(serde_json::json!({
+            "zone_id": zid, "name":"private", "record_name":"www",
+            "record_type":"A", "target":"10.0.0.1"
+        }))
+    );
+    assert_eq!(st, 400, "private targets are SSRF-blocked");
+
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/health-checks",
+        Some(&admin),
+        j(serde_json::json!({
+            "zone_id": zid, "name":"www probe", "record_name":"www",
+            "record_type":"A", "target":"192.0.2.1", "timeout_ms":100,
+            "failure_threshold":1, "success_threshold":1, "interval_secs":5
+        }))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (st, run, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/health-checks/{id}/run"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(run["ok"], false);
+    assert_eq!(run["status"], "down");
+
+    let (st, detail, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/health-checks/{id}"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(detail["status"], "down");
+    assert_eq!(detail["history"].as_array().unwrap().len(), 1);
+
+    let (st, list, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/health-checks?zone_id={zid}"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(list["checks"].as_array().unwrap().len(), 1);
+
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/health-checks/{id}"),
+        Some(&admin),
+        None
+    );
+    assert_eq!(st, 200);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn security_headers_are_present_and_auth_responses_are_not_cached() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+
+    let resp = test::call_service(&app, test::TestRequest::get().uri("/health").to_request()).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
+    assert_eq!(
+        resp.headers().get("referrer-policy").unwrap(),
+        "no-referrer"
+    );
+    assert!(
+        resp.headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
+
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/auth/login")
+            .set_json(serde_json::json!({"username":"root","password":"wrong-password"}))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        resp.headers().get("cache-control").unwrap(),
+        "no-store",
+        "auth responses must not be cached"
+    );
     env.cleanup().await;
 }

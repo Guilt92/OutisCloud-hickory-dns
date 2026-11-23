@@ -161,7 +161,11 @@ fn token_hash(token: &str) -> String {
     digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-pub(crate) fn scope_permits(scopes: &[String], method: &actix_web::http::Method, path: &str) -> bool {
+pub(crate) fn scope_permits(
+    scopes: &[String],
+    method: &actix_web::http::Method,
+    path: &str,
+) -> bool {
     if scopes.iter().any(|s| s == "*" || s == "admin") {
         return true;
     }
@@ -178,7 +182,9 @@ pub(crate) fn scope_permits(scopes: &[String], method: &actix_web::http::Method,
         return false;
     }
     if path.starts_with("/api/v1/tokens") || path.starts_with("/api/v1/webhooks") {
-        return scopes.iter().any(|s| s == "tokens:manage" || s == "webhooks:manage");
+        return scopes
+            .iter()
+            .any(|s| s == "tokens:manage" || s == "webhooks:manage");
     }
     let write = !is_read_method(method);
     let resource = path
@@ -235,7 +241,9 @@ pub(crate) async fn authenticate_api_token(
         )
         .await
         .map_err(|_| "database error")?;
-    let Some(r) = row else { return Err("unauthorized") };
+    let Some(r) = row else {
+        return Err("unauthorized");
+    };
     let revoked_at: Option<chrono::DateTime<chrono::Utc>> = r.get(4);
     if revoked_at.is_some() {
         return Err("token revoked");
@@ -378,23 +386,36 @@ pub async fn create_token(
     }))
 }
 
-pub async fn list_tokens(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+pub async fn list_tokens(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
     let tok = match auth_from_header(&req, &data.jwt_secret) {
         Some(t) => t,
         None => return unauthorized(),
     };
+    let (limit, offset, _) = page.parts();
     let sql = "SELECT CAST(id AS varchar), name, prefix, to_char(expires_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
                       scopes, to_char(last_used_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
                       to_char(revoked_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-                      to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
-               FROM api_tokens WHERE CAST(user_id AS varchar) = $1 ORDER BY created_at DESC";
-    match data.db.query(sql, &[&tok.claims.sub]).await {
+                      to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), count(*) OVER() \
+               FROM api_tokens WHERE CAST(user_id AS varchar) = $1 ORDER BY created_at DESC \
+               LIMIT $2::bigint OFFSET $3::bigint";
+    match data
+        .db
+        .query(sql, &[&tok.claims.sub, &limit, &offset])
+        .await
+    {
         Ok(rows) => {
+            let total: i64 = rows.first().and_then(|r| r.try_get(8).ok()).unwrap_or(0);
             let mut out = Vec::new();
             for r in &rows {
                 out.push(token_row_to_json(r));
             }
-            HttpResponse::Ok().json(serde_json::json!({"tokens": out}))
+            HttpResponse::Ok()
+                .insert_header(("X-Total-Count", total.to_string()))
+                .json(serde_json::json!({"tokens": out}))
         }
         Err(e) => {
             warn!("list_tokens: {}", full_error_string(&e));
@@ -464,7 +485,7 @@ pub async fn rotate_token(
     {
         Ok(Some(r)) => r,
         Ok(None) => {
-            return HttpResponse::NotFound().json(serde_json::json!({"error": "token not found"}))
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "token not found"}));
         }
         Err(e) => {
             warn!("rotate_token lookup: {}", full_error_string(&e));
@@ -558,27 +579,32 @@ pub async fn list_jobs(
     let admin = tok.claims.role == "admin";
     let sql = "SELECT CAST(id AS varchar), kind, status, progress, total, result, error, \
                       to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-                      to_char(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
+                      to_char(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), count(*) OVER() \
                FROM jobs WHERE ($1 OR CAST(user_id AS varchar) = $2) \
                  AND ($3::text IS NULL OR status = $3) \
                ORDER BY created_at DESC LIMIT $4 OFFSET $5";
     match data
         .db
-        .query(
-            sql,
-            &[&admin, &tok.claims.sub, &q.status, &limit, &offset],
-        )
+        .query(sql, &[&admin, &tok.claims.sub, &q.status, &limit, &offset])
         .await
     {
-        Ok(rows) => HttpResponse::Ok().json(serde_json::json!({
-            "jobs": rows.iter().map(|r| serde_json::json!({
-                "id": r.get::<_, String>(0), "kind": r.get::<_, String>(1),
-                "status": r.get::<_, String>(2), "progress": r.get::<_, i32>(3),
-                "total": r.get::<_, i32>(4), "result": r.get::<_, Option<serde_json::Value>>(5),
-                "error": r.get::<_, Option<String>>(6), "created_at": r.get::<_, String>(7),
-                "updated_at": r.get::<_, String>(8),
-            })).collect::<Vec<_>>()
-        })),
+        Ok(rows) => HttpResponse::Ok()
+            .insert_header((
+                "X-Total-Count",
+                rows.first()
+                    .and_then(|r| r.try_get::<_, i64>(9).ok())
+                    .unwrap_or(0)
+                    .to_string(),
+            ))
+            .json(serde_json::json!({
+                "jobs": rows.iter().map(|r| serde_json::json!({
+                    "id": r.get::<_, String>(0), "kind": r.get::<_, String>(1),
+                    "status": r.get::<_, String>(2), "progress": r.get::<_, i32>(3),
+                    "total": r.get::<_, i32>(4), "result": r.get::<_, Option<serde_json::Value>>(5),
+                    "error": r.get::<_, Option<String>>(6), "created_at": r.get::<_, String>(7),
+                    "updated_at": r.get::<_, String>(8),
+                })).collect::<Vec<_>>()
+            })),
         Err(e) => {
             warn!("list_jobs: {}", full_error_string(&e));
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
@@ -632,14 +658,19 @@ pub async fn cancel_job(
     };
     let id = path.into_inner();
     let admin = tok.claims.role == "admin";
-    match data.db.execute(
-        "UPDATE jobs SET status = 'cancelled', updated_at = now(), completed_at = now() \
+    match data
+        .db
+        .execute(
+            "UPDATE jobs SET status = 'cancelled', updated_at = now(), completed_at = now() \
          WHERE CAST(id AS varchar) = $1 AND ($2 OR CAST(user_id AS varchar) = $3) \
            AND status IN ('queued','running')",
-        &[&id, &admin, &tok.claims.sub],
-    ).await {
-        Ok(0) => HttpResponse::Conflict()
-            .json(serde_json::json!({"error": "job is not cancellable"})),
+            &[&id, &admin, &tok.claims.sub],
+        )
+        .await
+    {
+        Ok(0) => {
+            HttpResponse::Conflict().json(serde_json::json!({"error": "job is not cancellable"}))
+        }
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "cancelled"})),
         Err(e) => {
             warn!("cancel_job: {}", full_error_string(&e));
@@ -765,7 +796,7 @@ pub struct WebhookReq {
     pub enabled: Option<bool>,
 }
 
-fn is_public_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -891,25 +922,40 @@ pub async fn create_webhook(
     }))
 }
 
-pub async fn list_webhooks(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+pub async fn list_webhooks(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
     let tok = match auth_from_header(&req, &data.jwt_secret) {
         Some(t) => t,
         None => return unauthorized(),
     };
+    let (limit, offset, _) = page.parts();
     let admin = tok.claims.role == "admin";
-    match data.db.query(
-        "SELECT CAST(id AS varchar), url, events, enabled, \
-                to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
-         FROM webhooks WHERE ($1 OR CAST(user_id AS varchar) = $2) ORDER BY created_at DESC",
-        &[&admin, &tok.claims.sub],
-    ).await {
-        Ok(rows) => HttpResponse::Ok().json(serde_json::json!({
-            "webhooks": rows.iter().map(|r| serde_json::json!({
-                "id": r.get::<_, String>(0), "url": r.get::<_, String>(1),
-                "events": scope_list(&r.get::<_, serde_json::Value>(2)),
-                "enabled": r.get::<_, bool>(3), "created_at": r.get::<_, String>(4),
-            })).collect::<Vec<_>>()
-        })),
+    match data
+        .db
+        .query(
+            "SELECT CAST(id AS varchar), url, events, enabled, \
+                to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), count(*) OVER() \
+         FROM webhooks WHERE ($1 OR CAST(user_id AS varchar) = $2) ORDER BY created_at DESC \
+         LIMIT $3::bigint OFFSET $4::bigint",
+            &[&admin, &tok.claims.sub, &limit, &offset],
+        )
+        .await
+    {
+        Ok(rows) => {
+            let total: i64 = rows.first().and_then(|r| r.try_get(5).ok()).unwrap_or(0);
+            HttpResponse::Ok()
+                .insert_header(("X-Total-Count", total.to_string()))
+                .json(serde_json::json!({
+                    "webhooks": rows.iter().map(|r| serde_json::json!({
+                        "id": r.get::<_, String>(0), "url": r.get::<_, String>(1),
+                        "events": scope_list(&r.get::<_, serde_json::Value>(2)),
+                        "enabled": r.get::<_, bool>(3), "created_at": r.get::<_, String>(4),
+                    })).collect::<Vec<_>>()
+                }))
+        }
         Err(e) => {
             warn!("list_webhooks: {}", full_error_string(&e));
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
@@ -975,12 +1021,7 @@ pub async fn dispatch_event(
             .execute(
                 "INSERT INTO webhook_deliveries (id, webhook_id, event, payload) \
                  VALUES ($1::text::uuid, $2::text::uuid, $3, $4)",
-                &[
-                    &Uuid::new_v4().to_string(),
-                    &webhook_id,
-                    &event,
-                    &payload,
-                ],
+                &[&Uuid::new_v4().to_string(), &webhook_id, &event, &payload],
             )
             .await;
     }
@@ -1100,7 +1141,10 @@ pub async fn platform_middleware(
         return Ok(next.call(req).await?.map_into_boxed_body());
     };
     let path = req.path().to_string();
-    if matches!(path.as_str(), "/health" | "/ready" | "/metrics" | "/openapi.json") {
+    if matches!(
+        path.as_str(),
+        "/health" | "/ready" | "/metrics" | "/openapi.json"
+    ) {
         return Ok(next.call(req).await?.map_into_boxed_body());
     }
     // auth_middleware runs first and attaches the verified principal.
@@ -1206,16 +1250,43 @@ mod tests {
         let read = vec!["zones:read".to_string()];
         let write = vec!["zones:write".to_string()];
         let admin = vec!["admin".to_string()];
-        assert!(scope_permits(&read, &actix_web::http::Method::GET, "/api/v1/zones"));
-        assert!(!scope_permits(&read, &actix_web::http::Method::POST, "/api/v1/zones"));
-        assert!(scope_permits(&write, &actix_web::http::Method::POST, "/api/v1/zones"));
-        assert!(!scope_permits(&read, &actix_web::http::Method::GET, "/api/v1/users"));
-        assert!(scope_permits(&admin, &actix_web::http::Method::GET, "/api/v1/users"));
+        assert!(scope_permits(
+            &read,
+            &actix_web::http::Method::GET,
+            "/api/v1/zones"
+        ));
+        assert!(!scope_permits(
+            &read,
+            &actix_web::http::Method::POST,
+            "/api/v1/zones"
+        ));
+        assert!(scope_permits(
+            &write,
+            &actix_web::http::Method::POST,
+            "/api/v1/zones"
+        ));
+        assert!(!scope_permits(
+            &read,
+            &actix_web::http::Method::GET,
+            "/api/v1/users"
+        ));
+        assert!(scope_permits(
+            &admin,
+            &actix_web::http::Method::GET,
+            "/api/v1/users"
+        ));
     }
 
     #[test]
     fn private_webhook_targets_are_rejected() {
-        for ip in ["127.0.0.1", "10.1.2.3", "192.168.1.1", "169.254.1.1", "::1", "fd00::1"] {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.1.1",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+        ] {
             assert!(!is_public_ip(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
