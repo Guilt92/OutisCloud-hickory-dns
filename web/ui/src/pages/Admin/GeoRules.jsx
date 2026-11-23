@@ -22,6 +22,7 @@ export default function GeoRules(){
   const [testIp, setTestIp] = React.useState('8.8.8.8')
   const [resolveResult, setResolveResult] = React.useState(null)
   const [testing, setTesting] = React.useState(false)
+  const [search, setSearch] = React.useState('')
 
   const load = async () => {
     try {
@@ -89,6 +90,18 @@ export default function GeoRules(){
     } catch (e) { notify?.error('Error resolving') }
     setTesting(false)
   }
+
+  const filteredRules = React.useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return rules
+    return rules.filter((r) =>
+      (zones.find(z => z.id === r.zone_id)?.domain || r.zone_id).toLowerCase().includes(q) ||
+      r.match_type.toLowerCase().includes(q) ||
+      r.match_value.toLowerCase().includes(q) ||
+      r.target.toLowerCase().includes(q) ||
+      (r.record_name || '').toLowerCase().includes(q)
+    )
+  }, [rules, search, zones])
 
   const getZoneName = (zoneId) => {
     const z = zones.find(z => z.id === zoneId)
@@ -223,10 +236,21 @@ export default function GeoRules(){
         transition={{ delay: 0.15 }}
         className="card overflow-hidden"
       >
-        {rules.length === 0 ? (
+        <div className="p-4 border-b border-line flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+          <input
+            type="text"
+            className="input sm:max-w-sm"
+            placeholder="Search by zone, match, target or record"
+            aria-label="Search GeoDNS rules"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <p className="text-xs text-muted">Rules are evaluated in priority order (highest first); the first match wins.</p>
+        </div>
+        {filteredRules.length === 0 ? (
           <div className="p-12 text-center">
             <Globe className="w-14 h-14 text-muted/40 mx-auto mb-3" />
-            <p className="text-muted">No GeoDNS rules configured yet</p>
+            <p className="text-muted">{rules.length === 0 ? 'No GeoDNS rules configured yet' : 'No rules match this search'}</p>
           </div>
         ) : (
           <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Scrollable table">
@@ -244,7 +268,7 @@ export default function GeoRules(){
                 </tr>
               </thead>
               <tbody>
-                {rules.map((r, i) => (
+                {filteredRules.map((r, i) => (
                   <motion.tr
                     key={r.id}
                     initial={{ opacity: 0 }}

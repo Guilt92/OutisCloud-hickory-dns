@@ -8,7 +8,7 @@ import Notifications from '../components/Notifications'
 import { useParams } from 'react-router-dom'
 import { useAuthStore } from '../store'
 import { useServerPagination, PaginationControls } from '../hooks/useAdvancedUI'
-import { FileText, Plus, Trash2, Download, RefreshCw, Edit3, X } from 'lucide-react'
+import { FileText, Plus, Trash2, Download, RefreshCw, Edit3, X, Tag } from 'lucide-react'
 import { useConfirm } from '../components/ui'
 
 export default function Records(){
@@ -24,6 +24,9 @@ export default function Records(){
   const [priority, setPriority] = React.useState(0)
   const [editing, setEditing] = React.useState(null)
   const [error, setError] = React.useState('')
+  const [metaRecord, setMetaRecord] = React.useState(null)
+  const [metaComment, setMetaComment] = React.useState('')
+  const [metaTags, setMetaTags] = React.useState('')
   const loading = paged.loading
   const notify = React.useContext(Notifications)
   const notifyRef = React.useRef(notify)
@@ -93,6 +96,26 @@ export default function Records(){
     }
   }
   
+  const startMetadata = (record) => {
+    setMetaRecord(record)
+    setMetaComment(record.comment || '')
+    setMetaTags((record.tags || []).join(', '))
+  }
+
+  const saveMetadata = async () => {
+    try {
+      await api.put(`/api/v1/zones/${zoneId}/records/${metaRecord.id}/metadata`, {
+        comment: metaComment,
+        tags: metaTags.split(',').map(t => t.trim()).filter(Boolean),
+      })
+      notify?.success('Record metadata saved')
+      setMetaRecord(null)
+      load()
+    } catch (e) {
+      notify?.error(apiErrorMessage(e, 'metadata update failed'))
+    }
+  }
+
   const remove = async (record) => {
     const confirmed = await askConfirm({
       title: 'Delete record?',
@@ -260,11 +283,17 @@ export default function Records(){
                     <td>
                       <span className="badge badge-default font-mono">{r.record_type}</span>
                     </td>
-                    <td className="font-mono text-muted max-w-xs truncate">{r.value}</td>
+                    <td className="font-mono text-muted max-w-xs truncate">
+                      {r.value}
+                      {r.comment && <span className="block text-xs text-muted/70 truncate" title={r.comment}>{r.comment}</span>}
+                    </td>
                     <td className="text-muted">{r.ttl}</td>
                     <td className="text-muted">{r.priority || ''}</td>
                     <td className="text-right">
                       {!readOnly && <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => startMetadata(r)} aria-label={`Edit metadata for ${r.name || '@'}`} className="btn-sm btn-ghost" title={r.comment || 'Add comment/tags'}>
+                          <Tag className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           onClick={() => {
                             setEditing(r);
@@ -294,6 +323,26 @@ export default function Records(){
           <PaginationControls pagination={paged.pagination} />
         </div>
       </motion.div>
+
+      {metaRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="Record metadata">
+          <div className="bg-surface rounded-2xl border border-line p-5 w-full max-w-md space-y-3">
+            <h2 className="font-semibold">Metadata for {metaRecord.name || '@'} {metaRecord.record_type}</h2>
+            <div>
+              <label className="form-label" htmlFor="record-comment">Comment</label>
+              <input id="record-comment" className="input" value={metaComment} onChange={e => setMetaComment(e.target.value)} placeholder="Why this record exists" />
+            </div>
+            <div>
+              <label className="form-label" htmlFor="record-tags">Tags (comma separated)</label>
+              <input id="record-tags" className="input" value={metaTags} onChange={e => setMetaTags(e.target.value)} placeholder="web, prod" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setMetaRecord(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveMetadata}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

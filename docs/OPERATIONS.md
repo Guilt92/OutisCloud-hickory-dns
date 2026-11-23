@@ -52,7 +52,11 @@ and delivered through Alertmanager. Grafana dashboards are provisioned from
 same exporter listener; `/ready` returns 503 when the catalog is stale or listeners failed.
 
 The metrics endpoints are intended for the internal Docker network only. Do not expose
-ports 9000/9090/9093 publicly without authentication and network policy.
+ports 9000/9090/9093 publicly without authentication and network policy. Both exporters
+accept an optional bearer token: set `METRICS_TOKEN` (control API) and
+`METRICS_TOKEN` or `PROMETHEUS_TOKEN` (DNS server). When a token is set, configure
+Prometheus with `authorization.credentials_file` for each scrape job; never inline the
+token in `prometheus.yml`. `/health` and `/ready` remain unauthenticated so probes work.
 
 ## Runbooks
 

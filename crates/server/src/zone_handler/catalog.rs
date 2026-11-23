@@ -664,6 +664,8 @@ impl Catalog {
                 .await;
         }
 
+        #[cfg(feature = "metrics")]
+        let started = std::time::Instant::now();
         let info = if query_type == RecordType::AXFR {
             zone_transfer(
                 request_info,
@@ -701,6 +703,16 @@ impl Catalog {
             }
             metrics::counter!("hickory_zone_queries_total", "zone" => zone, "result" => result)
                 .increment(1);
+        }
+        #[cfg(feature = "metrics")]
+        {
+            let result = match info.response_code() {
+                ResponseCode::NoError => "ok",
+                ResponseCode::NXDomain => "nxdomain",
+                _ => "error",
+            };
+            metrics::histogram!("hickory_query_duration_seconds", "result" => result)
+                .record(started.elapsed().as_secs_f64());
         }
         info
     }

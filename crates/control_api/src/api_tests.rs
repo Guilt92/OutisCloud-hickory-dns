@@ -6826,6 +6826,22 @@ async fn zone_and_record_metadata_roundtrip() {
         .unwrap()
         .get(0);
     assert_eq!(comment, "web front door");
+    let (st, listed, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zid}/records"),
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    let listed = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == rid.as_str())
+        .expect("record listed");
+    assert_eq!(listed["comment"], "web front door");
+    assert_eq!(listed["tags"][0], "web");
 
     let (st, body, raw) = call!(app, get, "/api/v1/zones?tag=customer", Some(&t), None);
     assert_eq!(st, 200, "{raw}");

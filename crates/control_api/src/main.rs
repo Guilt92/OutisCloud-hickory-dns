@@ -4969,6 +4969,10 @@ struct RecordResponse {
     value: String,
     ttl: u32,
     priority: i32,
+    #[serde(default)]
+    comment: String,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 /// Validate one record the way the generator will render it and normalise it.
@@ -5224,7 +5228,7 @@ async fn list_records(
     let (limit, offset, qtext) = page.parts();
     let rows = match data.db
         .query(
-            "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority, count(*) OVER() FROM records WHERE CAST(zone_id AS varchar) = $1 \
+            "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority, count(*) OVER(), COALESCE(comment, ''), tags FROM records WHERE CAST(zone_id AS varchar) = $1 \
              AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR value ILIKE '%' || $2 || '%' OR record_type ILIKE $2) \
              ORDER BY name, record_type, value LIMIT $3::bigint OFFSET $4::bigint",
             &[&zone_id_str, &qtext, &limit, &offset]
@@ -5249,6 +5253,18 @@ async fn list_records(
             value: r.try_get(4).unwrap_or_default(),
             ttl: r.try_get::<_, i32>(5).unwrap_or(0).max(0) as u32,
             priority: r.try_get::<_, i32>(6).unwrap_or(0),
+            comment: r.try_get(8).unwrap_or_default(),
+            tags: r
+                .try_get::<_, serde_json::Value>(9)
+                .ok()
+                .and_then(|v| {
+                    v.as_array().map(|a| {
+                        a.iter()
+                            .filter_map(|t| t.as_str().map(str::to_string))
+                            .collect()
+                    })
+                })
+                .unwrap_or_default(),
         })
         .collect();
 

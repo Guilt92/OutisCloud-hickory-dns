@@ -46,8 +46,8 @@ Validation for this update:
 ### Current counts (task.md status table)
 | Status | Count |
 |---|---|
-| COMPLETED | 34 |
-| PARTIALLY COMPLETED | 45 |
+| COMPLETED | 39 |
+| PARTIALLY COMPLETED | 40 |
 | NEEDS VERIFICATION | 11 |
 | BLOCKED | 43 |
 | NOT STARTED | 0 |

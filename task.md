@@ -1789,7 +1789,7 @@ Validation performed for this status update:
 | 2 | ZONE-005 | P0 | COMPLETED | TXT and NS-delegation verification (`method=txt|ns`), rate limits/retries, fail-safe pending state, and `verified_via` evidence. |
 | 2 | ZONE-006 | P1 | COMPLETED | active/held/suspended/archived lifecycle with hold reason/until, archived write blocking, serving effects, audit and integration tests. |
 | 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Implemented: Revision diff endpoint and UI exist. Remaining: full snapshots, retention config and failure visibility pending. |
-| 2 | REC-001 | P2 | PARTIALLY COMPLETED | Implemented: Record comment/tags columns and API exist. Remaining: editor integration pending. |
+| 2 | REC-001 | P2 | COMPLETED | Comment/tags columns, tenant-safe metadata API, list payload, and record editor dialog with integration-test coverage. |
 | 2 | REC-002 | P0 | COMPLETED | Publish-failure rollback API tests pass. |
 | 2 | REC-003 | P1 | COMPLETED | `PUT /api/v1/zones/{id}/rrsets` applies an all-or-nothing RRset batch with validation, audit and rollback. |
 | 11 | REC-004 | P3 | COMPLETED | Apex-alias non-goal documented in docs/RECORD_TYPES.md. |
@@ -1818,7 +1818,7 @@ Validation performed for this status update:
 | 5 | GEO-002 | P2 | PARTIALLY COMPLETED | Implemented: Engine accepts injected health state. Remaining: real health-driven failover pending. |
 | 5 | GEO-003 | P2 | PARTIALLY COMPLETED | Implemented: Dataset watcher/atomic install/staleness exist. Remaining: licensed City data is external. |
 | 5 | GEO-004 | P2 | BLOCKED | Requires policy/version schema and activation design. |
-| 5 | GEO-005 | P2 | PARTIALLY COMPLETED | Implemented: GeoRule search/pagination added. Remaining: UI search/precedence display pending. |
+| 5 | GEO-005 | P2 | COMPLETED | GeoRule API pagination/search plus UI search by zone/match/target/record and explicit priority-order guidance. |
 | 5 | TRAF-001 | P2 | COMPLETED | Deterministic policy engine has 3 passing unit tests. |
 | 5 | TRAF-002 | P3 | BLOCKED | Requires external location/latency data sources. |
 | 5 | TRAF-003 | P3 | BLOCKED | Requires pool/region schema design. |
@@ -1831,7 +1831,7 @@ Validation performed for this status update:
 | 6 | MON-001 | P0 | NEEDS VERIFICATION | Implemented: Scrape config corrected. Remaining: no runtime Prometheus scrape smoke test. Verification gap: Runtime Prometheus scrape smoke test was not run. |
 | 6 | MON-002 | P1 | NEEDS VERIFICATION | Implemented: Alertmanager config/rules added. Remaining: no runtime delivery test. Verification gap: Runtime Alertmanager delivery test was not run. |
 | 6 | MON-003 | P1 | NEEDS VERIFICATION | Implemented: Grafana dashboard JSON added. Remaining: no runtime provisioning test. Verification gap: Runtime Grafana provisioning test was not run. |
-| 6 | MON-004 | P1 | PARTIALLY COMPLETED | Implemented: API metrics token protection exists. Remaining: DNS exporter relies on internal network isolation. |
+| 6 | MON-004 | P1 | COMPLETED | Both API and DNS metrics endpoints support constant-time bearer-token checks (`METRICS_TOKEN`/`PROMETHEUS_TOKEN`); health/readiness stay open. |
 | 6 | MON-005 | P1 | BLOCKED | Multi-location probes require external infrastructure. |
 | 8 | CUST-001 | P1 | BLOCKED | Requires email provider, user-status schema and invite/reset token model. |
 | 8 | CUST-002 | P3 | BLOCKED | Requires external IdP/OIDC/SAML dependency and demand approval. |
@@ -1842,7 +1842,7 @@ Validation performed for this status update:
 | 8 | RBAC-001 | P3 | BLOCKED | Requires permission catalog tables and policy engine across handlers. |
 | 8 | RBAC-002 | P1 | COMPLETED | Per-user password reset and session-revocation test passes. |
 | 7 | API-001 | P1 | PARTIALLY COMPLETED | Implemented: OpenAPI spec route with component schemas exists. Remaining: full route annotation and lint pending. |
-| 7 | API-002 | P1 | PARTIALLY COMPLETED | Implemented: create_zone idempotency implemented/tested. Remaining: other mutating endpoints pending. |
+| 7 | API-002 | P1 | COMPLETED | `platform_middleware` replays/stores `Idempotency-Key` responses for every mutating request, in addition to the explicit create-zone path and tests. |
 | 7 | API-003 | P1 | BLOCKED | Depends on API-001 completion and ARCH-007 secret decision. |
 | 7 | API-004 | P1 | COMPLETED | Global per-IP limiter plus tenant-scoped budgets in `platform_middleware` with 429/Retry-After and tests. |
 | 7 | API-005 | P2 | COMPLETED | Signed webhooks (HMAC), SSRF-safe target validation, durable deliveries with retry/backoff and dead-letter status. |
@@ -1850,7 +1850,7 @@ Validation performed for this status update:
 | 7 | API-007 | P1 | PARTIALLY COMPLETED | Implemented: Pagination exists for several lists. Remaining: remaining lists and error envelopes pending. |
 | 7 | API-008 | P2 | BLOCKED | Depends on API-001 completion. |
 | 7 | API-009 | P3 | BLOCKED | Depends on API-008 and external provider toolchain. |
-| 7 | API-010 | P1 | PARTIALLY COMPLETED | Implemented: Frontend route-contract script exists. Remaining: CI enforcement/schema drift checks pending. |
+| 7 | API-010 | P1 | COMPLETED | Route-contract check runs in CI, schema-drift test runs against PostgreSQL in CI, and both are part of the documented validation command set. |
 | 8 | AUD-001 | P1 | PARTIALLY COMPLETED | Implemented: Audit detail and CSV export endpoints tested. Remaining: UI detail/export wiring pending. |
 | 8 | AUD-002 | P0 | PARTIALLY COMPLETED | Implemented: Broad audit coverage exists. Remaining: coverage-matrix ADR and failure-policy decision pending. |
 | 8 | AUD-003 | P2 | PARTIALLY COMPLETED | Implemented: Retention configurable. Remaining: archive/SIEM target external. |
