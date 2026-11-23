@@ -172,6 +172,8 @@ The blocked entries in section C identify the missing dependency or decision. Se
 | Initial `nginx -t` without a `control-api` DNS alias | Disposable local Nginx | Configuration accepted | Failed resolving `control-api`; the Compose service name was absent from the isolated container. Retried with a disposable host alias above. | ENVIRONMENT SETUP FAILURE |
 | `curl -fsSI http://127.0.0.1:18081/` against disposable Nginx | Local | HTTP 200 with CSP and security headers | HTTP 200; CSP, Referrer-Policy and nosniff present | PASS |
 | `dig @127.0.0.1 -p 53 example.com SOA +norecurse +time=2 +tries=1 +noall +comments` over UDP/TCP | germ test host | Authoritative server refuses unrelated zone | REFUSED on both transports | PASS |
+| `dig @127.0.0.1 -p 53 uid0.ir SOA +norecurse +time=2 +tries=1 +noall +comments +answer` over UDP/TCP | germ test host | Hosted zone answers authoritatively | NOERROR, `aa`, matching SOA serial `2026111900` on both transports | PASS |
+| `dig @127.0.0.1 -p 53 uid0.ir AXFR +tcp +time=3 +tries=1 +noall +comments +stats` | germ test host | Transfer follows existing policy | REFUSED; no transfer authorized | PASS |
 | `ssh -o BatchMode=yes germ` with hostname, kernel, service/resource and container inspection | germ | Reach host and inspect without mutation | Reached `fastcreate-472995`; four OutisCloud containers healthy; 7.8 GiB RAM; 6.1 GiB disk available | PASS |
 | `curl` to `127.0.0.1:8080/health`, `/ready`, and `127.0.0.1:8081/` over SSH | germ | HTTP 200 | HTTP 200 on all three | PASS |
 
@@ -179,7 +181,7 @@ No database migration, DNS transfer, DNSSEC rollover, backup/restore, load, or b
 
 ## F. Production readiness
 
-Implemented and locally tested: the strengthened API method/path contract, DNS query-log controls, clone rewrite fix, and UI CSP. Integration tested: the static frontend/backend route mapping and clone behavior against disposable PostgreSQL 16. Validated on available server: connectivity, container health reports, API health/readiness and UI HTTP response. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
+Implemented and locally tested: the strengthened API method/path contract, DNS query-log controls, clone rewrite fix, and UI CSP. Integration tested: the static frontend/backend route mapping and clone behavior against disposable PostgreSQL 16. Validated on available test server: connectivity, container health reports, API health/readiness and UI HTTP response, authoritative SOA over UDP/TCP, and transfer-policy refusal. The new local code has not been deployed to germ. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
 
 ## G. Git delivery
 
