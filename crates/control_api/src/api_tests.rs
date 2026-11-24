@@ -6755,6 +6755,52 @@ async fn revision_diff_reports_added_and_removed_records() {
 }
 
 #[actix_web::test]
+async fn revision_retention_prunes_old_snapshots() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let t = env.token(&env.admin, "admin");
+    let zone_id = make_zone(&env, &app, &t, "retention.example").await;
+    for (name, value) in [("first", "192.0.2.1"), ("second", "192.0.2.2")] {
+        let (status, _, raw) = call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zone_id}/records"),
+            Some(&t),
+            j(serde_json::json!({"name": name, "record_type": "A", "value": value, "ttl": 60}))
+        );
+        assert_eq!(status, 201, "{raw}");
+    }
+    env.state
+        .db
+        .execute(
+            "UPDATE zones SET domain = 'retained.example' WHERE CAST(id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+        .unwrap();
+    ext::snapshot_zone_with_retention(
+        &env.state.db,
+        &zone_id,
+        Some(&env.admin),
+        "retention test",
+        2,
+    )
+    .await;
+    let count: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 2);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn zone_and_record_metadata_roundtrip() {
     let Some(env) = setup().await else { return };
     let app = app!(env);

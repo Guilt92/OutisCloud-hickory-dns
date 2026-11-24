@@ -200,11 +200,46 @@ pub async fn delete_member(
 // Zone history and rollback
 // ---------------------------------------------------------------------------
 
-const MAX_REVISIONS_PER_ZONE: i64 = 50;
+const DEFAULT_REVISIONS_PER_ZONE: i64 = 50;
+
+fn parse_revision_retention(value: Option<&str>) -> i64 {
+    value
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| (1..=1000).contains(v))
+        .unwrap_or(DEFAULT_REVISIONS_PER_ZONE)
+}
+
+fn revision_retention() -> i64 {
+    parse_revision_retention(std::env::var("ZONE_REVISION_RETENTION").ok().as_deref())
+}
+
+#[cfg(test)]
+mod revision_retention_tests {
+    use super::parse_revision_retention;
+
+    #[test]
+    fn retention_is_bounded_and_defaults_safely() {
+        assert_eq!(parse_revision_retention(None), 50);
+        assert_eq!(parse_revision_retention(Some("200")), 200);
+        assert_eq!(parse_revision_retention(Some("0")), 50);
+        assert_eq!(parse_revision_retention(Some("1001")), 50);
+        assert_eq!(parse_revision_retention(Some("invalid")), 50);
+    }
+}
 
 /// Record the zone's current records as a revision (skipped when identical to
 /// the latest one). Never fails the calling request.
 pub async fn snapshot_zone(db: &Pool, zone_id: &str, user: Option<&str>, reason: &str) {
+    snapshot_zone_with_retention(db, zone_id, user, reason, revision_retention()).await;
+}
+
+pub(crate) async fn snapshot_zone_with_retention(
+    db: &Pool,
+    zone_id: &str,
+    user: Option<&str>,
+    reason: &str,
+    retention: i64,
+) {
     let res = async {
         let domain: String = db.query_one("SELECT domain FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id]).await?.get(0);
         let rows = db.query(
@@ -225,11 +260,12 @@ pub async fn snapshot_zone(db: &Pool, zone_id: &str, user: Option<&str>, reason:
             db.execute(
                 "DELETE FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 AND id NOT IN \
                  (SELECT id FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 ORDER BY created_at DESC LIMIT $2)",
-                &[&zone_id, &MAX_REVISIONS_PER_ZONE]).await?;
+                &[&zone_id, &retention]).await?;
         }
         Ok::<(), tokio_postgres::Error>(())
     }.await;
     if let Err(e) = res {
+        crate::metrics::record_snapshot_failure();
         warn!(
             "zone snapshot failed for {}: {}",
             zone_id,

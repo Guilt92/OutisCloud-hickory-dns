@@ -11,6 +11,13 @@ the DNS request ID (default `1`, valid range `1` to `65535`). Sampling covers
 request, response, malformed-packet, and refused-query logs. It controls log
 volume but is not a statistically independent sample.
 
+## Zone revision retention
+
+`ZONE_REVISION_RETENTION` sets the number of recent snapshots kept per zone.
+The default is 50; accepted values are 1 through 1000. Invalid values fall
+back to 50. Pruning occurs after a new, non-duplicate revision is inserted.
+This setting is not a replacement for PostgreSQL backup or PITR.
+
 ## Components
 `hickory-dns` (authoritative DNS, hot reload, GeoDNS, DNSSEC) ← zone files + `named.toml` written by → `control_api` (REST API, PostgreSQL, tenants/quotas, analytics collector) ← `web/ui` (React). Agents (`crates/agent`) pull signed bundles from the API to replicas.
 PostgreSQL is the only shared state of the control plane.

@@ -1,7 +1,15 @@
 //! Prometheus gauges for publication health (exposed on /metrics).
 use crate::dns_manager::LastPublish;
 use once_cell::sync::Lazy;
-use prometheus::{IntGauge, register_int_gauge};
+use prometheus::{IntCounter, IntGauge, register_int_counter, register_int_gauge};
+
+static ZONE_SNAPSHOT_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!(
+        "outis_zone_snapshot_failures_total",
+        "failed zone revision snapshot attempts"
+    )
+    .unwrap()
+});
 
 static ZONES_PUBLISHED: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!("outis_zones_published", "zones published in the last run").unwrap()
@@ -58,6 +66,10 @@ pub fn record_sync(version: i64, behind: i64, db_healthy: usize) {
     DB_HEALTHY.set(db_healthy as i64);
 }
 
+pub fn record_snapshot_failure() {
+    ZONE_SNAPSHOT_FAILURES.inc();
+}
+
 /// Make sure all gauges exist (so they are scraped with value 0 before the first run).
 pub fn init() {
     Lazy::force(&ZONES_PUBLISHED);
@@ -67,4 +79,23 @@ pub fn init() {
     Lazy::force(&BUNDLE_VERSION);
     Lazy::force(&AGENTS_BEHIND);
     Lazy::force(&DB_HEALTHY);
+    Lazy::force(&ZONE_SNAPSHOT_FAILURES);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_failures_are_exposed_in_metrics() {
+        init();
+        let before = ZONE_SNAPSHOT_FAILURES.get();
+        record_snapshot_failure();
+        assert_eq!(ZONE_SNAPSHOT_FAILURES.get(), before + 1);
+        assert!(
+            prometheus::gather()
+                .iter()
+                .any(|family| family.get_name() == "outis_zone_snapshot_failures_total")
+        );
+    }
 }
