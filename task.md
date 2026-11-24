@@ -4,9 +4,9 @@
 > **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. A Playwright browser check now confirms an injected inline script is blocked by the served CSP. Secure cookies and token-storage migration remain, so the task is PARTIALLY COMPLETED.
 > **germ read-only DNS validation:** Independent `dig` queries for the hosted `uid0.ir` SOA returned authoritative NOERROR over UDP and TCP with matching serial `2026111900`; a TCP AXFR request was REFUSED. No local change was deployed to germ.
 > **Helm packaging progress:** The chart now renders control API, DNS server, and UI Deployments/Services/Ingress with shared pre-provisioned RWX zone storage, DNS health/readiness probes, generated ConfigMaps, and a release-specific UI proxy. Helm lint/render and rendered-resource checks pass. CORE-004 and OPS-002 remain PARTIALLY COMPLETED until cluster-level probe, RWX, Secret, image, and rollout validation succeeds; agent/DB templates are not included.
-> **Current corrected counts:** 34 COMPLETED, 52 PARTIALLY COMPLETED, 8 NEEDS VERIFICATION, 38 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
+> **Current corrected counts:** see the authoritative execution ledger at the end of this file. Earlier status summaries are historical.
 
-> **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
+> **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check validates 83 method/path pairs against registered Rust routes. `germ` is a test environment. The authoritative current status, test, blocker, and delivery record is the execution ledger at the end of this file.
 
 > **Current implementation status:** see §19 below. Earlier sections remain the canonical requirements and historical roadmap.
 
@@ -16,7 +16,7 @@
 **Scope:** research, benchmarking, architecture assessment, and planning only. No feature implementation is included or authorized by this document.
 **Reference product:** Cloudflare DNS, used as an engineering and product-design reference, not as a template to clone.
 
-> **Evidence rule.** A feature is marked implemented only when current code and executed behavior support it. A route, database column, UI control, or proposal document is not proof by itself. Facts are separated from recommendations and assumptions. `TASK_STATUS.md`, audit reports, benchmark logs, and the source tree are evidence inputs; where they disagree, current code and the latest executed logs take precedence.
+> **Evidence rule.** A feature is marked implemented only when current code and executed behavior support it. A route, database column, UI control, or proposal document is not proof by itself. The execution ledger at the end of this file is the sole task-status and delivery record. Historical assessment material is retained for provenance.
 
 ---
 
@@ -1931,3 +1931,43 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | UX-001 | PARTIALLY COMPLETED | Viewer/editor/admin UI permission tests exist; systematic no-hidden-403/404 contract and new-control checks remain. |
 | OPS-002 | PARTIALLY COMPLETED | Helm now renders API, DNS and UI Deployments/Services/Ingress, ConfigMaps, shared pre-provisioned RWX claim mounts, and probes; lint/render and structural checks pass. Agent/DB templates and Kubernetes cluster validation remain; external Secret, images and claim must be supplied. |
 | OPS-006 | PARTIALLY COMPLETED | GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent. |
+
+## 21. Single-File Execution Ledger — 2026-11-24
+
+This ledger is the only current task and implementation report. Historical status matrices above are preserved, but their counts are superseded here. Phase 0 and Phase 1 are not complete, so Phase 2 implementation has not begun in this execution.
+
+### Current roadmap totals
+
+133 tasks total. COMPLETED 34 (25.6%), PARTIALLY COMPLETED 54, NEEDS VERIFICATION 8, BLOCKED 36, NOT STARTED 1. Counts include the two recovery tasks moved from BLOCKED to PARTIALLY COMPLETED after tests on `germ`. Counts exclude prose-only feature-matrix rows and count each roadmap task ID once.
+
+### Phase 0 and Phase 1 execution state
+
+| Phase | Gate | Outstanding acceptance work |
+|---|---|---|
+| 0 | OPEN | ARCH-002 needs measured publication outbox behavior and failure matrix; ARCH-003 needs reproducible concurrency benchmark and rollback evidence; ARCH-007 needs replacement of tracked secret material after coordinated credential issuance and secret removal; remaining work must be verified before Phase 0 closes. |
+| 1 | OPEN | CORE-001 signed AXFR interoperability; CORE-002 SQLite IXFR exchange; CORE-003 peer configuration and secondary refresh; CORE-004 full readiness conditions; CORE-005 backpressure/load evidence; CORE-008 external conformance and dual stack on germ; CORE-009 trust-anchor policy; CORE-010 real DoH3 client exchange; CORE-011 advanced record type API/UI round trip; CORE-013 reload-under-write-load proof. See task rows in §19 for per-task dependencies and exact evidence. |
+
+### Latest implementation and validation evidence
+
+- **Bulk import UX (ZONE-001, ADM-002, CUI-003): PARTIAL.** Local uncommitted changes add RFC-compatible CSV parsing via `csv-parse`, a dry-run preview before commit, 1 MiB and 5,000-row client limits, duplicate/error feedback, and keyboard reachable file selection. Chromium tests in `web/ui/tests/modal-focus.spec.cjs` cover keyboard selection and quoted CSV values through preview and confirmation. `npm --prefix web/ui run lint`, `npm --prefix web/ui run test:routes` (83 pairs), and `npm --prefix web/ui run build` pass. The browser preview test passed 3/3 in the prior run before the latest import implementation. After the latest implementation, the 3 browser cases passed against Vite and mocked HTTP. No production data was touched. Commit and `task.md` per-task status update remain outstanding.
+- **germ environment inspection:** `ssh germ` succeeded. Host `fastcreate-472995` runs four healthy containers: UI, DNS, control API, and PostgreSQL 15. Read-only checks through SSH returned API `/health` 200, `/ready` 200, and UI 200. Local direct curls returned proxy 503 because `HTTP_PROXY` routes loopback; this is local test setup, not a germ service failure.
+- **germ authoritative DNS smoke:** `dig @127.0.0.1 uid0.ir SOA +norecurse` returned authoritative NOERROR and serial `2026111900`; unrelated `example.com` returned REFUSED; AXFR of `uid0.ir` returned REFUSED. These are read-only tests of the deployed service, not evidence that local uncommitted code was deployed.
+- **PostgreSQL backup/PITR drills:** `scripts/postgres_restore_drill.sh` on germ verified encrypted dump checksum, failed-dump cleanup, overwrite refusal, and restored `drill.invalid` in one second. `scripts/postgres_pitr_drill.sh` verified the physical base backup with `pg_verifybackup` and restored to a named point, retaining the pre-target row and excluding the post-target row. Both used isolated, network-disabled disposable PostgreSQL 16 containers on tmpfs. Code commits are `746c4f89a` and `d0a8eee58`; status documentation commit is `0341a909c`.
+- **Browser hardening/accessibility:** commits `dffbb3e01`, `3170df46d`, `eb75ba752`, and `6c758dc3a` provide CSP script blocking test, route error recovery, modal focus trap/restoration, and keyboard file input. Browser tests passed locally. Dependency policy fixes are in `e61dea001`; GitHub run `45344351797` passed validation, image build completion is not recorded in this ledger.
+- **Preserved user changes:** `.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown file, and `deploy/dns/.orphaned/` were already dirty/untracked. They have not been staged or discarded. The user removed `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` in the worktree; those deletions are preserved and are not staged.
+
+### Delivery state
+
+Current branch is `main`; remote is `origin`. Local HEAD `d0a8eee58` is one commit ahead of `origin/main` at `0341a909c` and has not been pushed. The bulk import implementation and its package lock changes are uncommitted. No secret, environment file, database, DNS zone state, or generated runtime artifact is staged. `task.md` is the only file to update for current status and delivery tracking.
+
+### Phase 0 completion worklist
+
+| Task | Status | Remaining implementation and verification |
+|---|---|---|
+| ARCH-002 | PARTIALLY COMPLETED | Implement durable outbox, retries, last-known-good state and acknowledgement semantics or explicitly scope the ADR acceptance criteria. Run failure/restart integration tests. |
+| ARCH-003 | PARTIALLY COMPLETED | Measure the selected transaction concurrency model with concurrent writes, rollback and contention; preserve results and test command here. |
+| ARCH-007 | BLOCKED | Existing tracked credentials require replacement values from their respective service owners. Remove real credentials from the repository after rotation, retain safe local example configuration, verify scanner and prevent future accidental tracking. No real replacement credentials have been issued during this execution. |
+
+### Phase 1 completion worklist
+
+Use the task-level status table in §19 as the canonical list of Phase 1 IDs and dependencies. Current test-server DNS smoke covers ordinary authoritative serving and refusal policy only. Signed transfers, IXFR interoperability, secondary NOTIFY refresh, listener/catalog/key readiness failures, high-concurrency pressure, external DNSSEC/delegation conformance, DoH3 client traffic, advanced record type round trips, and reload behavior under sustained writes remain incomplete or unverified. Continue Phase 1 only after implementing and running each relevant test. Do not begin Phase 2 until every Phase 0 and Phase 1 acceptance item is verified.

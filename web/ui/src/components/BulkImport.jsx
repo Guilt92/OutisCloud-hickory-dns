@@ -1,4 +1,5 @@
 import React from 'react'
+import { parse } from 'csv-parse/browser/esm/sync'
 import { apiErrorMessage } from '../api/errors'
 import { Upload } from 'lucide-react'
 import api from '../api/client'
@@ -9,16 +10,9 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
   const [file, setFile] = React.useState(null)
   const [loading, setLoading] = React.useState(false)
 
-  const parseCSV = (text) => {
-    const lines = text.trim().split(/\r?\n/)
-    const headers = lines[0].split(',').map(h=>h.trim())
-    return lines.slice(1).map(l => {
-      const cols = l.split(',').map(c=>c.trim())
-      const obj = {}
-      headers.forEach((h,i)=> obj[h]=cols[i])
-      return obj
-    })
-  }
+  const [preview, setPreview] = React.useState(null)
+  const [error, setError] = React.useState('')
+  const ready = preview?.endpoint === endpoint && preview.file === file
 
   // Normalise CSV/JSON rows into what POST /zones/{id}/import expects:
   // { records: [{ name, record_type, value, ttl?, priority? }] }
@@ -42,23 +36,32 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
     if (!file) return notify?.warning('Select a file')
     setLoading(true)
     try {
-      const text = await file.text()
-      let payload = null
-      if (file.type === 'application/json' || file.name.endsWith('.json')) payload = JSON.parse(text)
-      else payload = parseCSV(text)
-      const records = toRecords(payload)
-      if (records.length === 0) throw new Error('no records found in file')
-      const res = await api.post(endpoint, { records })
+      setError('')
+      if (!ready) {
+        if (file.size > 1024 * 1024) throw new Error('Select a file of 1 MiB or less.')
+        const text = await file.text()
+        const payload = file.type === 'application/json' || file.name.toLowerCase().endsWith('.json')
+          ? JSON.parse(text)
+          : parse(text, { columns: true, bom: true, trim: true, skip_empty_lines: true })
+        const records = toRecords(payload)
+        if (!records.length || records.length > 5000) throw new Error('Select between 1 and 5,000 records.')
+        const { data } = await api.post(endpoint, { records, dry_run: true })
+        if (data.dry_run !== true) throw new Error('Preview was not confirmed by the server.')
+        setPreview({ endpoint, file, records, count: data.would_import, skipped: data.skipped })
+        return
+      }
+      const res = await api.post(endpoint, { records: preview.records })
       const d = res.data || {}
       if (typeof d.imported === 'number') notify?.success(`Imported ${d.imported} record(s)` + (d.skipped ? `, skipped ${d.skipped} duplicate(s)` : ''))
       onComplete && onComplete()
       setFile(null)
     } catch (e) {
-      console.error(e)
+      setPreview(null)
       const d = e.response?.data
-      notify?.error('Import failed: ' + (d?.error === 'quota_exceeded' ? apiErrorMessage(e) : (d?.details || d?.error || e.message || '')))
+      setError(d?.errors?.map(row => `Record ${row.row + 1}: ${row.error?.message || row.error}`).join('\n') || (d?.error === 'quota_exceeded' ? apiErrorMessage(e) : d?.details || d?.error || e.message))
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   return (
@@ -66,11 +69,13 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
       <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer hover:text-ink px-3 py-1.5 rounded-[12px] hover:bg-ink/5 transition-colors border border-dashed border-line focus-within:ring-2 focus-within:ring-accent">
         <Upload className="w-4 h-4" />
         <span className="truncate max-w-[120px]">{file ? file.name : 'Choose file'}</span>
-        <input type="file" aria-label="Choose import file" accept={accept} disabled={loading} onChange={e=>{setFile(e.target.files[0]); e.target.value=''}} className="sr-only" />
+        <input type="file" aria-label="Choose import file" accept={accept} disabled={loading} onChange={e=>{setPreview(null); setError(''); setFile(e.target.files[0]); e.target.value=''}} className="sr-only" />
       </label>
       <button className="btn-sm btn-primary" onClick={submit} disabled={loading || !file}>
-        {loading ? 'Importing...' : 'Import'}
+        {loading ? 'Working…' : ready ? 'Import' : 'Preview import'}
       </button>
+      {ready && <span role="status">{preview.count} to import, {preview.skipped} duplicates</span>}
+      {error && <span role="alert" className="whitespace-pre-line">{error}</span>}
     </div>
   )
 }
