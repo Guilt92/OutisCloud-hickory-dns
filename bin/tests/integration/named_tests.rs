@@ -47,6 +47,44 @@ async fn test_example_toml_startup() {
 }
 
 #[tokio::test]
+async fn malformed_udp_packet_does_not_disrupt_authoritative_queries() {
+    let server = TestServer::start("example.toml");
+    let udp_port = server.ports.get_v4(Protocol::Udp).expect("no UDP port");
+    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind UDP client");
+    socket
+        .send_to(&[0, 1, 2], (Ipv4Addr::LOCALHOST, udp_port))
+        .await
+        .expect("send short DNS packet");
+    let mut response = [0u8; 512];
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            socket.recv(&mut response)
+        )
+        .await
+        .is_err(),
+        "packet without a DNS header must be dropped"
+    );
+
+    let tcp_port = server.ports.get_v4(Protocol::Tcp).expect("no TCP port");
+    let provider = TokioRuntimeProvider::new();
+    let (future, sender) = TcpClientStream::new(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, tcp_port)),
+        None,
+        None,
+        provider.clone(),
+    );
+    let stream = future
+        .await
+        .expect("DNS server stopped after malformed packet");
+    let (mut client, bg) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(bg);
+    query_a(&mut client).await;
+}
+
+#[tokio::test]
 async fn test_ipv4_only_toml_startup() {
     subscribe();
     let provider = TokioRuntimeProvider::new();
@@ -117,6 +155,13 @@ async fn test_ipv4_and_ipv6_toml_startup() {
 
     // ipv4 should succeed
     query_a(&mut client).await;
+
+    // Some containers have IPv6 disabled entirely. In that case the server's
+    // IPv6 listener cannot be exercised from this host; retain the IPv4 check.
+    if TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_err() {
+        eprintln!("IPv6 loopback unavailable; IPv6 query requires a dual-stack test host");
+        return;
+    }
 
     let tcp_port = server.ports.get_v6(Protocol::Tcp);
     let addr = SocketAddr::from((Ipv6Addr::LOCALHOST, tcp_port.expect("no tcp_port")));
