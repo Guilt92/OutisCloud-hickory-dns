@@ -26,9 +26,9 @@ controlApi:
   replicaCount: 1
   
   image:
-    registry: docker.io
-    repository: hickory-dns/control-api
-    tag: latest
+    registry: ghcr.io
+    repository: guilt92/outiscloud-hickory-dns-control-api
+    tag: main
     pullPolicy: IfNotPresent
   
   service:
@@ -74,9 +74,9 @@ ui:
   replicaCount: 2
   
   image:
-    registry: docker.io
-    repository: hickory-dns/ui
-    tag: latest
+    registry: ghcr.io
+    repository: guilt92/outiscloud-hickory-dns-ui
+    tag: main
     pullPolicy: IfNotPresent
   
   service:
@@ -137,9 +137,9 @@ dnsServer:
   replicaCount: 1
   
   image:
-    registry: docker.io
-    repository: hickory-dns/server
-    tag: latest
+    registry: ghcr.io
+    repository: guilt92/outiscloud-hickory-dns-dns-server
+    tag: main
     pullPolicy: IfNotPresent
   
   service:
