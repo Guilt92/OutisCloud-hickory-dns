@@ -1892,7 +1892,7 @@ Validation performed for this status update:
 | 11 | UX-001 | P1 | NEEDS VERIFICATION | Implemented: Existing a11y suite passes. Remaining: new metadata/reset UI not re-audited. Verification gap: New metadata and password-reset UI controls have not been re-audited. |
 | 11 | CUI-001 | P2 | PARTIALLY COMPLETED | Implemented: Customer dashboard exists. Remaining: onboarding/error polish pending. |
 | 11 | CUI-002 | P2 | PARTIALLY COMPLETED | Implemented: Analytics UX exists. Remaining: provenance/export/missing-data polish pending. |
-| 11 | CUI-003 | P1 | NEEDS VERIFICATION | Implemented: Existing WCAG checks pass; a route error boundary (`3170df46d`) now provides accessible retry/home actions, with a browser chunk-failure test. Remaining: focus trap/restoration, labels, chart alternatives, keyboard file upload, and a full WCAG audit. |
+| 11 | CUI-003 | P1 | NEEDS VERIFICATION | Implemented: Existing WCAG checks pass; a route error boundary (`3170df46d`) now provides accessible retry/home actions, with a browser chunk-failure test. The shared modal now traps Tab and restores focus (`eb75ba752`), verified in Chromium. Remaining: other dialogs, labels, chart alternatives, keyboard file upload, and a full WCAG audit. |
 | 11 | CUI-004 | P2 | PARTIALLY COMPLETED | Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass. |
 | 12 | OPS-001 | P0 | BLOCKED | Requires TLS reverse proxy, certificates and production topology decision. |
 | 12 | OPS-002 | P1 | BLOCKED | Requires Kubernetes/RWX storage and validated manifests. |
