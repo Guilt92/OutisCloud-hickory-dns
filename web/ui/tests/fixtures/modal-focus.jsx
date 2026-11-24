@@ -1,6 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import Modal from '../../src/components/Modal'
+import BulkImport from '../../src/components/BulkImport'
 
 function Harness() {
   const [open, setOpen] = React.useState(false)
@@ -10,6 +11,7 @@ function Harness() {
       <button>First action</button>
       <button>Last action</button>
     </Modal>
+    <BulkImport endpoint="/test/import" />
   </>
 }
 

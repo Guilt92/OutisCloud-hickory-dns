@@ -20,3 +20,14 @@ test('modal traps Tab and restores focus after Escape', async ({ page }) => {
   await expect(dialog).toBeHidden()
   await expect(opener).toBeFocused()
 })
+
+test('bulk import file picker can be reached and used by keyboard', async ({ page }) => {
+  await page.goto(`${process.env.OUTIS_TEST_VITE_URL || 'http://127.0.0.1:18082'}/tests/fixtures/modal-focus.html`)
+  await page.getByRole('button', { name: 'Open dialog' }).focus()
+  await page.keyboard.press('Tab')
+  const picker = page.getByLabel('Choose import file')
+  await expect(picker).toBeFocused()
+  await picker.setInputFiles({ name: 'zone.json', mimeType: 'application/json', buffer: Buffer.from('[]') })
+  await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeEnabled()
+  await expect(page.getByText('zone.json')).toBeVisible()
+})

@@ -63,10 +63,10 @@ export default function BulkImport({ endpoint, onComplete, accept='text/csv,appl
 
   return (
     <div className="flex items-center gap-2">
-      <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer hover:text-ink px-3 py-1.5 rounded-[12px] hover:bg-ink/5 transition-colors border border-dashed border-line">
+      <label className="flex items-center gap-1.5 text-sm text-muted cursor-pointer hover:text-ink px-3 py-1.5 rounded-[12px] hover:bg-ink/5 transition-colors border border-dashed border-line focus-within:ring-2 focus-within:ring-accent">
         <Upload className="w-4 h-4" />
         <span className="truncate max-w-[120px]">{file ? file.name : 'Choose file'}</span>
-        <input type="file" accept={accept} onChange={e=>{setFile(e.target.files[0]); e.target.value=''}} className="hidden" />
+        <input type="file" aria-label="Choose import file" accept={accept} disabled={loading} onChange={e=>{setFile(e.target.files[0]); e.target.value=''}} className="sr-only" />
       </label>
       <button className="btn-sm btn-primary" onClick={submit} disabled={loading || !file}>
         {loading ? 'Importing...' : 'Import'}
