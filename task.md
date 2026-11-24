@@ -1796,7 +1796,7 @@ Validation performed for this status update:
 | 2 | ZONE-004 | P2 | COMPLETED | Description/tags API, server-side `?tag=` filter with `X-Total-Count`, UI tag filter, and integration test. |
 | 2 | ZONE-005 | P0 | COMPLETED | TXT and NS-delegation verification (`method=txt|ns`), rate limits/retries, fail-safe pending state, and `verified_via` evidence. |
 | 2 | ZONE-006 | P1 | COMPLETED | active/held/suspended/archived lifecycle with hold reason/until, archived write blocking, serving effects, audit and integration tests. |
-| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Implemented: Revision diff endpoint and UI exist. Remaining: full snapshots, retention config and failure visibility pending. |
+| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Revision diff endpoint/UI exist. `ZONE_REVISION_RETENTION` now bounds pruning (1–1000, default 50), snapshot failures increment `outis_zone_snapshot_failures_total`, and isolated PostgreSQL retention/diff tests pass. Full zone-setting snapshots, rollback coverage and caller-visible snapshot failure behavior remain. |
 | 2 | REC-001 | P2 | COMPLETED | Comment/tags columns, tenant-safe metadata API, list payload, and record editor dialog with integration-test coverage. |
 | 2 | REC-002 | P0 | COMPLETED | Publish-failure rollback API tests pass. |
 | 2 | REC-003 | P1 | COMPLETED | `PUT /api/v1/zones/{id}/rrsets` applies an all-or-nothing RRset batch with validation, audit and rollback. |

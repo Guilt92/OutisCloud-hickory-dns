@@ -5,8 +5,11 @@
 **Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 49, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 1 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
 
 **OPS-003 — CI/CD (P0): PARTIALLY COMPLETED.** Repaired per-image GHCR tag generation, added a DNS image build, normalized repository image names, granted package-write permission, and added Helm rendering in `.github/workflows/ci-cd.yml`. Local YAML reference checks and Helm render pass. GitHub Actions API reports `CI/CD Pipeline` and `CI` are `disabled_manually`; the available SSH Git remote does not provide a GitHub API token, and `GH_TOKEN`/`GITHUB_TOKEN` are unset. Enable those workflows in repository settings (or provide an API token with Actions workflow permissions), then require passing DB/UI/DNS/security/Helm gates before calling OPS-003 complete. The active Docker Hub image workflow is separate.
+**Active image delivery:** GitHub Actions run `45341283543` for commit `be40b3196` completed successfully; its control API, DNS server, and UI build/push steps all succeeded. This verifies the active Docker Hub path, not the manually disabled CI/CD gates or the newest local changes.
 
 **CORE-008 — DNS conformance (P1): PARTIALLY COMPLETED.** Added `malformed_udp_packet_does_not_disrupt_authoritative_queries` in `bin/tests/integration/named_tests.rs`; it passed and confirms a headerless packet is dropped without disrupting a normal query. The existing dual-stack test initially failed locally with `EADDRNOTAVAIL` because `::1` is unavailable; it now reports that limit and keeps its IPv4 assertion. Both targeted tests pass, but IPv6 behavior of the new code has not been exercised on a dual-stack host. `germ` has IPv6 loopback, but no new binary was deployed there. Unified external conformance remains.
+
+**ZONE-007 — Revision history (P1): PARTIALLY COMPLETED.** Added bounded `ZONE_REVISION_RETENTION` (1–1000, default 50) in `crates/control_api/src/ext.rs` and `outis_zone_snapshot_failures_total` in `crates/control_api/src/metrics.rs`. `docs/OPERATIONS.md` documents the setting. The parser and metric tests passed, and disposable PostgreSQL 16 tests passed for pruning to two snapshots and for revision diff. Full snapshots of zone settings, rollback coverage, and API-visible failure status remain. Commit `dfac6ec2bf96aa99b3bbd5fe211f994b52b574ab`.
 
 **CORE-007 — Forwarder cache (P2): COMPLETED.** The default remains configurable at 512 and `docs/FORWARDING.md` states the authoritative/forwarding boundary. Added a deterministic miss → hit with decremented TTL → expiry regression in `crates/resolver/src/cache.rs`; existing caching-client tests exercise upstream fallback and cache reuse. `cargo test -p hickory-resolver --lib` passed 79/79 (3 ignored). This does not make the authoritative service recursive by default.
 
@@ -564,7 +567,7 @@ Validation performed for this status update:
 | 2 | ZONE-004 | P2 | PARTIALLY COMPLETED | Implemented: Zone description/tags API and UI exist. Remaining: server-side tag filter pending. |
 | 2 | ZONE-005 | P0 | PARTIALLY COMPLETED | Implemented: TXT verification hardened with retry/rate limits. Remaining: NS-delegation proof pending. |
 | 2 | ZONE-006 | P1 | PARTIALLY COMPLETED | Implemented: Active/suspended lifecycle implemented. Remaining: hold/archive semantics pending. |
-| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Implemented: Revision diff endpoint and UI exist. Remaining: full snapshots, retention config and failure visibility pending. |
+| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Configurable bounded retention and snapshot-failure metric implemented; isolated PostgreSQL pruning/diff tests pass. Full zone-setting snapshots, rollback and API-visible failure status remain. |
 | 2 | REC-001 | P2 | PARTIALLY COMPLETED | Implemented: Record comment/tags columns and API exist. Remaining: editor integration pending. |
 | 2 | REC-002 | P0 | COMPLETED | Publish-failure rollback API tests pass. |
 | 2 | REC-003 | P1 | NOT STARTED | No batch/RRset mutation endpoint. |
