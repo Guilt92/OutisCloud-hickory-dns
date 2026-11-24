@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import Layout from './components/Layout';
+import RouteErrorBoundary from './components/RouteErrorBoundary';
 import { useAuthStore } from './store';
 import { Outlet } from 'react-router-dom';
 
@@ -79,63 +80,65 @@ export default function App() {
 
   return (
     <Layout>
-      <Suspense fallback={<LoadingScreen />}>
-        <Routes>
-          <Route path="/login" element={<Login />} />
+      <RouteErrorBoundary>
+        <Suspense fallback={<LoadingScreen />}>
+          <Routes>
+            <Route path="/login" element={<Login />} />
 
-          <Route
-            path="/admin/*"
-            element={
-              <ProtectedRoute requireAdmin>
-                <Outlet />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<AdminDashboard />} />
-            <Route path="zones" element={<AdminZones />} />
-            <Route path="zones/:id/records" element={<Records />} />
-            <Route path="dns-lookup" element={<AdminDnsLookup />} />
-            <Route path="users" element={<AdminUsers />} />
-            <Route path="servers" element={<AdminServers />} />
-            <Route path="nameservers" element={<AdminNameservers />} />
-            <Route path="agents" element={<AdminAgents />} />
-            <Route path="georules" element={<AdminGeoRules />} />
-            <Route path="metrics" element={<AdminAnalytics />} />
-            <Route path="tenants" element={<AdminTenants />} />
-            <Route path="audit" element={<AdminAuditLogs />} />
-            <Route path="config" element={<AdminConfigPush />} />
-            <Route path="settings" element={<AdminSettings />} />
-          </Route>
+            <Route
+              path="/admin/*"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <Outlet />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<AdminDashboard />} />
+              <Route path="zones" element={<AdminZones />} />
+              <Route path="zones/:id/records" element={<Records />} />
+              <Route path="dns-lookup" element={<AdminDnsLookup />} />
+              <Route path="users" element={<AdminUsers />} />
+              <Route path="servers" element={<AdminServers />} />
+              <Route path="nameservers" element={<AdminNameservers />} />
+              <Route path="agents" element={<AdminAgents />} />
+              <Route path="georules" element={<AdminGeoRules />} />
+              <Route path="metrics" element={<AdminAnalytics />} />
+              <Route path="tenants" element={<AdminTenants />} />
+              <Route path="audit" element={<AdminAuditLogs />} />
+              <Route path="config" element={<AdminConfigPush />} />
+              <Route path="settings" element={<AdminSettings />} />
+            </Route>
 
-          <Route
-            path="/user/*"
-            element={
-              <ProtectedRoute>
-                <Outlet />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<UserDashboard />} />
-            <Route path="zones" element={<AdminZones />} />
-            <Route path="zones/:id/records" element={<Records />} />
-            <Route path="dns-lookup" element={<AdminDnsLookup />} />
-            <Route path="settings" element={<UserSettings />} />
-            <Route path="analytics" element={<UserAnalytics />} />
-            <Route path="help" element={<Help />} />
-          </Route>
+            <Route
+              path="/user/*"
+              element={
+                <ProtectedRoute>
+                  <Outlet />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<UserDashboard />} />
+              <Route path="zones" element={<AdminZones />} />
+              <Route path="zones/:id/records" element={<Records />} />
+              <Route path="dns-lookup" element={<AdminDnsLookup />} />
+              <Route path="settings" element={<UserSettings />} />
+              <Route path="analytics" element={<UserAnalytics />} />
+              <Route path="help" element={<Help />} />
+            </Route>
 
-          <Route
-            path="/"
-            element={
-              isAuthenticated
-                ? <Navigate to={user?.role === 'admin' ? '/admin' : '/user'} replace />
-                : <Navigate to="/login" replace />
-            }
-          />
+            <Route
+              path="/"
+              element={
+                isAuthenticated
+                  ? <Navigate to={user?.role === 'admin' ? '/admin' : '/user'} replace />
+                  : <Navigate to="/login" replace />
+              }
+            />
 
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Suspense>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </RouteErrorBoundary>
     </Layout>
   );
 }
