@@ -1968,6 +1968,14 @@ Current branch is `main`; remote is `origin`. Local HEAD `d0a8eee58` is one comm
 | ARCH-003 | PARTIALLY COMPLETED | Measure the selected transaction concurrency model with concurrent writes, rollback and contention; preserve results and test command here. |
 | ARCH-007 | BLOCKED | Existing tracked credentials require replacement values from their respective service owners. Remove real credentials from the repository after rotation, retain safe local example configuration, verify scanner and prevent future accidental tracking. No real replacement credentials have been issued during this execution. |
 
+### ARCH-002 implementation update — 2026-11-25
+
+**Status: PARTIALLY COMPLETED.** Added `publication_outbox` with one idempotent job per zone, pending/failed state, attempt count, due timestamp and last error. On a zone publication failure, the API persists a retry job. A background worker claims due jobs with `FOR UPDATE SKIP LOCKED`, regenerates from the currently committed database state, acknowledges successful publications by deleting the job, and uses exponential backoff capped at 256 seconds. After ten attempts, the job is marked failed and remains visible for operator recovery. Since jobs contain only the zone domain and the worker reads current committed state, an update that was rolled back cannot be published by a stale retry payload. Existing callers retain synchronous publication behavior.
+
+Files: `crates/control_api/src/main.rs`, `crates/control_api/migrations/007_publication_outbox.sql`.
+
+Executed: `cargo fmt --all -- --check` passed; `git diff --check` passed; `cargo test -p control_api --bin control_api publication_retry_tests -- --test-threads=1` passed 2/2. Tests assert the exponential delay cap and that durable jobs carry a zone key rather than proposed record values. Not yet verified: database-backed enqueue/claim/restart/rollback integration test, migration against a fresh and upgraded PostgreSQL schema on germ, worker behavior under concurrent API writes, and last-known-good file preservation during an actual failed publish. Do not mark ARCH-002 complete until those tests pass.
+
 ### Phase 1 completion worklist
 
 Use the task-level status table in §19 as the canonical list of Phase 1 IDs and dependencies. Current test-server DNS smoke covers ordinary authoritative serving and refusal policy only. Signed transfers, IXFR interoperability, secondary NOTIFY refresh, listener/catalog/key readiness failures, high-concurrency pressure, external DNSSEC/delegation conformance, DoH3 client traffic, advanced record type round trips, and reload behavior under sustained writes remain incomplete or unverified. Continue Phase 1 only after implementing and running each relevant test. Do not begin Phase 2 until every Phase 0 and Phase 1 acceptance item is verified.

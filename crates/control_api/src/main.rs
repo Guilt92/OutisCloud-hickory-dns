@@ -457,6 +457,25 @@ async fn publish(
     db: &Arc<Pool>,
     zone_domain: Option<&str>,
 ) -> Result<(), String> {
+    let result = publish_current(dns, db, zone_domain).await;
+    if let Err(error) = &result {
+        if let Some(domain) = zone_domain {
+            if let Err(queue_error) = db.execute(
+                "INSERT INTO publication_outbox(zone_domain, attempts, next_attempt, last_error) VALUES($1,0,now(),$2) ON CONFLICT(zone_domain) DO UPDATE SET attempts=0,next_attempt=now(),last_error=EXCLUDED.last_error,updated_at=now()",
+                &[&domain, error],
+            ).await {
+                warn!("unable to persist publication retry for {}: {}", domain, queue_error);
+            }
+        }
+    }
+    result
+}
+
+async fn publish_current(
+    dns: &DnsManager,
+    db: &Arc<Pool>,
+    zone_domain: Option<&str>,
+) -> Result<(), String> {
     match dns.regenerate_zones(db.clone()).await {
         Err(e) => Err(e.to_string()),
         Ok(report) => {
@@ -482,6 +501,67 @@ async fn publish(
             }
             Ok(())
         }
+    }
+}
+
+async fn publication_retry_worker(dns: Arc<DnsManager>, db: Arc<Pool>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let due = match db.query(
+            "WITH due AS (SELECT zone_domain FROM publication_outbox WHERE status='pending' AND next_attempt <= now() ORDER BY next_attempt FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE publication_outbox o SET attempts=o.attempts+1,status=CASE WHEN o.attempts >= 9 THEN 'failed' ELSE 'pending' END,next_attempt=now()+LEAST(300, power(2, LEAST(o.attempts,8))::int)*interval '1 second',updated_at=now() FROM due WHERE o.zone_domain=due.zone_domain RETURNING o.zone_domain,o.attempts",
+            &[],
+        ).await {
+            Ok(rows) => rows.into_iter().next(),
+            Err(error) => { warn!("publication retry poll failed: {}", error); continue; }
+        };
+        let Some(due) = due else {
+            continue;
+        };
+        let domain: String = due.get(0);
+        let attempts: i32 = due.get(1);
+        match publish_current(&dns, &db, Some(&domain)).await {
+            Ok(()) => {
+                if let Err(error) = db
+                    .execute(
+                        "DELETE FROM publication_outbox WHERE zone_domain=$1",
+                        &[&domain],
+                    )
+                    .await
+                {
+                    warn!(
+                        "published {} but could not acknowledge retry job: {}",
+                        domain, error
+                    );
+                }
+            }
+            Err(error) => {
+                warn!(
+                    "publication retry {} for {} failed: {}",
+                    attempts, domain, error
+                );
+                let _ = db.execute("UPDATE publication_outbox SET last_error=$2,updated_at=now() WHERE zone_domain=$1", &[&domain, &error]).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_retry_tests {
+    #[test]
+    fn retry_delay_is_exponential_and_bounded() {
+        let delays: Vec<i32> = (0..12).map(|attempt| 2_i32.pow(attempt.min(8))).collect();
+        assert_eq!(&delays[..5], &[1, 2, 4, 8, 16]);
+        assert!(delays.iter().all(|delay| *delay <= 256));
+        assert_eq!(delays[8], delays[11]);
+    }
+
+    #[test]
+    fn retry_jobs_address_committed_zone_state_not_mutation_payloads() {
+        let migration = include_str!("../migrations/007_publication_outbox.sql");
+        assert!(migration.contains("zone_domain TEXT PRIMARY KEY"));
+        assert!(!migration.contains("record_value"));
+        assert!(migration.contains("next_attempt"));
+        assert!(migration.contains("last_error"));
     }
 }
 
@@ -1230,6 +1310,21 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
              updated_at TIMESTAMPTZ DEFAULT now()
          );
          INSERT INTO publish_state (id) VALUES (1) ON CONFLICT DO NOTHING;",
+        )
+        .await?;
+    client
+        .batch_execute(
+            "CREATE TABLE IF NOT EXISTS publication_outbox (
+            zone_domain TEXT PRIMARY KEY,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','failed')),
+            next_attempt TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_error TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        ALTER TABLE publication_outbox ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+        CREATE INDEX IF NOT EXISTS idx_publication_outbox_due ON publication_outbox(next_attempt);",
         )
         .await?;
 
@@ -7548,6 +7643,10 @@ async fn main() -> std::io::Result<()> {
     automation::spawn_job_worker(app_state.clone());
     automation::spawn_webhook_worker(app_state.db.clone());
     health::spawn_health_worker(app_state.db.clone());
+    tokio::spawn(publication_retry_worker(
+        app_state.dns_manager.clone(),
+        app_state.db.clone(),
+    ));
 
     // Load GeoIP DB if provided
     let geo_db = std::env::var("GEOIP_DB_PATH").ok().and_then(|p| {
