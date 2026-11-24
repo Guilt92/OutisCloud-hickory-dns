@@ -630,6 +630,28 @@ mod tests {
     }
 
     #[test]
+    fn response_cache_miss_hit_and_expiry() {
+        let now = Instant::now();
+        let name = Name::from_str("cache.example.").unwrap();
+        let query = Query::query(name.clone(), RecordType::A);
+        let cache = ResponseCache::new(512, TtlConfig::default());
+        assert!(cache.get(&query, now).is_none(), "uncached query must miss");
+
+        let mut response = Message::response(1, OpCode::Query);
+        response.add_answer(Record::from_rdata(name, 5, RData::A(A::new(192, 0, 2, 1))));
+        cache.insert(query.clone(), Ok(response), now);
+        let hit = cache
+            .get(&query, now + Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(hit.answers()[0].ttl(), 3);
+        assert!(
+            cache.get(&query, now + Duration::from_secs(6)).is_none(),
+            "expired response must miss"
+        );
+    }
+
+    #[test]
     fn test_insert_negative() {
         subscribe();
         let now = Instant::now();
