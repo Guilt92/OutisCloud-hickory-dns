@@ -4,7 +4,7 @@
 > **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. Secure cookies, token storage, and browser XSS/CSP checks remain, so the task is PARTIALLY COMPLETED.
 > **germ read-only DNS validation:** Independent `dig` queries for the hosted `uid0.ir` SOA returned authoritative NOERROR over UDP and TCP with matching serial `2026111900`; a TCP AXFR request was REFUSED. No local change was deployed to germ.
 > **Helm packaging progress:** The chart now renders control API, DNS server, and UI Deployments/Services/Ingress with shared pre-provisioned RWX zone storage, DNS health/readiness probes, generated ConfigMaps, and a release-specific UI proxy. Helm lint/render and rendered-resource checks pass. CORE-004 and OPS-002 remain PARTIALLY COMPLETED until cluster-level probe, RWX, Secret, image, and rollout validation succeeds; agent/DB templates are not included.
-> **Current corrected counts:** 35 COMPLETED, 48 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 26.3% completed). Earlier phase count tables are historical.
+> **Current corrected counts:** 34 COMPLETED, 49 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
 
 > **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
 
@@ -1896,7 +1896,7 @@ Validation performed for this status update:
 | 11 | CUI-004 | P2 | PARTIALLY COMPLETED | Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass. |
 | 12 | OPS-001 | P0 | BLOCKED | Requires TLS reverse proxy, certificates and production topology decision. |
 | 12 | OPS-002 | P1 | BLOCKED | Requires Kubernetes/RWX storage and validated manifests. |
-| 12 | OPS-003 | P0 | COMPLETED | CI repaired: valid toolchain actions, Postgres service + `TEST_DATABASE_URL`, workspace clippy/tests, UI build/route contract, Docker contexts, audit/deny gates. |
+| 12 | OPS-003 | P0 | PARTIALLY COMPLETED | CI workflow contains Postgres, test and build gates; per-image GHCR tags and missing DNS image build were repaired. GitHub reports CI and CI/CD workflows `disabled_manually`, so these gates do not execute. The separate active Docker Hub image workflow is running; a full required-gate run remains. |
 | 12 | OPS-004 | P1 | COMPLETED | Prometheus/Alertmanager/Grafana configs plus incident, rollback, certificate, GeoIP and failover runbooks. |
 | 12 | OPS-005 | P1 | COMPLETED | `docs/runbooks/` covers incident response, rollback, certificate lifecycle, GeoIP and failover/recovery. |
 | 12 | OPS-006 | P1 | PARTIALLY COMPLETED | GeoIP atomic refresh + certificate expiry checker (`scripts/check_certs.sh`) and lifecycle runbook. Remaining: ACME issuance automation is deployment-specific. |

@@ -2,7 +2,7 @@
 
 ## A. Executive summary
 
-Roadmap: 133 tasks. Completed: 35; partially completed: 48; needs verification: 9; blocked: 40; not started: 1. Completion: 26.3%.
+Roadmap: 133 tasks. Completed: 34; partially completed: 49; needs verification: 9; blocked: 40; not started: 1. Completion: 25.6%.
 
 The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log controls and CORE-007 cache tests, fix ZONE-003 clone target rewriting, and add a CSP for SEC-005. Other roadmap gaps remain.
 
@@ -40,7 +40,6 @@ The following items are reported completed in the current roadmap matrix. The te
 - **API-006 (P2, phase 7):** Durable jobs with progress/cancel/retention, bulk import endpoint, recovery worker and integration test.
 - **API-010 (P1, phase 7):** Route-contract check runs in CI, schema-drift test runs against PostgreSQL in CI, and both are part of the documented validation command set.
 - **ADM-002 (P0, phase 11):** Clone dialog, lifecycle (active/held/suspended/archived) controls, tag filtering and metadata editing surfaced in the zone console.
-- **OPS-003 (P0, phase 12):** CI repaired: valid toolchain actions, Postgres service + `TEST_DATABASE_URL`, workspace clippy/tests, UI build/route contract, Docker contexts, audit/deny gates.
 - **OPS-004 (P1, phase 12):** Prometheus/Alertmanager/Grafana configs plus incident, rollback, certificate, GeoIP and failover runbooks.
 - **OPS-005 (P1, phase 12):** `docs/runbooks/` covers incident response, rollback, certificate lifecycle, GeoIP and failover/recovery.
 
@@ -146,6 +145,7 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **CUI-003 (P1, phase 11; NEEDS VERIFICATION):** Implemented: Existing WCAG checks pass. Remaining: new controls need another audit. Verification gap: New customer-facing controls have not been re-audited.
 - **CUI-004 (P2, phase 11; PARTIALLY COMPLETED):** Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass.
 - **OPS-001 (P0, phase 12; BLOCKED):** Requires TLS reverse proxy, certificates and production topology decision.
+- **OPS-003 (P0, phase 12; PARTIALLY COMPLETED):** CI/CD workflow includes DB/UI/DNS/security gates, and per-image GHCR tags plus DNS image build were repaired. GitHub reports CI and CI/CD workflows `disabled_manually`, so required gates have not run. Enable both workflows with repository Actions permissions, run them on this branch, and require passing results. Active Docker Hub image workflow is separate.
 - **OPS-002 (P1, phase 12; PARTIALLY COMPLETED):** Helm now renders API/DNS/UI Deployments and Services, Ingress, ConfigMaps, shared pre-provisioned RWX zone claim mounts, and DNS readiness/liveness probes. Lint/render and structural checks pass. Agent/DB templates, external Secret/images/RWX claim, and cluster rollout validation remain.
 - **OPS-006 (P1, phase 12; PARTIALLY COMPLETED):** GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent.
 - **OPS-007 (P2, phase 12; PARTIALLY COMPLETED):** Added static status-page generator, CycloneDX SBOM script, signed release checksums/provenance workflow and redacted diagnostics bundle. Remaining: publish SBOM/provenance to a public transparency log.
@@ -153,7 +153,7 @@ Each entry gives the current status and the specific remaining gap recorded in t
 
 ## D. Blockers
 
-The blocked entries in section C identify the missing dependency or decision. Secret rotation requires replacement credentials and a coordinated window; DNSSEC key custody requires a KMS/HSM design; multi-host replication requires topology and infrastructure; PITR requires backup storage and an isolated restore drill. Some legacy BLOCKED labels describe engineering work that can proceed locally and should be reassessed rather than treated as an approval gate. No destructive server action was taken.
+The blocked entries in section C identify the missing dependency or decision. OPS-003 is partial because the required GitHub workflows are manually disabled; no GitHub API token is available in this environment to enable them. An owner must enable CI and CI/CD in repository settings or provide a scoped Actions token, then verify required runs. Secret rotation requires replacement credentials and a coordinated window; DNSSEC key custody requires a KMS/HSM design; multi-host replication requires topology and infrastructure; PITR requires backup storage and an isolated restore drill. Some legacy BLOCKED labels describe engineering work that can proceed locally and should be reassessed rather than treated as an approval gate. No destructive server action was taken.
 
 ## E. Testing and validation
 
@@ -173,6 +173,8 @@ The blocked entries in section C identify the missing dependency or decision. Se
 | `/tmp/linux-amd64/helm lint helm/hickory-dns` | Local | Chart lints | 1 chart, 0 failures; icon recommendation only | PASS |
 | `/tmp/linux-amd64/helm template outis helm/hickory-dns` with full and disabled-component values, then YAML structural assertions | Local | Valid resources, references, selectors, shared claim, DNS probes and UI proxy | 16 full resources; 8 minimal resources; assertions passed | PASS |
 | `nginx -t` against rendered UI ConfigMap in disposable Nginx container | Local | Generated UI proxy config valid | Syntax OK | PASS |
+| Python YAML inspection of `.github/workflows/ci-cd.yml` | Local | Four image builds use matching metadata outputs | API, DNS, agent and UI references matched | PASS |
+| GitHub Actions workflows API query for the repository | GitHub | Required workflows active and runnable | CI and CI/CD reported `disabled_manually`; active Docker Hub image workflow separate | REQUIRED GATE NOT RUN |
 | `python3 scripts/docs_check.py` | Local | Documentation consistency check completes | Completed; four existing broken-link warnings | PASS WITH WARNINGS |
 | `cargo fmt --all -- --check` | Local | Formatting clean | Exit 0 | PASS |
 | `docker run --rm --add-host control-api:127.0.0.1 -v web/ui/nginx.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t` | Disposable local Nginx | Configuration accepted | Syntax OK | PASS |
@@ -194,4 +196,4 @@ Implemented and locally tested: the strengthened API method/path contract, DNS q
 
 ## G. Git delivery
 
-Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`, CORE-007 cache regression is in `7d3d980d9976c5215d791f41f357693f8b9d6c06`, and chart implementation is in `36d52bd06d0fd76dfe9bae7f73c1d2bf275693c3`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
+Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`, CORE-007 cache regression is in `7d3d980d9976c5215d791f41f357693f8b9d6c06`, chart implementation is in `36d52bd06d0fd76dfe9bae7f73c1d2bf275693c3`, and CI image-tag/DNS-build repair is in `ce8c471549ef12636dce4ddc28c2016843a62f99`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.

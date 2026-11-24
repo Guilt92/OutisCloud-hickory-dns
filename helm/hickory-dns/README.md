@@ -13,9 +13,10 @@ Before installation, provide:
    keys. The database URL must point to an externally managed PostgreSQL
    instance. Do not put secret values in a Helm values file or commit them.
 3. Working image references for `controlApi.image`, `dnsServer.image`, and
-   `ui.image`. The defaults target the repository's GHCR `main` tags; verify
-   that CI published them and pin immutable digest or commit tags in your
-   deployment profile.
+   `ui.image`. The defaults target images from the active Docker Hub workflow;
+   verify that CI published them and pin immutable digests or commit tags in
+   your deployment profile. The separate GHCR CI/CD workflow is currently
+   disabled in repository settings.
 4. DNS Service type and external DNS delegation appropriate to the test
    environment. The chart does not change delegation or issue certificates.
 

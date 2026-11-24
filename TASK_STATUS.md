@@ -2,7 +2,9 @@
 
 ## 2026-11-24 execution update
 
-**Authoritative counts after these changes:** 133 tasks; COMPLETED 35, PARTIALLY COMPLETED 48, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 1 (26.3% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 49, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 1 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+
+**OPS-003 — CI/CD (P0): PARTIALLY COMPLETED.** Repaired per-image GHCR tag generation, added a DNS image build, normalized repository image names, granted package-write permission, and added Helm rendering in `.github/workflows/ci-cd.yml`. Local YAML reference checks and Helm render pass. GitHub Actions API reports `CI/CD Pipeline` and `CI` are `disabled_manually`; the available SSH Git remote does not provide a GitHub API token, and `GH_TOKEN`/`GITHUB_TOKEN` are unset. Enable those workflows in repository settings (or provide an API token with Actions workflow permissions), then require passing DB/UI/DNS/security/Helm gates before calling OPS-003 complete. The active Docker Hub image workflow is separate.
 
 **CORE-007 — Forwarder cache (P2): COMPLETED.** The default remains configurable at 512 and `docs/FORWARDING.md` states the authoritative/forwarding boundary. Added a deterministic miss → hit with decremented TTL → expiry regression in `crates/resolver/src/cache.rs`; existing caching-client tests exercise upstream fallback and cache reuse. `cargo test -p hickory-resolver --lib` passed 79/79 (3 ignored). This does not make the authoritative service recursive by default.
 
