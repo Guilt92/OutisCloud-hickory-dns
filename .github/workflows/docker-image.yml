@@ -5,8 +5,71 @@ on:
     branches: ["main"]
 
 jobs:
+  validate:
+    name: Test before publishing images
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: hickory_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hickory_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test-only-password@127.0.0.1:5432/hickory_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Control API tests with PostgreSQL
+        run: cargo test -p control_api --bin control_api -- --test-threads=1
+      - name: DNS server and resolver tests
+        run: |
+          cargo test -p hickory-server --lib
+          cargo test -p hickory-resolver --lib
+          cargo test -p hickory-dns --test integration malformed_udp_packet_does_not_disrupt_authoritative_queries
+          cargo test -p hickory-dns --test integration test_health_and_ready_endpoints
+      - name: UI install, lint, route contract and build
+        run: |
+          npm --prefix web/ui ci --legacy-peer-deps
+          npm --prefix web/ui run lint
+          npm --prefix web/ui run test:routes
+          npm --prefix web/ui run build
+      - name: Helm lint and render
+        run: |
+          helm lint helm/hickory-dns
+          helm template outis helm/hickory-dns --namespace hickory-dns >/tmp/outis-chart.yaml
+      - name: Documentation consistency
+        run: python3 scripts/docs_check.py
+      - name: Dependency and license policy
+        run: |
+          cargo audit
+          cargo deny check
+
   build:
     runs-on: ubuntu-latest
+    needs: [validate]
 
     steps:
       - name: Checkout Repository
