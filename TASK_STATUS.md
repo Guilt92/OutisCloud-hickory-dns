@@ -2,7 +2,9 @@
 
 ## 2026-11-24 execution update
 
-**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 49, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 1 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+**Authoritative counts after these changes:** 133 tasks; COMPLETED 35, PARTIALLY COMPLETED 48, NEEDS VERIFICATION 9, BLOCKED 40, NOT STARTED 1 (26.3% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+
+**CORE-007 — Forwarder cache (P2): COMPLETED.** The default remains configurable at 512 and `docs/FORWARDING.md` states the authoritative/forwarding boundary. Added a deterministic miss → hit with decremented TTL → expiry regression in `crates/resolver/src/cache.rs`; existing caching-client tests exercise upstream fallback and cache reuse. `cargo test -p hickory-resolver --lib` passed 79/79 (3 ignored). This does not make the authoritative service recursive by default.
 
 **CORE-006 — Query logging and PII (P1): COMPLETED.** Added `off`/`info`/`debug` query-log levels and `DNS_QUERY_LOG_SAMPLE_EVERY` to `crates/server/src/server/mod.rs`. DEBUG query names and refused/malformed client addresses now use the redaction setting. `docs/OPERATIONS.md` documents the controls. Two focused server tests pass; format and diff checks pass. No live DNS process was restarted.
 
@@ -543,7 +545,7 @@ Validation performed for this status update:
 | 1 | CORE-004 | P0 | COMPLETED | DNS /health and /ready integration test passes. |
 | 1 | CORE-005 | P1 | NEEDS VERIFICATION | Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run. |
 | 1 | CORE-006 | P1 | COMPLETED | PII redaction unit test passes. |
-| 1 | CORE-007 | P2 | PARTIALLY COMPLETED | Implemented: Resolver cache default raised and boundary documented. Remaining: cache-hit/miss/expiry suite not extended. |
+| 1 | CORE-007 | P2 | COMPLETED | Configurable 512-entry default and forwarding boundary documented; cache miss/hit/TTL-expiry and caching-client tests pass in resolver library suite (79 passed, 3 ignored). |
 | 1 | CORE-008 | P1 | PARTIALLY COMPLETED | Implemented: Existing dig/delv/conformance labs. Remaining: dual-stack and malformed-packet cases not unified. |
 | 1 | CORE-009 | P2 | PARTIALLY COMPLETED | Implemented: Forwarding/recursion boundary documented. Remaining: trust-anchor and hardening work pending. |
 | 1 | CORE-010 | P1 | NEEDS VERIFICATION | Implemented: H3 features, CLI/config and listener wired. Remaining: no H3 client integration test. Verification gap: DoH3 client integration test was not run. |

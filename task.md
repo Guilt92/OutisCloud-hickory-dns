@@ -3,7 +3,7 @@
 > **Further execution evidence, 2026-11-24:** CORE-006 query logging now supports level and sampling controls and redacts DEBUG/error paths; focused tests pass. ZONE-003 clone rewriting preserves TXT text while rewriting zone-local DNS targets; a unit test and isolated PostgreSQL clone integration test pass. ZONE-003 remains partial because built-in templates and NS/DNSSEC clone acceptance tests are absent. See the current entries in §20 and `TASK_STATUS.md`.
 > **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. Secure cookies, token storage, and browser XSS/CSP checks remain, so the task is PARTIALLY COMPLETED.
 > **germ read-only DNS validation:** Independent `dig` queries for the hosted `uid0.ir` SOA returned authoritative NOERROR over UDP and TCP with matching serial `2026111900`; a TCP AXFR request was REFUSED. No local change was deployed to germ.
-> **Current corrected counts:** 34 COMPLETED, 49 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
+> **Current corrected counts:** 35 COMPLETED, 48 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 26.3% completed). Earlier phase count tables are historical.
 
 > **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
 
@@ -1782,7 +1782,7 @@ Validation performed for this status update:
 | 1 | CORE-004 | P0 | COMPLETED | DNS /health and /ready integration test passes. |
 | 1 | CORE-005 | P1 | NEEDS VERIFICATION | Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run. |
 | 1 | CORE-006 | P1 | COMPLETED | PII redaction unit test passes. |
-| 1 | CORE-007 | P2 | PARTIALLY COMPLETED | Implemented: Resolver cache default raised and boundary documented. Remaining: cache-hit/miss/expiry suite not extended. |
+| 1 | CORE-007 | P2 | COMPLETED | Forwarder cache default is configurable and 512; docs/FORWARDING.md states the product boundary. Cache miss/hit/expiry and caching-client tests pass in the 79/79 resolver library suite (3 ignored). |
 | 1 | CORE-008 | P1 | PARTIALLY COMPLETED | Implemented: Existing dig/delv/conformance labs. Remaining: dual-stack and malformed-packet cases not unified. |
 | 1 | CORE-009 | P2 | PARTIALLY COMPLETED | Implemented: Forwarding/recursion boundary documented. Remaining: trust-anchor and hardening work pending. |
 | 1 | CORE-010 | P1 | NEEDS VERIFICATION | Implemented: H3 features, CLI/config and listener wired. Remaining: no H3 client integration test. Verification gap: DoH3 client integration test was not run. |

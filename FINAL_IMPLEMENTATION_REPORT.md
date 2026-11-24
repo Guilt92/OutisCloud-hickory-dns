@@ -2,9 +2,9 @@
 
 ## A. Executive summary
 
-Roadmap: 133 tasks. Completed: 34; partially completed: 49; needs verification: 9; blocked: 40; not started: 1. Completion: 25.6%.
+Roadmap: 133 tasks. Completed: 35; partially completed: 48; needs verification: 9; blocked: 40; not started: 1. Completion: 26.3%.
 
-The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log level, sampling and redaction controls and fix ZONE-003 clone target rewriting. Other roadmap gaps remain.
+The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log controls and CORE-007 cache tests, fix ZONE-003 clone target rewriting, and add a CSP for SEC-005. Other roadmap gaps remain.
 
 ## B. Completed tasks
 
@@ -46,6 +46,8 @@ The following items are reported completed in the current roadmap matrix. The te
 
 - **CORE-006 (P1, phase 1):** Query logs now support off/info/debug and sampled logging; DEBUG and error-path PII is redacted by default. `cargo test -p hickory-server --lib query_log_tests` passed 2/2. Implemented in commit `0835ca439a8656f88585656298c1e6dd69b37af7`.
 
+- **CORE-007 (P2, phase 1):** Forwarder cache default is configurable at 512. `docs/FORWARDING.md` defines the authoritative boundary. A deterministic cache miss → hit → TTL expiry test and existing caching-client tests pass; `cargo test -p hickory-resolver --lib` passed 79/79 with 3 ignored. New regression test commit: `7d3d980d9976c5215d791f41f357693f8b9d6c06`.
+
 ## C. Remaining tasks
 
 Each entry gives the current status and the specific remaining gap recorded in the authoritative matrix. Dependencies and acceptance criteria are in `task.md` §18; these entries should be rechecked against code before implementation.
@@ -59,7 +61,6 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **CORE-003 (P1, phase 1; PARTIALLY COMPLETED):** Implemented: NOTIFY ACK and bounded sender retry exist. Remaining: no peer config or secondary refresh.
 - **CORE-004 (P0, phase 1; PARTIALLY COMPLETED):** DNS /health and /ready integration test passes; Helm DNS-server probes are not wired.
 - **CORE-005 (P1, phase 1; NEEDS VERIFICATION):** Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run.
-- **CORE-007 (P2, phase 1; PARTIALLY COMPLETED):** Implemented: Resolver cache default raised and boundary documented. Remaining: cache-hit/miss/expiry suite not extended.
 - **CORE-008 (P1, phase 1; PARTIALLY COMPLETED):** Implemented: Existing dig/delv/conformance labs. Remaining: dual-stack and malformed-packet cases not unified.
 - **CORE-009 (P2, phase 1; PARTIALLY COMPLETED):** Implemented: Forwarding/recursion boundary documented. Remaining: trust-anchor and hardening work pending.
 - **CORE-010 (P1, phase 1; NEEDS VERIFICATION):** Implemented: H3 features, CLI/config and listener wired. Remaining: no H3 client integration test. Verification gap: DoH3 client integration test was not run.
@@ -166,6 +167,8 @@ The blocked entries in section C identify the missing dependency or decision. Se
 | `TEST_DATABASE_URL=postgres://postgres:***@127.0.0.1:55435/roadmap_test cargo test -p control_api --bin control_api clone_zone_copies_records_with_rewritten_domain -- --test-threads=1` | Disposable local PostgreSQL 16 | CNAME rewritten, TXT preserved | 1 passed | PASS |
 | `cargo test -p hickory-server --lib query_log_tests` | Local | Redaction and sampling correct | 2 passed | PASS |
 | `cargo test -p hickory-server --lib` | Local | Server library regression suite passes | 30 passed | PASS |
+| `cargo test -p hickory-resolver --lib response_cache_miss_hit_and_expiry` | Local | Cache misses before insert, hits with decremented TTL, and expires | 1 passed | PASS |
+| `cargo test -p hickory-resolver --lib` | Local | Resolver regression suite passes | 79 passed, 3 ignored | PASS |
 | `python3 scripts/docs_check.py` | Local | Documentation consistency check completes | Completed; four existing broken-link warnings | PASS WITH WARNINGS |
 | `cargo fmt --all -- --check` | Local | Formatting clean | Exit 0 | PASS |
 | `docker run --rm --add-host control-api:127.0.0.1 -v web/ui/nginx.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t` | Disposable local Nginx | Configuration accepted | Syntax OK | PASS |
@@ -179,10 +182,12 @@ The blocked entries in section C identify the missing dependency or decision. Se
 
 No database migration, DNS transfer, DNSSEC rollover, backup/restore, load, or browser end-to-end test was run in this execution. The disposable PostgreSQL container was stopped after the clone test. `cargo test -p hickory-server --lib` passed 30/30; `python3 scripts/docs_check.py` completed with four existing broken-link warnings. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The user confirmed germ is a test environment.
 
+Helm packaging was inspected: the chart has a control API template but no DNS deployment template, so CORE-004/OPS-002 remain incomplete. The attempted local Helm validation image fetch (`docker run --rm alpine/helm:3.16.4 version --short`) failed with a Docker Hub TLS handshake timeout. This is a validation environment limitation, not a reason to mark implementation blocked.
+
 ## F. Production readiness
 
 Implemented and locally tested: the strengthened API method/path contract, DNS query-log controls, clone rewrite fix, and UI CSP. Integration tested: the static frontend/backend route mapping and clone behavior against disposable PostgreSQL 16. Validated on available test server: connectivity, container health reports, API health/readiness and UI HTTP response, authoritative SOA over UDP/TCP, and transfer-policy refusal. The new local code has not been deployed to germ. Safe for production deployment: **not established**. The platform is **not yet production-ready** under the roadmap’s P0 gate, especially while tracked secrets, recovery drills, and replication gaps remain.
 
 ## G. Git delivery
 
-Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
+Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`, and CORE-007 cache regression is in `7d3d980d9976c5215d791f41f357693f8b9d6c06`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
