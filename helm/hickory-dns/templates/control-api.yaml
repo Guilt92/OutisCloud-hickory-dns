@@ -12,10 +12,12 @@ spec:
   selector:
     matchLabels:
       app: control-api
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
   template:
     metadata:
       labels:
         app: control-api
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
@@ -49,6 +51,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "hickory-dns.fullname" . }}-config
+          volumeMounts:
+            - name: zone-state
+              mountPath: /etc/hickory
+            - name: scratch
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -68,6 +75,12 @@ spec:
             periodSeconds: {{ .Values.controlApi.readinessProbe.periodSeconds }}
           resources:
             {{- toYaml .Values.controlApi.resources | nindent 10 }}
+      volumes:
+        - name: zone-state
+          persistentVolumeClaim:
+            claimName: {{ required "zoneStorage.existingClaim must name a pre-provisioned ReadWriteMany claim" .Values.zoneStorage.existingClaim }}
+        - name: scratch
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -77,6 +90,7 @@ metadata:
 spec:
   selector:
     app: control-api
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
   ports:
     - port: {{ .Values.controlApi.service.port }}
       targetPort: {{ .Values.controlApi.service.targetPort }}

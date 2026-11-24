@@ -10,10 +10,20 @@ global:
 
 namespace: hickory-dns
 
+# Pre-provision a ReadWriteMany claim shared by the API publisher and DNS pods.
+# Helm does not create or delete this claim, protecting zone state on uninstall.
+zoneStorage:
+  existingClaim: hickory-zones
+
+dnsConfig:
+  namedToml: |
+    directory = "/etc/hickory"
+    listen_addrs_ipv4 = ["0.0.0.0"]
+
 # Control API Configuration
 controlApi:
   enabled: true
-  replicaCount: 2
+  replicaCount: 1
   
   image:
     registry: docker.io
@@ -35,7 +45,7 @@ controlApi:
       memory: 128Mi
   
   autoscaling:
-    enabled: true
+    enabled: false
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
@@ -72,7 +82,7 @@ ui:
   service:
     type: ClusterIP
     port: 80
-    targetPort: 3000
+    targetPort: 80
   
   ingress:
     enabled: true
@@ -92,7 +102,7 @@ ui:
 
 # PostgreSQL Configuration
 postgresql:
-  enabled: true
+  enabled: false  # external DATABASE_URL Secret is required; no database template exists
   architecture: standalone
   
   auth:
@@ -124,7 +134,7 @@ postgresql:
 # DNS Server Configuration
 dnsServer:
   enabled: true
-  replicaCount: 3
+  replicaCount: 1
   
   image:
     registry: docker.io
@@ -147,10 +157,11 @@ dnsServer:
     requests:
       cpu: 250m
       memory: 256Mi
+  metricsPort: 9000
 
 # Agent Configuration
 agent:
-  enabled: true
+  enabled: false  # agent packaging is not yet part of this chart
   
   image:
     registry: docker.io
@@ -177,7 +188,7 @@ ingress:
 # Monitoring
 monitoring:
   prometheus:
-    enabled: true
+    enabled: false  # monitoring stack is provisioned separately
     scrapeInterval: 30s
   grafana:
     enabled: false  # Set to true and configure to enable

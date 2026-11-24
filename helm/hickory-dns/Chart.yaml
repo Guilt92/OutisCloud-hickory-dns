@@ -1,6 +1,6 @@
 apiVersion: v2
 name: hickory-dns
-description: A production-ready DNS management platform built on Hickory DNS
+description: Authoritative DNS control plane and Hickory serving chart
 type: application
 version: 0.1.0
 appVersion: "0.26.0"
