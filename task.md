@@ -1,7 +1,7 @@
 # OutisCloud DNS Platform — Benchmark, Architecture Assessment, and Multi-Phase Roadmap
 
 > **Further execution evidence, 2026-11-24:** CORE-006 query logging now supports level and sampling controls and redacts DEBUG/error paths; focused tests pass. ZONE-003 clone rewriting preserves TXT text while rewriting zone-local DNS targets; a unit test and isolated PostgreSQL clone integration test pass. ZONE-003 remains partial because built-in templates and NS/DNSSEC clone acceptance tests are absent. See the current entries in §20 and `TASK_STATUS.md`.
-> **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. Secure cookies, token storage, and browser XSS/CSP checks remain, so the task is PARTIALLY COMPLETED.
+> **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. A Playwright browser check now confirms an injected inline script is blocked by the served CSP. Secure cookies and token-storage migration remain, so the task is PARTIALLY COMPLETED.
 > **germ read-only DNS validation:** Independent `dig` queries for the hosted `uid0.ir` SOA returned authoritative NOERROR over UDP and TCP with matching serial `2026111900`; a TCP AXFR request was REFUSED. No local change was deployed to germ.
 > **Helm packaging progress:** The chart now renders control API, DNS server, and UI Deployments/Services/Ingress with shared pre-provisioned RWX zone storage, DNS health/readiness probes, generated ConfigMaps, and a release-specific UI proxy. Helm lint/render and rendered-resource checks pass. CORE-004 and OPS-002 remain PARTIALLY COMPLETED until cluster-level probe, RWX, Secret, image, and rollout validation succeeds; agent/DB templates are not included.
 > **Current corrected counts:** 34 COMPLETED, 49 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
@@ -1892,11 +1892,11 @@ Validation performed for this status update:
 | 11 | UX-001 | P1 | NEEDS VERIFICATION | Implemented: Existing a11y suite passes. Remaining: new metadata/reset UI not re-audited. Verification gap: New metadata and password-reset UI controls have not been re-audited. |
 | 11 | CUI-001 | P2 | PARTIALLY COMPLETED | Implemented: Customer dashboard exists. Remaining: onboarding/error polish pending. |
 | 11 | CUI-002 | P2 | PARTIALLY COMPLETED | Implemented: Analytics UX exists. Remaining: provenance/export/missing-data polish pending. |
-| 11 | CUI-003 | P1 | NEEDS VERIFICATION | Implemented: Existing WCAG checks pass. Remaining: new controls need another audit. Verification gap: New customer-facing controls have not been re-audited. |
+| 11 | CUI-003 | P1 | NEEDS VERIFICATION | Implemented: Existing WCAG checks pass; a route error boundary (`3170df46d`) now provides accessible retry/home actions, with a browser chunk-failure test. Remaining: focus trap/restoration, labels, chart alternatives, keyboard file upload, and a full WCAG audit. |
 | 11 | CUI-004 | P2 | PARTIALLY COMPLETED | Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass. |
 | 12 | OPS-001 | P0 | BLOCKED | Requires TLS reverse proxy, certificates and production topology decision. |
 | 12 | OPS-002 | P1 | BLOCKED | Requires Kubernetes/RWX storage and validated manifests. |
-| 12 | OPS-003 | P0 | PARTIALLY COMPLETED | CI workflow contains Postgres, test and build gates; per-image GHCR tags and missing DNS image build were repaired. GitHub reports CI and CI/CD workflows `disabled_manually`, so these gates do not execute. The separate active Docker Hub image workflow is running; a full required-gate run remains. |
+| 12 | OPS-003 | P0 | PARTIALLY COMPLETED | The active Docker Hub workflow now gates publishing on PostgreSQL-backed API tests, DNS tests, UI lint/build, Helm rendering, documentation, and dependency policy. Run 45342563964 passed all steps except dependency policy, so publishing was skipped. Patched lockfile dependencies and local crate policy metadata (`e61dea001`) now pass local audit/deny checks; a new CI run is pending. CI and CI/CD workflows remain `disabled_manually`. |
 | 12 | OPS-004 | P1 | COMPLETED | Prometheus/Alertmanager/Grafana configs plus incident, rollback, certificate, GeoIP and failover runbooks. |
 | 12 | OPS-005 | P1 | COMPLETED | `docs/runbooks/` covers incident response, rollback, certificate lifecycle, GeoIP and failover/recovery. |
 | 12 | OPS-006 | P1 | PARTIALLY COMPLETED | GeoIP atomic refresh + certificate expiry checker (`scripts/check_certs.sh`) and lifecycle runbook. Remaining: ACME issuance automation is deployment-specific. |
@@ -1918,7 +1918,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | CORE-006 | COMPLETED | Query logging now supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; request, response, refused and parse-error paths redact addresses, and DEBUG query names are redacted. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
-| SEC-005 | PARTIALLY COMPLETED | UI Nginx now emits a CSP for the SPA. `nginx -t` and a disposable-container HTTP header smoke test pass. Secure-cookie option, token-storage change, and browser XSS/CSP tests remain. |
+| SEC-005 | PARTIALLY COMPLETED | UI Nginx now emits a CSP for the SPA. `nginx -t`, a disposable-container HTTP header smoke test, and a Chromium Playwright inline-script blocking test (`dffbb3e01`) pass. Secure-cookie option and token-storage change remain. |
 | SEC-006 | NOT STARTED | No abuse scoring, zone holds/locks or transfer-protection operator workflow exists. |
 | RBAC-002 | PARTIALLY COMPLETED | User role and per-user reset are tested; effective-permission display is not implemented. |
 | PERF-003 | PARTIALLY COMPLETED | A repeatable 5,000-zone harness and results exist; required 1k/10k/50k scenarios and SLO thresholds are absent. |

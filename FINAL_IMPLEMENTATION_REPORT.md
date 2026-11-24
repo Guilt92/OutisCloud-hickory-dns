@@ -4,7 +4,7 @@
 
 Roadmap: 133 tasks. Completed: 34; partially completed: 49; needs verification: 9; blocked: 40; not started: 1. Completion: 25.6%.
 
-The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log controls and CORE-007 cache tests, fix ZONE-003 clone target rewriting, and add a CSP for SEC-005. Other roadmap gaps remain.
+The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log controls and CORE-007 cache tests, fix ZONE-003 clone target rewriting, add a CSP/browser regression for SEC-005, add a recoverable route error for CUI-003, and repair the active image workflow dependency gate. Other roadmap gaps remain.
 
 ## B. Completed tasks
 
@@ -121,7 +121,7 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **SEC-002 (P0, phase 9; BLOCKED):** Requires CA/certificate provisioning and connection-string migration.
 - **SEC-003 (P0, phase 9; PARTIALLY COMPLETED):** Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented.
 - **SEC-004 (P1, phase 9; BLOCKED):** Depends on key custody decision and user lifecycle schema.
-- **SEC-005 (P1, phase 9; PARTIALLY COMPLETED):** UI Nginx now sends a CSP, verified by syntax and live-header tests in disposable Nginx. Remaining: secure-cookie option, token-storage migration, and browser XSS/CSP tests.
+- **SEC-005 (P1, phase 9; PARTIALLY COMPLETED):** UI Nginx now sends a CSP, verified by syntax and live-header tests in disposable Nginx. A Playwright Chromium test against disposable Nginx verified that an injected inline script was blocked by CSP. Remaining: secure-cookie option and token-storage migration.
 - **SEC-006 (P1, phase 9; NOT STARTED):** No abuse scoring, zone holds/locks or transfer-protection operator workflow exists.
 - **SEC-007 (P0, phase 9; PARTIALLY COMPLETED):** Implemented: Per-source governor and admission limits exist. Remaining: full RRL coverage pending.
 - **SEC-008 (P1, phase 9; PARTIALLY COMPLETED):** Added `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, release checksum signing and provenance workflow. Remaining: image signature verification policy.
@@ -142,10 +142,10 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **UX-001 (P1, phase 11; PARTIALLY COMPLETED):** Viewer/editor/admin UI permission tests exist; systematic no-hidden-403/404 contract and new-control checks remain.
 - **CUI-001 (P2, phase 11; PARTIALLY COMPLETED):** Implemented: Customer dashboard exists. Remaining: onboarding/error polish pending.
 - **CUI-002 (P2, phase 11; PARTIALLY COMPLETED):** Implemented: Analytics UX exists. Remaining: provenance/export/missing-data polish pending.
-- **CUI-003 (P1, phase 11; NEEDS VERIFICATION):** Implemented: Existing WCAG checks pass. Remaining: new controls need another audit. Verification gap: New customer-facing controls have not been re-audited.
+- **CUI-003 (P1, phase 11; NEEDS VERIFICATION):** Existing WCAG checks pass. A route error boundary now offers retry and dashboard actions; a Chromium test aborting the lazy login chunk confirms the fallback. Remaining: focus trapping/restoration, labels, chart alternatives, keyboard file upload and a full WCAG audit.
 - **CUI-004 (P2, phase 11; PARTIALLY COMPLETED):** Implemented: Responsive/error work partial. Remaining: customer journeys need regression pass.
 - **OPS-001 (P0, phase 12; BLOCKED):** Requires TLS reverse proxy, certificates and production topology decision.
-- **OPS-003 (P0, phase 12; PARTIALLY COMPLETED):** CI/CD workflow includes DB/UI/DNS/security gates, and per-image GHCR tags plus DNS image build were repaired. GitHub reports CI and CI/CD workflows `disabled_manually`, so required gates have not run. Enable both workflows with repository Actions permissions, run them on this branch, and require passing results. Active Docker Hub image workflow run `45341283543` succeeded for API, DNS and UI images; it is separate from the required CI gates.
+- **OPS-003 (P0, phase 12; PARTIALLY COMPLETED):** CI/CD workflow includes DB/UI/DNS/security gates, and per-image GHCR tags plus DNS image build were repaired. GitHub reports CI and CI/CD workflows `disabled_manually`, so required gates have not run. Enable both workflows with repository Actions permissions, run them on this branch, and require passing results. Active Docker Hub workflow run `45341283543` succeeded for API, DNS and UI images. The workflow now gates publishing on PostgreSQL-backed API/DNS tests, UI lint/build, Helm, docs and dependency policy. Run `45342563964` passed all steps except dependency policy and correctly skipped publishing; local lockfile/policy fixes pass both audit and deny, pending a fresh CI run.
 - **OPS-002 (P1, phase 12; PARTIALLY COMPLETED):** Helm now renders API/DNS/UI Deployments and Services, Ingress, ConfigMaps, shared pre-provisioned RWX zone claim mounts, and DNS readiness/liveness probes. Lint/render and structural checks pass. Agent/DB templates, external Secret/images/RWX claim, and cluster rollout validation remain.
 - **OPS-006 (P1, phase 12; PARTIALLY COMPLETED):** GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent.
 - **OPS-007 (P2, phase 12; PARTIALLY COMPLETED):** Added static status-page generator, CycloneDX SBOM script, signed release checksums/provenance workflow and redacted diagnostics bundle. Remaining: publish SBOM/provenance to a public transparency log.
@@ -162,6 +162,7 @@ The blocked entries in section C identify the missing dependency or decision. OP
 | `node web/ui/tests/route-contract.cjs` | Local | Frontend method/path pairs registered by API | 83 pairs matched | PASS |
 | `npm --prefix web/ui run test:routes` | Local | Contract passes | 83 pairs matched | PASS |
 | `npm --prefix web/ui run lint` | Local | No ESLint errors | Exit 0 | PASS |
+| `npm --prefix web/ui run build` | Local | Production bundle builds with route recovery | 2,264 modules transformed; exit 0 | PASS |
 | `git diff --check` | Local | No whitespace errors | Exit 0 | PASS |
 | `cargo test -p control_api --bin control_api clone_target_tests -- --test-threads=1` | Local | Only DNS targets change | 1 passed | PASS |
 | `TEST_DATABASE_URL=postgres://postgres:***@127.0.0.1:55435/roadmap_test cargo test -p control_api --bin control_api clone_zone_copies_records_with_rewritten_domain -- --test-threads=1` | Disposable local PostgreSQL 16 | CNAME rewritten, TXT preserved | 1 passed | PASS |
@@ -184,19 +185,25 @@ The blocked entries in section C identify the missing dependency or decision. OP
 | GitHub Actions workflows API query for the repository | GitHub | Required workflows active and runnable | CI and CI/CD reported `disabled_manually`; active Docker Hub image workflow separate | REQUIRED GATE NOT RUN |
 | GitHub Actions run `45341283543` for `be40b3196`, job/step API inspection | GitHub | Active Docker Hub images build and push | Run and control API, DNS, UI image steps completed successfully | PASS (IMAGE PATH ONLY) |
 | `python3 scripts/docs_check.py` | Local | Documentation consistency check completes | Completed; four existing broken-link warnings | PASS WITH WARNINGS |
+| `cargo-audit v0.23.0 audit --db <local RustSec advisory checkout> --no-fetch` | Local | No known vulnerabilities in lockfile | No vulnerabilities; four unmaintained warnings | PASS WITH WARNINGS |
+| `cargo-deny 0.22.0 check` | Local | Advisories, bans, licenses and sources policy passes | All four categories OK after lockfile and manifest fixes | PASS |
+| GitHub Actions run `45342563964` | GitHub | Validation gate passes before images publish | API/DNS/UI/Helm/docs passed; dependency policy failed on original lockfile; publishing skipped | FAIL (FIXED LOCALLY; RERUN PENDING) |
 | `cargo fmt --all -- --check` | Local | Formatting clean | Exit 0 | PASS |
+| `cargo test -p control_api --bin control_api -- --test-threads=1` after dependency updates | Local without `TEST_DATABASE_URL` | Non-DB API tests pass | 176 passed; DB cases skip internally without URL | PASS (NON-DB ONLY) |
+| `cargo test -p hickory-server --lib` after dependency updates | Local | Server regression tests pass | 30 passed | PASS |
 | `docker run --rm --add-host control-api:127.0.0.1 -v web/ui/nginx.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t` | Disposable local Nginx | Configuration accepted | Syntax OK | PASS |
 | Initial `nginx -t` without a `control-api` DNS alias | Disposable local Nginx | Configuration accepted | Failed resolving `control-api`; the Compose service name was absent from the isolated container. Retried with a disposable host alias above. | ENVIRONMENT SETUP FAILURE |
 | `curl -fsSI http://127.0.0.1:18081/` against disposable Nginx | Local | HTTP 200 with CSP and security headers | HTTP 200; CSP, Referrer-Policy and nosniff present | PASS |
+| `OUTIS_BROWSER_PATH=/snap/bin/chromium npx playwright test tests/route-recovery.spec.cjs tests/security-headers.spec.cjs --config=tests/playwright.config.cjs --project=chromium` | Local Chromium and disposable Nginx | CSP blocks inline script; failed login chunk shows recoverable error | 2 passed in 8.4s | PASS |
 | `dig @127.0.0.1 -p 53 example.com SOA +norecurse +time=2 +tries=1 +noall +comments` over UDP/TCP | germ test host | Authoritative server refuses unrelated zone | REFUSED on both transports | PASS |
 | `dig @127.0.0.1 -p 53 uid0.ir SOA +norecurse +time=2 +tries=1 +noall +comments +answer` over UDP/TCP | germ test host | Hosted zone answers authoritatively | NOERROR, `aa`, matching SOA serial `2026111900` on both transports | PASS |
 | `dig @127.0.0.1 -p 53 uid0.ir AXFR +tcp +time=3 +tries=1 +noall +comments +stats` | germ test host | Transfer follows existing policy | REFUSED; no transfer authorized | PASS |
 | `ssh -o BatchMode=yes germ` with hostname, kernel, service/resource and container inspection | germ | Reach host and inspect without mutation | Reached `fastcreate-472995`; four OutisCloud containers healthy; 7.8 GiB RAM; 6.1 GiB disk available | PASS |
 | `curl` to `127.0.0.1:8080/health`, `/ready`, and `127.0.0.1:8081/` over SSH | germ | HTTP 200 | HTTP 200 on all three | PASS |
 
-No database migration, DNS transfer, DNSSEC rollover, backup/restore, load, or browser end-to-end test was run in this execution. Both disposable PostgreSQL containers used for clone and revision tests were stopped afterward. `cargo test -p hickory-server --lib` passed 30/30; `python3 scripts/docs_check.py` completed with four existing broken-link warnings. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The user confirmed germ is a test environment.
+No database migration, DNS transfer, DNSSEC rollover, backup/restore, or load test was run in this execution. A targeted browser CSP test was run. Both disposable PostgreSQL containers used for clone and revision tests were stopped afterward. `cargo test -p hickory-server --lib` passed 30/30; `python3 scripts/docs_check.py` completed with four existing broken-link warnings. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The user confirmed germ is a test environment.
 
-Helm packaging was inspected: the chart has a control API template but no DNS deployment template, so CORE-004/OPS-002 remain incomplete. The initial Helm image fetch (`docker run --rm alpine/helm:3.16.4 version --short`) failed with a Docker Hub TLS handshake timeout. Helm 3.16.4 was then downloaded from get.helm.sh to `/tmp`, checksum verified, and used to lint/render the chart.
+Helm packaging now includes API, DNS, and UI deployments, but cluster validation and agent/DB templates remain. The initial Helm image fetch (`docker run --rm alpine/helm:3.16.4 version --short`) failed with a Docker Hub TLS handshake timeout. Helm 3.16.4 was then downloaded from get.helm.sh to `/tmp`, checksum verified, and used to lint/render the chart.
 
 ## F. Production readiness
 
@@ -204,4 +211,4 @@ Implemented and locally tested: the strengthened API method/path contract, DNS q
 
 ## G. Git delivery
 
-Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`, CORE-007 cache regression is in `7d3d980d9976c5215d791f41f357693f8b9d6c06`, chart implementation is in `36d52bd06d0fd76dfe9bae7f73c1d2bf275693c3`, CI image-tag/DNS-build repair is in `ce8c471549ef12636dce4ddc28c2016843a62f99`, CORE-008 conformance tests are in `6ca552095b72602870d30d58db9b468179d80ddd`, and revision-retention/metric work is in `dfac6ec2bf96aa99b3bbd5fe211f994b52b574ab`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
+Branch: `main`; upstream: `origin/main`. The previous delivery commit is `2e62264678588fff46b0cff8fb8f89ee5160ee6f`; the clone/logging code and tests are in `0835ca439a8656f88585656298c1e6dd69b37af7`, and the UI CSP is in `3cc9b4f14066d8ba6292dd6b6e0d842c044a9e52`, CORE-007 cache regression is in `7d3d980d9976c5215d791f41f357693f8b9d6c06`, chart implementation is in `36d52bd06d0fd76dfe9bae7f73c1d2bf275693c3`, CI image-tag/DNS-build repair is in `ce8c471549ef12636dce4ddc28c2016843a62f99`, CORE-008 conformance tests are in `6ca552095b72602870d30d58db9b468179d80ddd`, and revision-retention/metric work is in `dfac6ec2bf96aa99b3bbd5fe211f994b52b574ab`. Browser CSP regression: `dffbb3e01`; dependency policy repair: `e61dea001`; route error recovery: `3170df46d`. The status/report commit is the commit containing this file. The pushed remote head was verified with `git ls-remote origin refs/heads/main` after delivery. Pre-existing user edits remain outside these commits. No environment file, secret, or runtime DNS state is included in the delivery commit.
