@@ -6,6 +6,8 @@
 
 **CORE-007 — Forwarder cache (P2): COMPLETED.** The default remains configurable at 512 and `docs/FORWARDING.md` states the authoritative/forwarding boundary. Added a deterministic miss → hit with decremented TTL → expiry regression in `crates/resolver/src/cache.rs`; existing caching-client tests exercise upstream fallback and cache reuse. `cargo test -p hickory-resolver --lib` passed 79/79 (3 ignored). This does not make the authoritative service recursive by default.
 
+**CORE-004 / OPS-002 — DNS readiness and Helm packaging (P0/P1): PARTIALLY COMPLETED.** `helm/hickory-dns` now renders API, DNS and UI Deployments/Services/Ingress, config maps, shared pre-provisioned RWX zone claim mounts, and DNS `/health`/`/ready` probes. `helm lint` passed; full and disabled-component renders passed; Python checks verified 16 full resources, selectors, references, shared storage and probes. A rendered Nginx config passed `nginx -t` in a disposable container. No Kubernetes cluster rollout was run; Secret, RWX claim, working image tags, agent/DB packaging, and live probe transitions remain. Commit `36d52bd06d0fd76dfe9bae7f73c1d2bf275693c3` contains the chart implementation.
+
 **CORE-006 — Query logging and PII (P1): COMPLETED.** Added `off`/`info`/`debug` query-log levels and `DNS_QUERY_LOG_SAMPLE_EVERY` to `crates/server/src/server/mod.rs`. DEBUG query names and refused/malformed client addresses now use the redaction setting. `docs/OPERATIONS.md` documents the controls. Two focused server tests pass; format and diff checks pass. No live DNS process was restarted.
 
 **SEC-005 — Browser hardening (P1): PARTIALLY COMPLETED.** Added a CSP to `web/ui/nginx.conf` for the SPA, with same-origin scripts/API connections, Google Fonts allowances, and blocked object embedding. `nginx -t` passed in a disposable Nginx container, and a local HTTP request returned the CSP, Referrer-Policy, and nosniff headers. The first syntax check lacked the Compose `control-api` hostname and failed DNS resolution; rerunning with a disposable host alias passed. Secure cookies, token-storage migration, and browser security tests remain.
@@ -674,7 +676,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | Task | Corrected status | Verified correction |
 |---|---|---|
 | ARCH-001 | PARTIALLY COMPLETED | PostgreSQL migration/runtime parity was verified; SQLite verification is not applicable to the PostgreSQL-only control plane. |
-| CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes; Helm DNS-server probes are not wired. |
+| CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes; Helm DNS probes now render. Cluster-level probe transitions and key/catalog/freshness failure behavior remain unverified. |
 | CORE-006 | COMPLETED | Query logging supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; default address/name redaction also covers DEBUG and error paths. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
@@ -689,7 +691,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | ADM-003 | PARTIALLY COMPLETED | Record delete confirmation exists; type-aware forms, record diff/history UX and keyboard/a11y tests remain incomplete. |
 | ADM-004 | PARTIALLY COMPLETED | Audit filters/pagination/export and server/status UX exist; row detail and full permission-aware catalog remain. |
 | UX-001 | PARTIALLY COMPLETED | Viewer/editor/admin UI permission tests exist; systematic no-hidden-403/404 contract and new-control checks remain. |
-| OPS-002 | PARTIALLY COMPLETED | Helm namespace/ConfigMap/probes/Ingress scaffolding exists; RWX zone volume, DNS/agent/DB templates and manifest validation are absent. |
+| OPS-002 | PARTIALLY COMPLETED | Helm renders API/DNS/UI, ConfigMaps, Ingress, shared pre-provisioned RWX claim mounts and probes; lint/render and structural checks pass. Agent/DB templates and cluster rollout validation remain. |
 | OPS-006 | PARTIALLY COMPLETED | GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent. |
 
 ---

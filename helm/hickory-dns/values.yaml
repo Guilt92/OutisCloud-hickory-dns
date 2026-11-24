@@ -147,8 +147,6 @@ dnsServer:
     ports:
       dns-udp: 53
       dns-tcp: 53
-      dot: 853
-      doh: 443
   
   resources:
     limits:

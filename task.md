@@ -3,6 +3,7 @@
 > **Further execution evidence, 2026-11-24:** CORE-006 query logging now supports level and sampling controls and redacts DEBUG/error paths; focused tests pass. ZONE-003 clone rewriting preserves TXT text while rewriting zone-local DNS targets; a unit test and isolated PostgreSQL clone integration test pass. ZONE-003 remains partial because built-in templates and NS/DNSSEC clone acceptance tests are absent. See the current entries in §20 and `TASK_STATUS.md`.
 > **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. Secure cookies, token storage, and browser XSS/CSP checks remain, so the task is PARTIALLY COMPLETED.
 > **germ read-only DNS validation:** Independent `dig` queries for the hosted `uid0.ir` SOA returned authoritative NOERROR over UDP and TCP with matching serial `2026111900`; a TCP AXFR request was REFUSED. No local change was deployed to germ.
+> **Helm packaging progress:** The chart now renders control API, DNS server, and UI Deployments/Services/Ingress with shared pre-provisioned RWX zone storage, DNS health/readiness probes, generated ConfigMaps, and a release-specific UI proxy. Helm lint/render and rendered-resource checks pass. CORE-004 and OPS-002 remain PARTIALLY COMPLETED until cluster-level probe, RWX, Secret, image, and rollout validation succeeds; agent/DB templates are not included.
 > **Current corrected counts:** 35 COMPLETED, 48 PARTIALLY COMPLETED, 9 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 26.3% completed). Earlier phase count tables are historical.
 
 > **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
@@ -1913,7 +1914,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | Task | Corrected status | Verified correction |
 |---|---|---|
 | ARCH-001 | PARTIALLY COMPLETED | PostgreSQL migration/runtime parity was verified; SQLite verification is not applicable to the PostgreSQL-only control plane. |
-| CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes; Helm DNS-server probes are not wired. |
+| CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes. Compose and newly rendered Helm DNS probes target `/health` and `/ready`; cluster-level probe transition and key/catalog/freshness failure checks remain unverified. |
 | CORE-006 | COMPLETED | Query logging now supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; request, response, refused and parse-error paths redact addresses, and DEBUG query names are redacted. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
@@ -1928,5 +1929,5 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | ADM-003 | PARTIALLY COMPLETED | Record delete confirmation exists; type-aware forms, record diff/history UX and keyboard/a11y tests remain incomplete. |
 | ADM-004 | PARTIALLY COMPLETED | Audit filters/pagination/export and server/status UX exist; row detail and full permission-aware catalog remain. |
 | UX-001 | PARTIALLY COMPLETED | Viewer/editor/admin UI permission tests exist; systematic no-hidden-403/404 contract and new-control checks remain. |
-| OPS-002 | PARTIALLY COMPLETED | Helm namespace/ConfigMap/probes/Ingress scaffolding exists; RWX zone volume, DNS/agent/DB templates and manifest validation are absent. |
+| OPS-002 | PARTIALLY COMPLETED | Helm now renders API, DNS and UI Deployments/Services/Ingress, ConfigMaps, shared pre-provisioned RWX claim mounts, and probes; lint/render and structural checks pass. Agent/DB templates and Kubernetes cluster validation remain; external Secret, images and claim must be supplied. |
 | OPS-006 | PARTIALLY COMPLETED | GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent. |
