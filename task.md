@@ -1784,7 +1784,7 @@ Validation performed for this status update:
 | 1 | CORE-005 | P1 | NEEDS VERIFICATION | Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run. |
 | 1 | CORE-006 | P1 | COMPLETED | PII redaction unit test passes. |
 | 1 | CORE-007 | P2 | COMPLETED | Forwarder cache default is configurable and 512; docs/FORWARDING.md states the product boundary. Cache miss/hit/expiry and caching-client tests pass in the 79/79 resolver library suite (3 ignored). |
-| 1 | CORE-008 | P1 | PARTIALLY COMPLETED | Implemented: Existing dig/delv/conformance labs. Remaining: dual-stack and malformed-packet cases not unified. |
+| 1 | CORE-008 | P1 | PARTIALLY COMPLETED | Existing dig/delv labs plus a malformed UDP packet/recovery integration test pass. The dual-stack test passes IPv4 locally but skips IPv6 when `::1` is unavailable; germ has IPv6 loopback, yet no new-code dual-stack integration was run there. Unified external delegation/DNSSEC conformance remains. |
 | 1 | CORE-009 | P2 | PARTIALLY COMPLETED | Implemented: Forwarding/recursion boundary documented. Remaining: trust-anchor and hardening work pending. |
 | 1 | CORE-010 | P1 | NEEDS VERIFICATION | Implemented: H3 features, CLI/config and listener wired. Remaining: no H3 client integration test. Verification gap: DoH3 client integration test was not run. |
 | 1 | CORE-011 | P2 | PARTIALLY COMPLETED | Implemented: Record-type policy documented. Remaining: advanced types and UI round-trip tests pending. |
