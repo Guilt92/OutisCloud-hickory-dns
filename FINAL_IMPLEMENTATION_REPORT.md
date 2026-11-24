@@ -2,7 +2,7 @@
 
 ## A. Executive summary
 
-Roadmap: 133 tasks. Completed: 34; partially completed: 50; needs verification: 8; blocked: 40; not started: 1. Completion: 25.6%.
+Roadmap: 133 tasks. Completed: 34; partially completed: 52; needs verification: 8; blocked: 38; not started: 1. Completion: 25.6%.
 
 The full roadmap is **not complete**. This report uses the 133-row status matrix in `task.md` §19 with the source-verified corrections in §20. Those statuses have not all been revalidated during this execution. The latest code changes complete CORE-006 query-log controls and CORE-007 cache tests, fix ZONE-003 clone target rewriting, add a CSP/browser regression for SEC-005, add a recoverable route error for CUI-003, and repair the active image workflow dependency gate. Other roadmap gaps remain.
 
@@ -113,9 +113,9 @@ Each entry gives the current status and the specific remaining gap recorded in t
 - **AUD-001 (P1, phase 8; PARTIALLY COMPLETED):** Implemented: Audit detail and CSV export endpoints tested. Remaining: UI detail/export wiring pending.
 - **AUD-002 (P0, phase 8; PARTIALLY COMPLETED):** Implemented: Broad audit coverage exists. Remaining: coverage-matrix ADR and failure-policy decision pending.
 - **AUD-003 (P2, phase 8; PARTIALLY COMPLETED):** Implemented: Retention configurable. Remaining: archive/SIEM target external.
-- **BAK-002 (P0, phase 12; BLOCKED):** Requires PostgreSQL backup/PITR storage target and restore drill.
+- **BAK-002 (P0, phase 12; PARTIALLY COMPLETED):** Encrypted PostgreSQL dump and restore verified on germ (746c4f89a). Scheduled retention, off-host storage and WAL point-in-time recovery remain.
 - **BAK-003 (P0, phase 3; BLOCKED):** Depends on DNSSEC-001; no encrypted key export/restore target.
-- **BAK-004 (P0, phase 12; BLOCKED):** Depends on BAK-002/BAK-003.
+- **BAK-004 (P0, phase 12; PARTIALLY COMPLETED):** Isolated restore verified checksums and recovered a zone in one second on germ (746c4f89a). DNSSEC keys, configuration recovery and RPO measurement remain.
 - **BAK-005 (P0, phase 12; PARTIALLY COMPLETED):** ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing.
 - **SEC-001 (P0, phase 9; BLOCKED):** Requires certificate issuance and reverse-proxy deployment topology.
 - **SEC-002 (P0, phase 9; BLOCKED):** Requires CA/certificate provisioning and connection-string migration.
@@ -156,6 +156,8 @@ Each entry gives the current status and the specific remaining gap recorded in t
 The blocked entries in section C identify the missing dependency or decision. OPS-003 is partial because the required GitHub workflows are manually disabled; no GitHub API token is available in this environment to enable them. An owner must enable CI and CI/CD in repository settings or provide a scoped Actions token, then verify required runs. Secret rotation requires replacement credentials and a coordinated window; DNSSEC key custody requires a KMS/HSM design; multi-host replication requires topology and infrastructure; PITR requires backup storage and an isolated restore drill. Some legacy BLOCKED labels describe engineering work that can proceed locally and should be reassessed rather than treated as an approval gate. No destructive server action was taken.
 
 ## E. Testing and validation
+
+On germ, `bash scripts/postgres_restore_drill.sh` ran against a new network-isolated PostgreSQL 16 container on tmpfs with the initial application schema. The encrypted archive passed SHA-256 verification, failed dumps left no published output, a second dump could not overwrite it, and a fresh database recovered drill.invalid in one second. All assertions passed.
 
 | Procedure | Environment | Expected | Actual | Status |
 |---|---|---|---|---|
@@ -203,7 +205,7 @@ The blocked entries in section C identify the missing dependency or decision. OP
 | `ssh -o BatchMode=yes germ` with hostname, kernel, service/resource and container inspection | germ | Reach host and inspect without mutation | Reached `fastcreate-472995`; four OutisCloud containers healthy; 7.8 GiB RAM; 6.1 GiB disk available | PASS |
 | `curl` to `127.0.0.1:8080/health`, `/ready`, and `127.0.0.1:8081/` over SSH | germ | HTTP 200 | HTTP 200 on all three | PASS |
 
-No database migration, DNS transfer, DNSSEC rollover, backup/restore, or load test was run in this execution. A targeted browser CSP test was run. Both disposable PostgreSQL containers used for clone and revision tests were stopped afterward. `cargo test -p hickory-server --lib` passed 30/30; `python3 scripts/docs_check.py` completed with four existing broken-link warnings. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The user confirmed germ is a test environment.
+No database migration, DNS transfer, DNSSEC rollover or load test was run in this execution. A targeted browser CSP test was run. Both disposable PostgreSQL containers used for clone and revision tests were stopped afterward. `cargo test -p hickory-server --lib` passed 30/30; `python3 scripts/docs_check.py` completed with four existing broken-link warnings. Historical test claims in `task.md` and `TASK_STATUS.md` were not repeated. The user confirmed germ is a test environment.
 
 Helm packaging now includes API, DNS, and UI deployments, but cluster validation and agent/DB templates remain. The initial Helm image fetch (`docker run --rm alpine/helm:3.16.4 version --short`) failed with a Docker Hub TLS handshake timeout. Helm 3.16.4 was then downloaded from get.helm.sh to `/tmp`, checksum verified, and used to lint/render the chart.
 

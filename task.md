@@ -4,7 +4,7 @@
 > **SEC-005 progress:** UI Nginx now sends a CSP; syntax and live-header tests pass in a disposable container. A Playwright browser check now confirms an injected inline script is blocked by the served CSP. Secure cookies and token-storage migration remain, so the task is PARTIALLY COMPLETED.
 > **germ read-only DNS validation:** Independent `dig` queries for the hosted `uid0.ir` SOA returned authoritative NOERROR over UDP and TCP with matching serial `2026111900`; a TCP AXFR request was REFUSED. No local change was deployed to germ.
 > **Helm packaging progress:** The chart now renders control API, DNS server, and UI Deployments/Services/Ingress with shared pre-provisioned RWX zone storage, DNS health/readiness probes, generated ConfigMaps, and a release-specific UI proxy. Helm lint/render and rendered-resource checks pass. CORE-004 and OPS-002 remain PARTIALLY COMPLETED until cluster-level probe, RWX, Secret, image, and rollout validation succeeds; agent/DB templates are not included.
-> **Current corrected counts:** 34 COMPLETED, 50 PARTIALLY COMPLETED, 8 NEEDS VERIFICATION, 40 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
+> **Current corrected counts:** 34 COMPLETED, 52 PARTIALLY COMPLETED, 8 NEEDS VERIFICATION, 38 BLOCKED, 1 NOT STARTED (133 total; 25.6% completed). Earlier phase count tables are historical.
 
 > **Execution evidence, 2026-11-24:** API-010 remains COMPLETED. The frontend contract check now validates HTTP method/path pairs against registered Rust routes (83 pairs); `npm --prefix web/ui run test:routes`, `npm --prefix web/ui run lint`, and `git diff --check` pass. `germ` was reached over SSH and read-only API `/health`, `/ready`, and UI checks returned HTTP 200. The user subsequently confirmed germ is a test environment; no mutating validation was performed. See `TASK_STATUS.md` and `FINAL_IMPLEMENTATION_REPORT.md` for the current execution record.
 
@@ -1862,9 +1862,9 @@ Validation performed for this status update:
 | 8 | AUD-001 | P1 | PARTIALLY COMPLETED | Implemented: Audit detail and CSV export endpoints tested. Remaining: UI detail/export wiring pending. |
 | 8 | AUD-002 | P0 | PARTIALLY COMPLETED | Implemented: Broad audit coverage exists. Remaining: coverage-matrix ADR and failure-policy decision pending. |
 | 8 | AUD-003 | P2 | PARTIALLY COMPLETED | Implemented: Retention configurable. Remaining: archive/SIEM target external. |
-| 12 | BAK-002 | P0 | BLOCKED | Requires PostgreSQL backup/PITR storage target and restore drill. |
+| 12 | BAK-002 | P0 | PARTIALLY COMPLETED | Encrypted PostgreSQL dump and restore verified on germ (746c4f89a). Scheduled retention, off-host storage and WAL point-in-time recovery remain. |
 | 3 | BAK-003 | P0 | BLOCKED | Depends on DNSSEC-001; no encrypted key export/restore target. |
-| 12 | BAK-004 | P0 | BLOCKED | Depends on BAK-002/BAK-003. |
+| 12 | BAK-004 | P0 | PARTIALLY COMPLETED | Isolated restore verified checksums and recovered a zone in one second on germ (746c4f89a). DNSSEC keys, configuration recovery and RPO measurement remain. |
 | 12 | BAK-005 | P0 | COMPLETED | ADR-0003 documents RPO/RTO targets; drills remain blocked. |
 | 9 | SEC-001 | P0 | BLOCKED | Requires certificate issuance and reverse-proxy deployment topology. |
 | 9 | SEC-002 | P0 | BLOCKED | Requires CA/certificate provisioning and connection-string migration. |

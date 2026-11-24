@@ -2,7 +2,7 @@
 
 ## 2026-11-24 execution update
 
-**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 50, NEEDS VERIFICATION 8, BLOCKED 40, NOT STARTED 1 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
+**Authoritative counts after these changes:** 133 tasks; COMPLETED 34, PARTIALLY COMPLETED 52, NEEDS VERIFICATION 8, BLOCKED 38, NOT STARTED 1 (25.6% completed). These counts apply the source-verified corrections below to the 133-row matrix in `task.md` §19. Earlier count tables are historical.
 
 **OPS-003 — CI/CD (P0): PARTIALLY COMPLETED.** The active Docker Hub image workflow now requires PostgreSQL-backed API, DNS, UI, Helm, documentation and dependency checks before publishing. Run `45342563964` passed through documentation, failed dependency policy, and correctly skipped image publishing. The vulnerable lockfile packages and policy metadata were repaired locally in `e61dea001`; GitHub run `45344351797` passed the complete validation gate; image builds are in progress. Repaired per-image GHCR tag generation, added a DNS image build, normalized repository image names, granted package-write permission, and added Helm rendering in `.github/workflows/ci-cd.yml`. Local YAML reference checks and Helm render pass. GitHub Actions API reports `CI/CD Pipeline` and `CI` are `disabled_manually`; the available SSH Git remote does not provide a GitHub API token, and `GH_TOKEN`/`GITHUB_TOKEN` are unset. Enable those workflows in repository settings (or provide an API token with Actions workflow permissions), then require passing DB/UI/DNS/security/Helm gates before calling OPS-003 complete. The active Docker Hub image workflow is separate.
 **Active image delivery:** GitHub Actions run `45341283543` for commit `be40b3196` completed successfully; its control API, DNS server, and UI build/push steps all succeeded. This verifies the active Docker Hub path, not the manually disabled CI/CD gates or the newest local changes.
@@ -635,9 +635,9 @@ Validation performed for this status update:
 | 8 | AUD-001 | P1 | PARTIALLY COMPLETED | Implemented: Audit detail and CSV export endpoints tested. Remaining: UI detail/export wiring pending. |
 | 8 | AUD-002 | P0 | PARTIALLY COMPLETED | Implemented: Broad audit coverage exists. Remaining: coverage-matrix ADR and failure-policy decision pending. |
 | 8 | AUD-003 | P2 | PARTIALLY COMPLETED | Implemented: Retention configurable. Remaining: archive/SIEM target external. |
-| 12 | BAK-002 | P0 | BLOCKED | Requires PostgreSQL backup/PITR storage target and restore drill. |
+| 12 | BAK-002 | P0 | PARTIALLY COMPLETED | Encrypted PostgreSQL dump and restore verified on germ (746c4f89a). Scheduled retention, off-host storage and WAL point-in-time recovery remain. |
 | 3 | BAK-003 | P0 | BLOCKED | Depends on DNSSEC-001; no encrypted key export/restore target. |
-| 12 | BAK-004 | P0 | BLOCKED | Depends on BAK-002/BAK-003. |
+| 12 | BAK-004 | P0 | PARTIALLY COMPLETED | Isolated restore verified checksums and recovered a zone in one second on germ (746c4f89a). DNSSEC keys, configuration recovery and RPO measurement remain. |
 | 12 | BAK-005 | P0 | COMPLETED | ADR-0003 documents RPO/RTO targets; drills remain blocked. |
 | 9 | SEC-001 | P0 | BLOCKED | Requires certificate issuance and reverse-proxy deployment topology. |
 | 9 | SEC-002 | P0 | BLOCKED | Requires CA/certificate provisioning and connection-string migration. |
