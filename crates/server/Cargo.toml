@@ -96,7 +96,7 @@ testing = []
 
 [dependencies]
 async-trait.workspace = true
-geodns = { path = "../geodns" }
+geodns = { version = "0.1.0", path = "../geodns" }
 governor = "0.6"
 uuid = { version = "1", features = ["v4"] }
 toml = { workspace = true, optional = true }

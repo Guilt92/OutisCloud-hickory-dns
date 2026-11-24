@@ -33,7 +33,7 @@ hickory-net = { version = "0.26.0-alpha.1", path = "crates/net", default-feature
 hickory-resolver = { version = "0.26.0-alpha.1", path = "crates/resolver", default-features = false }
 hickory-server = { version = "0.26.0-alpha.1", path = "crates/server", default-features = false }
 hickory-proto = { version = "0.26.0-alpha.1", path = "crates/proto", default-features = false, features = ["std"] }
-test-support.path = "tests/test-support"
+test-support = { version = "0.26.0-alpha.1", path = "tests/test-support" }
 
 
 # logging

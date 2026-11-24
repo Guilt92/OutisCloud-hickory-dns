@@ -2,6 +2,7 @@
 name = "control_agent"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 # rustls only: no system OpenSSL headers are needed to build the agent
