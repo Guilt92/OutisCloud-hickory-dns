@@ -4459,6 +4459,116 @@ async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
     env.cleanup().await;
 }
 
+#[actix_web::test]
+async fn dnssec_rollover_publication_failure_queues_retry_and_preserves_retired_key_file() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let token = env.token(&env.admin, "admin");
+    let zone_id = make_zone(&env, &app, &token, "rollover-retry.test").await;
+
+    let (status, enabled, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/dnssec/enable"),
+        Some(&token),
+        j(serde_json::json!({"algorithm": "ED25519"}))
+    );
+    assert_eq!(status, 201, "{raw}");
+    let old_tag = enabled["keys"][0]["key_tag"].as_i64().unwrap() as i32;
+
+    let (status, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/dnssec/rollover"),
+        Some(&token),
+        j(serde_json::json!({}))
+    );
+    assert_eq!(status, 201, "{raw}");
+    let old_key = env
+        .dir
+        .path()
+        .join("dnssec-keys")
+        .join(format!("rollover-retry.test.{old_tag}.pem"));
+    assert!(old_key.is_file());
+
+    // Simulate a bad RR inserted outside the validated API. Publication must
+    // fail after the rollover DB transition, exercising its retry path.
+    let bad_record_id = Uuid::new_v4().to_string();
+    env.state
+        .db
+        .execute(
+            "INSERT INTO records(id, zone_id, name, record_type, value, ttl) \
+             VALUES($1::text::uuid, $2::text::uuid, 'broken', 'A', 'not-an-ip', 300)",
+            &[&bad_record_id, &zone_id],
+        )
+        .await
+        .unwrap();
+
+    let (status, result, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/dnssec/rollover/complete"),
+        Some(&token),
+        j(serde_json::json!({"retire_key_tag": old_tag}))
+    );
+    assert_eq!(status, 200, "{raw}");
+    assert!(result["publish_warning"].is_string(), "{result}");
+    assert!(
+        old_key.is_file(),
+        "failed publication must keep the key at its configured path"
+    );
+    assert!(
+        !env.dir
+            .path()
+            .join("dnssec-keys/retired")
+            .join(format!("rollover-retry.test.{old_tag}.pem"))
+            .exists(),
+        "key archival must wait until publication succeeds"
+    );
+    let queued: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM publication_outbox WHERE zone_domain = 'rollover-retry.test' AND status = 'pending'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(queued, 1, "failed DNSSEC publication must be retried");
+
+    env.state
+        .db
+        .execute(
+            "DELETE FROM records WHERE CAST(id AS varchar) = $1",
+            &[&bad_record_id],
+        )
+        .await
+        .unwrap();
+    assert!(
+        publication_retry_once(&env.state.dns_manager, &env.state.db)
+            .await
+            .unwrap()
+    );
+    let remaining: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM publication_outbox WHERE zone_domain = 'rollover-retry.test'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        remaining, 0,
+        "successful retry must acknowledge the outbox job"
+    );
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert_eq!(named.matches("key_path").count(), 1);
+    env.cleanup().await;
+}
+
 /// A database created by the *original* migrations (committed fixtures from the first
 /// release) must upgrade in place: data kept, new columns/tables added, running twice is a no-op.
 #[actix_web::test]

@@ -432,15 +432,34 @@ pub async fn ds_status(
     }))
 }
 
-async fn publish(data: &AppState) -> Option<String> {
-    match data.dns_manager.regenerate_zones(data.db.clone()).await {
+async fn publish(data: &AppState, zone_domain: &str) -> Option<String> {
+    let warning = match data.dns_manager.regenerate_zones(data.db.clone()).await {
         Ok(rep) if rep.failed.is_empty() => None,
         Ok(rep) => Some(format!(
             "publication reported failed zones: {:?}",
             rep.failed
         )),
         Err(e) => Some(format!("publication failed: {e}")),
+    };
+    if let Some(error) = warning.as_deref() {
+        if let Err(queue_error) = data
+            .db
+            .execute(
+                "INSERT INTO publication_outbox(zone_domain, attempts, next_attempt, last_error) \
+                 VALUES($1, 0, now(), $2) ON CONFLICT(zone_domain) DO UPDATE SET \
+                 attempts=0, status='pending', next_attempt=now(), last_error=EXCLUDED.last_error, updated_at=now()",
+                &[&zone_domain, &error],
+            )
+            .await
+        {
+            warn!(
+                "dnssec publication retry could not be queued for {}: {}",
+                zone_domain,
+                full_error_string(&queue_error)
+            );
+        }
     }
+    warning
 }
 
 /// Store a new key (file first, then the row) for the zone.
@@ -537,7 +556,7 @@ pub async fn enable_dnssec(
         return r;
     }
     if let Err(e) = data.db.execute("UPDATE zones SET dnssec_enabled = true, geodns_enabled = false, updated_at = now() WHERE CAST(id AS varchar) = $1", &[&zone_id]).await { return db_err("enable flag", &e); }
-    let warn_pub = publish(&data).await;
+    let warn_pub = publish(&data, &access.domain).await;
     audit(
         &data.db,
         Some(&tok.claims.sub),
@@ -617,7 +636,7 @@ pub async fn rollover_dnssec(
     if let Err(r) = add_key(&data, &zone_id, &access.domain, algorithm, "new").await {
         return r;
     }
-    let warn_pub = publish(&data).await;
+    let warn_pub = publish(&data, &access.domain).await;
     audit(
         &data.db,
         Some(&tok.claims.sub),
@@ -676,11 +695,16 @@ pub async fn complete_rollover(
         "UPDATE dnssec_keys SET status = 'retired', retired_at = now() WHERE CAST(zone_id AS varchar) = $1 AND key_tag = $2 AND status <> 'retired'", &[&zone_id, &body.retire_key_tag]).await { return db_err("retire", &e); }
     // the remaining key becomes the single active key
     let _ = data.db.execute("UPDATE dnssec_keys SET status = 'active' WHERE CAST(zone_id AS varchar) = $1 AND status = 'new'", &[&zone_id]).await;
-    let warn_pub = publish(&data).await;
+    let warn_pub = publish(&data, &access.domain).await;
     // keep the retired private key (renamed) rather than deleting it: it may be needed to explain old signatures / undo
-    let dir = key_dir(data.dns_manager.zone_dir());
-    let _ = std::fs::create_dir_all(dir.join("retired"));
-    let _ = std::fs::rename(dir.join(&file), dir.join("retired").join(&file));
+    if warn_pub.is_none() {
+        let dir = key_dir(data.dns_manager.zone_dir());
+        if let Err(e) = std::fs::create_dir_all(dir.join("retired")) {
+            warn!("dnssec: cannot create retired key directory: {}", e);
+        } else if let Err(e) = std::fs::rename(dir.join(&file), dir.join("retired").join(&file)) {
+            warn!("dnssec: cannot archive retired key {}: {}", file, e);
+        }
+    }
     audit(
         &data.db,
         Some(&tok.claims.sub),
@@ -741,12 +765,19 @@ pub async fn disable_dnssec(
     let files = data.db.query("SELECT key_file FROM dnssec_keys WHERE CAST(zone_id AS varchar) = $1 AND status <> 'retired'", &[&zone_id]).await.unwrap_or_default();
     if let Err(e) = data.db.execute("UPDATE dnssec_keys SET status = 'retired', retired_at = now() WHERE CAST(zone_id AS varchar) = $1 AND status <> 'retired'", &[&zone_id]).await { return db_err("disable keys", &e); }
     if let Err(e) = data.db.execute("UPDATE zones SET dnssec_enabled = false, updated_at = now() WHERE CAST(id AS varchar) = $1", &[&zone_id]).await { return db_err("disable flag", &e); }
-    let warn_pub = publish(&data).await;
-    let dir = key_dir(data.dns_manager.zone_dir());
-    let _ = std::fs::create_dir_all(dir.join("retired"));
-    for f in files {
-        let f: String = f.get(0);
-        let _ = std::fs::rename(dir.join(&f), dir.join("retired").join(&f));
+    let warn_pub = publish(&data, &access.domain).await;
+    if warn_pub.is_none() {
+        let dir = key_dir(data.dns_manager.zone_dir());
+        if let Err(e) = std::fs::create_dir_all(dir.join("retired")) {
+            warn!("dnssec: cannot create retired key directory: {}", e);
+        } else {
+            for f in files {
+                let f: String = f.get(0);
+                if let Err(e) = std::fs::rename(dir.join(&f), dir.join("retired").join(&f)) {
+                    warn!("dnssec: cannot archive retired key {}: {}", f, e);
+                }
+            }
+        }
     }
     audit(
         &data.db,
