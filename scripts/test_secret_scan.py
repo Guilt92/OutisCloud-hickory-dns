@@ -1,9 +1,14 @@
 import unittest
 
-from scripts.secret_scan import findings_for_text
+from scripts.secret_scan import findings_for_text, is_template_file
 
 
 class SecretScanTests(unittest.TestCase):
+    def test_example_templates_are_not_reported_as_live_configuration(self):
+        self.assertTrue(is_template_file("k8s/secret.example.yaml"))
+        self.assertTrue(is_template_file("env/api.env.example"))
+        self.assertFalse(is_template_file("k8s/secret.yaml"))
+
     def test_loopback_ci_database_url_is_a_test_fixture(self):
         self.assertEqual(
             findings_for_text(

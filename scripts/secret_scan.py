@@ -35,6 +35,10 @@ def is_safe_ci_fixture(name: str, key: str, value: str) -> bool:
     )
 
 
+def is_template_file(name: str) -> bool:
+    return name.endswith((".example", ".example.yaml", ".example.yml")) or os.path.basename(name) == ".env.example"
+
+
 def findings_for_text(name: str, text: str) -> list[tuple[str, str]]:
     findings = []
     for match in PATTERN.finditer(text):
@@ -58,7 +62,7 @@ def scan_tracked_files() -> list[tuple[str, str]]:
     findings = []
     for name in tracked:
         base = os.path.basename(name)
-        if base == ".env.example":
+        if is_template_file(name):
             continue
         if name.endswith(tuple(SOURCE_EXT)):
             continue
