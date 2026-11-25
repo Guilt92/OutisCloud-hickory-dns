@@ -4709,7 +4709,12 @@ async fn create_zone(
     // commit together. A failed NS/SOA insert must never leave a half-created
     // zone behind. Concurrent creations for the same tenant serialise on the
     // tenant row, so they cannot both observe the same free slot.
-    let tx = match data.db.begin().await {
+    let tx_result = if let Some(tenant_id) = zone_tenant.as_deref() {
+        data.db.begin_for(tenant_id).await
+    } else {
+        data.db.begin().await
+    };
+    let tx = match tx_result {
         Ok(t) => t,
         Err(e) => {
             warn!("create_zone transaction: {}", full_error_string(&e));

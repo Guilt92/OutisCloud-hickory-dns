@@ -8,8 +8,9 @@
 
 use log::{error, info, warn};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
+use tokio::time::sleep;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Config, Error, NoTls, Row};
 
@@ -20,6 +21,7 @@ pub struct Pool {
     /// session is exclusively checked out for the lifetime of a transaction.
     tx_slots: Vec<TxSlot>,
     next_tx: AtomicUsize,
+    tenant_locks: std::sync::Mutex<std::collections::HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     cfg: Config,
     #[cfg(test)]
     queries: AtomicUsize,
@@ -33,17 +35,18 @@ pub struct AdvisoryLock {
 
 /// Exclusive use of one transaction session. Statements issued through
 /// `client()` cannot be interleaved with another transaction on that session.
-pub struct TxConn<'a> {
-    _guard: tokio::sync::MutexGuard<'a, ()>,
+pub struct TxConn {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    _tenant_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
     client: Arc<Client>,
 }
 
 struct TxSlot {
     client: RwLock<Arc<Client>>,
-    lock: tokio::sync::Mutex<()>,
+    lock: Arc<tokio::sync::Mutex<()>>,
 }
 
-impl TxConn<'_> {
+impl TxConn {
     pub fn client(&self) -> &Client {
         &self.client
     }
@@ -95,7 +98,7 @@ impl Pool {
         for _ in 0..transaction_size {
             tx_slots.push(TxSlot {
                 client: RwLock::new(open(&cfg).await?),
-                lock: tokio::sync::Mutex::new(()),
+                lock: Arc::new(tokio::sync::Mutex::new(())),
             });
         }
         let pool = Arc::new(Pool {
@@ -103,6 +106,7 @@ impl Pool {
             next: AtomicUsize::new(0),
             tx_slots,
             next_tx: AtomicUsize::new(0),
+            tenant_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             cfg: cfg.clone(),
             #[cfg(test)]
             queries: AtomicUsize::new(0),
@@ -277,10 +281,38 @@ impl Pool {
 
     /// Check out a bounded transaction session. Any transaction a cancelled
     /// request left open on it is rolled back before the session is reused.
-    pub async fn begin(&self) -> Result<TxConn<'_>, tokio_postgres::Error> {
+    pub async fn begin(&self) -> Result<TxConn, tokio_postgres::Error> {
+        self.begin_inner(None).await
+    }
+
+    /// Acquire a transaction slot through a FIFO per-tenant gate. This keeps a
+    /// burst from one tenant from occupying multiple sessions while unrelated
+    /// tenants wait, while retaining the global bound on database sessions.
+    pub async fn begin_for(&self, tenant_id: &str) -> Result<TxConn, tokio_postgres::Error> {
+        let tenant_lock = {
+            let mut locks = self.tenant_locks.lock().unwrap_or_else(|e| e.into_inner());
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            locks
+                .entry(tenant_id.to_owned())
+                .or_default()
+                .upgrade()
+                .unwrap_or_else(|| {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    locks.insert(tenant_id.to_owned(), Arc::downgrade(&lock));
+                    lock
+                })
+        };
+        let tenant_guard = tenant_lock.lock_owned().await;
+        self.begin_inner(Some(tenant_guard)).await
+    }
+
+    async fn begin_inner(
+        &self,
+        tenant_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<TxConn, tokio_postgres::Error> {
         let idx = self.next_tx.fetch_add(1, Ordering::Relaxed) % self.tx_slots.len();
         let slot = &self.tx_slots[idx];
-        let guard = slot.lock.lock().await;
+        let guard = slot.lock.clone().lock_owned().await;
         let client = slot
             .client
             .read()
@@ -289,7 +321,66 @@ impl Pool {
         let _ = client.batch_execute("ROLLBACK").await;
         Ok(TxConn {
             _guard: guard,
+            _tenant_guard: tenant_guard,
             client,
         })
     }
+
+    /// Execute a complete serializable transaction, retrying only PostgreSQL
+    /// serialization failures and deadlocks. The operation closure is rerun,
+    /// so callers must keep non-database side effects outside it. Attempts are
+    /// bounded and every failed attempt is rolled back before releasing its
+    /// session to another request.
+    pub async fn run_transaction<T, F, Fut>(
+        &self,
+        max_attempts: usize,
+        mut operation: F,
+    ) -> Result<T, tokio_postgres::Error>
+    where
+        F: FnMut(Arc<Client>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, tokio_postgres::Error>>,
+    {
+        let attempts = max_attempts.max(1);
+        for attempt in 0..attempts {
+            let tx = self.begin().await?;
+            let client = tx.client.clone();
+            client
+                .batch_execute("BEGIN ISOLATION LEVEL SERIALIZABLE")
+                .await?;
+
+            match operation(client.clone()).await {
+                Ok(value) => match client.batch_execute("COMMIT").await {
+                    Ok(()) => return Ok(value),
+                    Err(error) if retryable_transaction_error(&error) && attempt + 1 < attempts => {
+                        let _ = client.batch_execute("ROLLBACK").await;
+                        sleep(transaction_retry_delay(attempt)).await;
+                    }
+                    Err(error) => {
+                        let _ = client.batch_execute("ROLLBACK").await;
+                        return Err(error);
+                    }
+                },
+                Err(error) if retryable_transaction_error(&error) && attempt + 1 < attempts => {
+                    let _ = client.batch_execute("ROLLBACK").await;
+                    sleep(transaction_retry_delay(attempt)).await;
+                }
+                Err(error) => {
+                    let _ = client.batch_execute("ROLLBACK").await;
+                    return Err(error);
+                }
+            }
+        }
+        unreachable!("bounded transaction loop always returns")
+    }
+}
+
+fn retryable_transaction_error(error: &tokio_postgres::Error) -> bool {
+    error.code().is_some_and(|code| {
+        code == &tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE
+            || code == &tokio_postgres::error::SqlState::T_R_DEADLOCK_DETECTED
+    })
+}
+
+fn transaction_retry_delay(attempt: usize) -> Duration {
+    Duration::from_millis(10_u64.saturating_mul(1_u64 << attempt.min(5)))
 }

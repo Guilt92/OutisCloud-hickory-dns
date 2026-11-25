@@ -123,6 +123,106 @@ async fn publication_outbox_persists_retries_and_serializes_concurrent_workers()
 }
 
 #[actix_web::test]
+async fn serializable_transactions_retry_only_retryable_database_conflicts() {
+    let Some(env) = setup().await else { return };
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = attempts.clone();
+    let value = env
+        .state
+        .db
+        .run_transaction(3, move |client| {
+            let attempt = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    client
+                        .batch_execute(
+                            "DO $$ BEGIN RAISE EXCEPTION 'retry test' USING ERRCODE='40001'; END $$",
+                        )
+                        .await?;
+                }
+                let row = client.query_one("SELECT 42::integer", &[]).await?;
+                Ok(row.get::<_, i32>(0))
+            }
+        })
+        .await
+        .expect("serialization failure retries and commits the next attempt");
+    assert_eq!(value, 42);
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = attempts.clone();
+    let result = env
+        .state
+        .db
+        .run_transaction(4, move |client| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move { client.batch_execute("SELECT 1/0").await }
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = attempts.clone();
+    let result = env
+        .state
+        .db
+        .run_transaction(2, move |client| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                client
+                    .batch_execute(
+                        "DO $$ BEGIN RAISE EXCEPTION 'bounded retry test' USING ERRCODE='40001'; END $$",
+                    )
+                    .await
+            }
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn tenant_transaction_gate_isolates_bursts_without_blocking_other_tenants() {
+    let Some(env) = setup().await else { return };
+    let first = env.state.db.begin_for("tenant-a").await.unwrap();
+    let pool = env.state.db.clone();
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let queued = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        pool.begin_for("tenant-a").await.unwrap()
+    });
+    let mut queued = Box::pin(queued);
+    started_rx.recv().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    // A different tenant can still claim a separate session while tenant A's
+    // second request waits behind its first transaction.
+    let other_tenant = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        env.state.db.begin_for("tenant-b"),
+    )
+    .await
+    .expect("tenant B must not wait for tenant A")
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut queued)
+            .await
+            .is_err()
+    );
+
+    drop(first);
+    let second = tokio::time::timeout(std::time::Duration::from_secs(1), &mut queued)
+        .await
+        .expect("tenant A proceeds after its current transaction releases")
+        .unwrap();
+    drop(other_tenant);
+    drop(second);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn failed_publication_retries_latest_database_state_after_restart() {
     let Some(env) = setup().await else { return };
     let zone_id = Uuid::new_v4().to_string();
