@@ -20,6 +20,7 @@ const ALLOWED = [
   /^\/api\/v1\/nameservers$/,
   /^\/api\/v1\/nameservers\/\*$/,
   /^\/api\/v1\/zones$/,
+  /^\/api\/v1\/zone-templates$/,
   /^\/api\/v1\/zones\/\*$/,
   /^\/api\/v1\/zones\/\*\/(export|import|records|members|revisions|verify|dnssec|tenant|metadata|clone|lifecycle|transfer-policy)$/,
   /^\/api\/v1\/zones\/\*\/records\/\*$/,

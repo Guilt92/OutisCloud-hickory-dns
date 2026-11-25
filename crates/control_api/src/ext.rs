@@ -227,10 +227,11 @@ mod revision_retention_tests {
     }
 }
 
-/// Record the zone's current records as a revision (skipped when identical to
-/// the latest one). Never fails the calling request.
-pub async fn snapshot_zone(db: &Pool, zone_id: &str, user: Option<&str>, reason: &str) {
-    snapshot_zone_with_retention(db, zone_id, user, reason, revision_retention()).await;
+/// Record the zone's current records and publishable settings as a revision.
+/// Duplicate snapshots are skipped. Returns false and increments a metric when
+/// persistence fails so the mutation response can report the missing history.
+pub async fn snapshot_zone(db: &Pool, zone_id: &str, user: Option<&str>, reason: &str) -> bool {
+    snapshot_zone_with_retention(db, zone_id, user, reason, revision_retention()).await
 }
 
 pub(crate) async fn snapshot_zone_with_retention(
@@ -239,7 +240,7 @@ pub(crate) async fn snapshot_zone_with_retention(
     user: Option<&str>,
     reason: &str,
     retention: i64,
-) {
+) -> bool {
     let res = async {
         let zone = db.query_one(
             "SELECT domain, zone_type, COALESCE(geodns_enabled, true), COALESCE(ecs_enabled, false), description, tags, axfr_policy \
@@ -275,6 +276,7 @@ pub(crate) async fn snapshot_zone_with_retention(
         }
         Ok::<(), tokio_postgres::Error>(())
     }.await;
+    let succeeded = res.is_ok();
     if let Err(e) = res {
         crate::metrics::record_snapshot_failure();
         warn!(
@@ -283,6 +285,7 @@ pub(crate) async fn snapshot_zone_with_retention(
             full_error_string(&e)
         );
     }
+    succeeded
 }
 
 pub async fn list_revisions(
@@ -487,12 +490,39 @@ pub async fn restore_revision(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let row = match data.db.query_opt("SELECT records::text, settings FROM zone_revisions WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2", &[&rev, &zone_id]).await {
+    let row = match data.db.query_opt("SELECT records::text, settings, domain FROM zone_revisions WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2", &[&rev, &zone_id]).await {
         Ok(Some(r)) => r, Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error": "revision not found"})),
         Err(e) => { warn!("restore: {}", full_error_string(&e)); return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"})) }
     };
     let text: String = row.get(0);
     let settings: serde_json::Value = row.get(1);
+    let restored_domain: String = row.get(2);
+    if let Err(error) = validate_domain(&restored_domain) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "revision contains an invalid domain",
+            "details": error
+        }));
+    }
+    if restored_domain != access.domain {
+        match data
+            .db
+            .query_opt(
+                "SELECT 1 FROM zones WHERE domain=$1 AND CAST(id AS varchar)<>$2",
+                &[&restored_domain, &zone_id],
+            )
+            .await
+        {
+            Ok(Some(_)) => return HttpResponse::Conflict().json(
+                serde_json::json!({"error":"revision domain is already assigned to another zone"}),
+            ),
+            Ok(None) => {}
+            Err(e) => {
+                warn!("restore domain conflict check: {}", full_error_string(&e));
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error":"database error"}));
+            }
+        }
+    }
     let recs: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap_or_default();
     let rows: Vec<RecordRow> = recs
         .iter()
@@ -505,7 +535,7 @@ pub async fn restore_revision(
         })
         .collect();
     // the restored zone must be valid *now* (nameservers/validation rules may have changed)
-    if let Err(e) = precheck_zone_change(&data.db, &access.domain, rows.clone()).await {
+    if let Err(e) = precheck_zone_change(&data.db, &restored_domain, rows.clone()).await {
         return HttpResponse::BadRequest().json(
             serde_json::json!({"error": "revision can no longer be published", "details": e}),
         );
@@ -525,7 +555,12 @@ pub async fn restore_revision(
     {
         return resp;
     }
-    snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "before restore").await;
+    if !snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "before restore").await {
+        return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "error": "restore not started because the current zone could not be snapshotted",
+            "revision_snapshot": "failed"
+        }));
+    }
     let ids: Vec<String> = rows.iter().map(|_| Uuid::new_v4().to_string()).collect();
     let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
     let types: Vec<String> = rows.iter().map(|r| r.rtype.clone()).collect();
@@ -570,6 +605,10 @@ pub async fn restore_revision(
                  SELECT u.id::uuid, $1::text::uuid, u.n, u.t, u.v, u.ttl, u.p \
                  FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) AS u(id, n, t, v, ttl, p)",
                 &[&zone_id, &ids, &names, &types, &values, &ttls, &prios]).await.map_err(RestoreSwapError::Db)?;
+            c.execute(
+                "UPDATE zones SET domain=$1, updated_at=now() WHERE CAST(id AS varchar)=$2",
+                &[&restored_domain, &zone_id],
+            ).await.map_err(RestoreSwapError::Db)?;
             // Revisions from before settings snapshots contain `{}` and retain
             // the current configuration. New snapshots restore the publishable
             // zone policy in the same transaction as the RRset replacement.
@@ -603,10 +642,11 @@ pub async fn restore_revision(
                 .json(serde_json::json!({"error": "restore failed; zone unchanged"}));
         }
     }
-    if let Err(e) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await {
+    if let Err(e) = publish(&data.dns_manager, &data.db, Some(&restored_domain)).await {
         return publish_failed(&e);
     }
-    snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "restore").await;
+    let revision_snapshot_ok =
+        snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "restore").await;
     audit(
         &data.db,
         Some(&tok.claims.sub),
@@ -614,10 +654,14 @@ pub async fn restore_revision(
         "zone",
         Some(zone_id),
         &req,
-        serde_json::json!({"revision": rev, "zone": access.domain}),
+        serde_json::json!({"revision": rev, "zone": restored_domain}),
     )
     .await;
-    HttpResponse::Ok().json(serde_json::json!({"success": true, "records": rows.len()}))
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "records": rows.len(),
+        "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" }
+    }))
 }
 
 // ---------------------------------------------------------------------------

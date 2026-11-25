@@ -1175,6 +1175,138 @@ async fn zone_domain_validation() {
 }
 
 #[actix_web::test]
+async fn zone_templates_are_authenticated_validated_and_persist_defaults_and_records() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+
+    let (status, _, _) = call!(app, get, "/api/v1/zone-templates", None::<&str>, None);
+    assert_eq!(status, 401, "template catalog must require authentication");
+    let (status, catalog, raw) = call!(app, get, "/api/v1/zone-templates", Some(&admin), None);
+    assert_eq!(status, 200, "{raw}");
+    assert_eq!(catalog.as_array().unwrap().len(), 2);
+    assert!(catalog.as_array().unwrap().iter().any(|t| t["id"] == "web"));
+
+    for (domain, template_id, variables, expected_count) in [
+        (
+            "web-template.example",
+            "web",
+            serde_json::json!({"ipv4":"192.0.2.4", "ipv6":"2001:db8::4"}),
+            3,
+        ),
+        (
+            "mail-template.example",
+            "mail",
+            serde_json::json!({"mail_ipv4":"192.0.2.25"}),
+            3,
+        ),
+    ] {
+        let (status, body, raw) = call!(
+            app,
+            post,
+            "/api/v1/zones",
+            Some(&admin),
+            j(serde_json::json!({
+                "domain": domain,
+                "template_id": template_id,
+                "template_variables": variables
+            }))
+        );
+        assert_eq!(status, 201, "{raw}");
+        assert_eq!(body["template_record_count"], expected_count);
+        let zone_id = body["id"].as_str().unwrap();
+        let rows = env.state.db.query(
+            "SELECT name,record_type,value,COALESCE(priority,0) FROM records WHERE CAST(zone_id AS varchar)=$1 ORDER BY record_type,name",
+            &[&zone_id],
+        ).await.unwrap();
+        let records: Vec<(String, String, String, i32)> = rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+            .collect();
+        assert!(
+            records.iter().any(|r| r.1 == "SOA"),
+            "default SOA preserved"
+        );
+        assert!(records.iter().any(|r| r.1 == "NS"), "default NS preserved");
+        if template_id == "web" {
+            assert!(records.iter().any(|r| r.1 == "A" && r.2 == "192.0.2.4"));
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.1 == "AAAA" && r.2 == "2001:db8::4")
+            );
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.1 == "CNAME" && r.2 == "web-template.example.")
+            );
+        } else {
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.1 == "A" && r.0 == "mail" && r.2 == "192.0.2.25")
+            );
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.1 == "MX" && r.3 == 10 && r.2 == "mail.mail-template.example.")
+            );
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.1 == "TXT" && r.2.contains("v=spf1 mx -all"))
+            );
+        }
+        let dnssec = env
+            .state
+            .db
+            .query_one(
+                "SELECT dnssec_enabled FROM zones WHERE CAST(id AS varchar)=$1",
+                &[&zone_id],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !dnssec.get::<_, bool>(0),
+            "templates must not implicitly enable DNSSEC"
+        );
+    }
+
+    for (domain, template_id, variables) in [
+        ("missing-template.example", "web", serde_json::json!({})),
+        (
+            "invalid-template.example",
+            "web",
+            serde_json::json!({"ipv4":"not-an-ip"}),
+        ),
+        ("unknown-template.example", "bogus", serde_json::json!({})),
+    ] {
+        let (status, _, raw) = call!(
+            app,
+            post,
+            "/api/v1/zones",
+            Some(&admin),
+            j(serde_json::json!({
+                "domain": domain, "template_id": template_id, "template_variables": variables
+            }))
+        );
+        assert_eq!(status, 400, "{domain}: {raw}");
+        let count = env
+            .state
+            .db
+            .query_one("SELECT count(*) FROM zones WHERE domain=$1", &[&domain])
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(
+            count, 0,
+            "invalid template request must not leave a partial zone"
+        );
+    }
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn record_validation_rrsets_and_atomic_update() {
     let Some(env) = setup().await else { return };
     let app = app!(env);
@@ -2509,6 +2641,119 @@ async fn zone_history_and_rollback() {
         None
     );
     assert_eq!(st, 403);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn revision_restore_restores_renamed_domain_and_reports_snapshot_failures() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let token = env.token(&env.admin, "admin");
+    let zone_id = make_zone(&env, &app, &token, "restore-old.example").await;
+    let record_url = format!("/api/v1/zones/{zone_id}/records");
+    let (status, record, raw) = call!(
+        app,
+        post,
+        &record_url,
+        Some(&token),
+        j(serde_json::json!({"name":"www","record_type":"A","value":"192.0.2.77","ttl":300}))
+    );
+    assert_eq!(status, 201, "{raw}");
+    assert_eq!(record["revision_snapshot"], "saved");
+    let (_, revisions, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zone_id}/revisions"),
+        Some(&token),
+        None
+    );
+    let target = revisions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|revision| {
+            revision["domain"] == "restore-old.example" && revision["record_count"] == 4
+        })
+        .expect("revision containing the added record under the old domain")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zone_id}"),
+        Some(&token),
+        j(serde_json::json!({"domain":"restore-new.example"}))
+    );
+    assert_eq!(status, 200, "{raw}");
+    let (status, restored, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/revisions/{target}/restore"),
+        Some(&token),
+        None
+    );
+    assert_eq!(status, 200, "{raw}");
+    assert_eq!(restored["revision_snapshot"], "saved");
+    let (_, current, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zone_id}"),
+        Some(&token),
+        None
+    );
+    assert_eq!(current["data"]["domain"], "restore-old.example");
+    assert!(env.zone_file("restore-old.example").exists());
+    assert!(!env.zone_file("restore-new.example").exists());
+
+    env.state.db.batch_execute(
+        "CREATE FUNCTION reject_revision_snapshot() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated snapshot failure'; END $$; \
+         CREATE TRIGGER reject_revision_snapshot BEFORE INSERT ON zone_revisions FOR EACH ROW EXECUTE FUNCTION reject_revision_snapshot();"
+    ).await.unwrap();
+    let (status, response, raw) = call!(
+        app,
+        post,
+        &record_url,
+        Some(&token),
+        j(
+            serde_json::json!({"name":"failure-visible","record_type":"A","value":"192.0.2.88","ttl":300})
+        )
+    );
+    assert_eq!(
+        status, 201,
+        "record publication succeeds although history write failed: {raw}"
+    );
+    assert_eq!(
+        response["revision_snapshot"], "failed",
+        "the mutation caller must see the lost history snapshot"
+    );
+    let count: i64 = env.state.db.query_one(
+        "SELECT count(*) FROM records WHERE CAST(zone_id AS varchar)=$1 AND name='failure-visible'", &[&zone_id]
+    ).await.unwrap().get(0);
+    assert_eq!(
+        count, 1,
+        "snapshot failure does not roll back an already published mutation"
+    );
+    let (status, response, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/revisions/{target}/restore"),
+        Some(&token),
+        None
+    );
+    assert_eq!(
+        status, 503,
+        "restore must stop when its recovery snapshot fails: {raw}"
+    );
+    assert_eq!(response["revision_snapshot"], "failed");
+    let unchanged: i64 = env.state.db.query_one(
+        "SELECT count(*) FROM records WHERE CAST(zone_id AS varchar)=$1 AND name='failure-visible'", &[&zone_id]
+    ).await.unwrap().get(0);
+    assert_eq!(
+        unchanged, 1,
+        "failed pre-restore snapshot must leave the zone untouched"
+    );
     env.cleanup().await;
 }
 
@@ -7664,6 +7909,20 @@ async fn clone_zone_copies_records_with_rewritten_domain() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|r| r["record_type"] == "SOA")
+    );
+    assert!(
+        records
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["record_type"] == "NS")
+    );
+    assert!(
+        records
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|r| r["name"] == "www")
     );
     assert!(
@@ -7679,6 +7938,20 @@ async fn clone_zone_copies_records_with_rewritten_domain() {
             .unwrap()
             .iter()
             .any(|r| r["name"] == "note" && r["value"] == "source.example")
+    );
+    let dnssec_enabled: bool = env
+        .state
+        .db
+        .query_one(
+            "SELECT dnssec_enabled FROM zones WHERE CAST(id AS varchar)=$1",
+            &[&new_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        !dnssec_enabled,
+        "a clone must not enable DNSSEC without copying its signing keys"
     );
     let zone_file = std::fs::read_to_string(env.zone_file("copy.example")).unwrap();
     assert!(zone_file.contains("copy.example"));

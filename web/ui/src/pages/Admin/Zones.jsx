@@ -32,6 +32,9 @@ export default function Zones(){
     (vals) => ({ domain: validators.domain(vals.domain) })
   )
   const [geodnsEnabled, setGeodnsEnabled] = React.useState(false)
+  const [templates, setTemplates] = React.useState([])
+  const [templateId, setTemplateId] = React.useState('')
+  const [templateVariables, setTemplateVariables] = React.useState({})
   const [editingZone, setEditingZone] = React.useState(null)
   const [editDomain, setEditDomain] = React.useState('')
   const [editDescription, setEditDescription] = React.useState('')
@@ -65,6 +68,14 @@ export default function Zones(){
     if (token) api.setToken(token)
   }, [])
 
+  React.useEffect(() => {
+    let cancelled = false
+    api.get('/api/v1/zone-templates')
+      .then((res) => { if (!cancelled) setTemplates(Array.isArray(res.data) ? res.data : []) })
+      .catch((err) => { if (!cancelled) notifyRef.current?.error(apiErrorMessage(err, 'Failed to load zone templates')) })
+    return () => { cancelled = true }
+  }, [])
+
   const handleCreateClick = async (e) => {
     e.preventDefault()
     e.stopPropagation()
@@ -80,9 +91,15 @@ export default function Zones(){
     setCreating(true)
     try {
       const domain = values.domain.trim().endsWith('.') ? values.domain.trim() : values.domain.trim() + '.'
-      const response = await api.post('/api/v1/zones', { domain, geodns_enabled: geodnsEnabled })
+      const response = await api.post('/api/v1/zones', {
+        domain,
+        geodns_enabled: geodnsEnabled,
+        ...(templateId ? { template_id: templateId, template_variables: templateVariables } : {}),
+      })
       setFieldValue('domain', '')
       setGeodnsEnabled(false)
+      setTemplateId('')
+      setTemplateVariables({})
       load()
       const nsList = response.data?.nameservers
       notify?.success(nsList?.length ? `Zone ${domain} created! Nameservers: ${nsList.join(', ')}` : `Zone ${domain} created`)
@@ -206,8 +223,9 @@ export default function Zones(){
           {!editingZone ? (
             <div className="flex flex-col lg:flex-row lg:items-end gap-4">
               <div className="flex-1 max-w-md">
-                <FormField label="Domain" error={errors.domain}>
+                <FormField label="Domain" error={errors.domain} htmlFor="create-zone-domain">
                   <input
+                    id="create-zone-domain"
                     className="input"
                     placeholder="example.com"
                     {...bind('domain')}
@@ -225,6 +243,34 @@ export default function Zones(){
                   GeoDNS
                 </label>
               </div>
+              <div className="flex-1 min-w-48">
+                <label className="label" htmlFor="zone-template">Template</label>
+                <select
+                  id="zone-template"
+                  className="input"
+                  value={templateId}
+                  onChange={(e) => { setTemplateId(e.target.value); setTemplateVariables({}) }}
+                >
+                  <option value="">No template</option>
+                  {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select>
+              </div>
+              {templates.find((template) => template.id === templateId)?.variables.map((variable) => (
+                <div className="flex-1 min-w-48" key={variable.name}>
+                  <FormField label={variable.label} htmlFor={`zone-template-${variable.name}`}>
+                    <input
+                      id={`zone-template-${variable.name}`}
+                      className="input"
+                      type={variable.input === 'ipv4' || variable.input === 'ipv6' ? 'text' : 'text'}
+                      inputMode={variable.input === 'ipv4' || variable.input === 'ipv6' ? 'decimal' : undefined}
+                      required={variable.required}
+                      aria-label={variable.label}
+                      value={templateVariables[variable.name] || ''}
+                      onChange={(e) => setTemplateVariables((current) => ({ ...current, [variable.name]: e.target.value }))}
+                    />
+                  </FormField>
+                </div>
+              ))}
               <div className="flex flex-wrap items-center gap-2 pb-0.5">
                 <button
                   type="button"
@@ -436,7 +482,7 @@ export default function Zones(){
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label={`Clone ${cloneZone.domain}`}>
           <div className="bg-surface rounded-2xl border border-line p-5 w-full max-w-md space-y-3">
             <h2 className="font-semibold">Clone {cloneZone.domain}</h2>
-            <p className="text-sm text-muted">Copies records, settings and DNSSEC configuration to a new zone.</p>
+              <p className="text-sm text-muted">Copies records and safe zone settings. DNSSEC keys are never copied or enabled.</p>
             <label className="form-label" htmlFor="clone-domain">New domain</label>
             <input id="clone-domain" className="input" value={cloneDomain} onChange={e => setCloneDomain(e.target.value)} placeholder="copy.example.com" autoFocus />
             <div className="flex justify-end gap-2">

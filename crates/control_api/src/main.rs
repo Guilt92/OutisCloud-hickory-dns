@@ -4506,6 +4506,127 @@ struct CreateZoneReq {
     /// tenant that will own the zone (customers: one of their tenants; default: their own tenant)
     #[serde(default)]
     tenant_id: Option<String>,
+    /// Optional built-in zone template. DNSSEC keys are never copied or created by templates.
+    #[serde(default)]
+    template_id: Option<String>,
+    #[serde(default)]
+    template_variables: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct ZoneTemplateVariable {
+    name: &'static str,
+    label: &'static str,
+    input: &'static str,
+    required: bool,
+}
+
+#[derive(Serialize)]
+struct ZoneTemplateInfo {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    variables: Vec<ZoneTemplateVariable>,
+}
+
+fn zone_template_catalog() -> Vec<ZoneTemplateInfo> {
+    vec![
+        ZoneTemplateInfo {
+            id: "web",
+            name: "Web site",
+            description: "Apex A record and www CNAME.",
+            variables: vec![
+                ZoneTemplateVariable {
+                    name: "ipv4",
+                    label: "IPv4 address",
+                    input: "ipv4",
+                    required: true,
+                },
+                ZoneTemplateVariable {
+                    name: "ipv6",
+                    label: "IPv6 address",
+                    input: "ipv6",
+                    required: false,
+                },
+            ],
+        },
+        ZoneTemplateInfo {
+            id: "mail",
+            name: "Mail server",
+            description: "Mail host A record, apex MX and a restrictive SPF TXT record.",
+            variables: vec![ZoneTemplateVariable {
+                name: "mail_ipv4",
+                label: "Mail server IPv4 address",
+                input: "ipv4",
+                required: true,
+            }],
+        },
+    ]
+}
+
+fn render_zone_template(
+    template_id: Option<&str>,
+    domain: &str,
+    variables: &HashMap<String, String>,
+) -> Result<Vec<RecordRow>, String> {
+    let Some(template_id) = template_id else {
+        if !variables.is_empty() {
+            return Err("template_variables require a template_id".to_string());
+        }
+        return Ok(Vec::new());
+    };
+    let mut raw: Vec<(&str, &str, String, i32)> = Vec::new();
+    let allowed: &[&str];
+    match template_id {
+        "web" => {
+            allowed = &["ipv4", "ipv6"];
+            let ipv4 = variables
+                .get("ipv4")
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| "template variable 'ipv4' is required".to_string())?;
+            raw.push(("@", "A", ipv4.trim().to_string(), 0));
+            if let Some(ipv6) = variables.get("ipv6").filter(|v| !v.trim().is_empty()) {
+                raw.push(("@", "AAAA", ipv6.trim().to_string(), 0));
+            }
+            raw.push((
+                "www",
+                "CNAME",
+                format!("{}.", domain.trim_end_matches('.')),
+                0,
+            ));
+        }
+        "mail" => {
+            allowed = &["mail_ipv4"];
+            let ipv4 = variables
+                .get("mail_ipv4")
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| "template variable 'mail_ipv4' is required".to_string())?;
+            raw.push(("mail", "A", ipv4.trim().to_string(), 0));
+            raw.push((
+                "@",
+                "MX",
+                format!("mail.{}.", domain.trim_end_matches('.')),
+                10,
+            ));
+            raw.push(("@", "TXT", "v=spf1 mx -all".to_string(), 0));
+        }
+        _ => return Err("unknown zone template".to_string()),
+    }
+    if variables.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("template_variables contains an unsupported variable".to_string());
+    }
+    raw.into_iter()
+        .map(|(name, rtype, value, priority)| {
+            validate_record_input(domain, name, rtype, &value, 3600, priority)
+        })
+        .collect()
+}
+
+async fn list_zone_templates(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
+    if auth_from_header(&req, &data.jwt_secret).is_none() {
+        return unauthorized();
+    }
+    HttpResponse::Ok().json(zone_template_catalog())
 }
 
 async fn list_zones(
@@ -4610,6 +4731,14 @@ async fn create_zone(
     let domain = match normalize_zone_domain(&body.domain) {
         Ok(d) => d,
         Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({"error": e.message})),
+    };
+    let template_records = match render_zone_template(
+        body.template_id.as_deref(),
+        &domain,
+        &body.template_variables,
+    ) {
+        Ok(records) => records,
+        Err(error) => return HttpResponse::BadRequest().json(serde_json::json!({"error": error})),
     };
 
     let zone_id = Uuid::new_v4();
@@ -4740,7 +4869,14 @@ async fn create_zone(
             .json(serde_json::json!({"error": "database error"}));
     }
     if let (Some(t), false) = (&zone_tenant, tok.claims.role == "admin") {
-        if let Err(resp) = tenants::reserve_quota_tx(c, t, 1, 2 + ns_values.len() as i64).await {
+        if let Err(resp) = tenants::reserve_quota_tx(
+            c,
+            t,
+            1,
+            2 + ns_values.len() as i64 + template_records.len() as i64,
+        )
+        .await
+        {
             rollback_transaction(c).await;
             return resp;
         }
@@ -4811,6 +4947,27 @@ async fn create_zone(
         warn!("Failed to add default SOA record: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}));
     }
+    if !template_records.is_empty() {
+        let ids: Vec<String> = template_records
+            .iter()
+            .map(|_| Uuid::new_v4().to_string())
+            .collect();
+        let names: Vec<String> = template_records.iter().map(|r| r.name.clone()).collect();
+        let types: Vec<String> = template_records.iter().map(|r| r.rtype.clone()).collect();
+        let values: Vec<String> = template_records.iter().map(|r| r.value.clone()).collect();
+        let ttls: Vec<i32> = template_records.iter().map(|r| r.ttl).collect();
+        let priorities: Vec<i32> = template_records.iter().map(|r| r.priority).collect();
+        if let Err(e) = c.execute(
+            "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) \
+             SELECT u.id::uuid, $1::text::uuid, u.n, u.t, u.v, u.ttl, u.p \
+             FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) AS u(id, n, t, v, ttl, p)",
+            &[&zone_id_str, &ids, &names, &types, &values, &ttls, &priorities],
+        ).await {
+            rollback_transaction(c).await;
+            warn!("failed to create zone from template: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"failed to apply zone template"}));
+        }
+    }
     if let Err(e) = c.batch_execute("COMMIT").await {
         warn!("create_zone commit failed: {}", full_error_string(&e));
         return HttpResponse::InternalServerError()
@@ -4844,15 +5001,19 @@ async fn create_zone(
         "zone",
         Some(zone_id_str.clone()),
         &req,
-        serde_json::json!({"domain": domain}),
+        serde_json::json!({"domain": domain, "template_id": body.template_id}),
     )
     .await;
-    ext::snapshot_zone(&data.db, &zone_id_str, Some(&tok.claims.sub), "created").await;
+    let revision_snapshot_ok =
+        ext::snapshot_zone(&data.db, &zone_id_str, Some(&tok.claims.sub), "created").await;
 
     let response = serde_json::json!({
         "id": zone_id_str,
         "domain": domain,
         "status": zone_status,
+        "template_id": body.template_id,
+        "template_record_count": template_records.len(),
+        "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" },
         "verification": verify_token.as_ref().map(|t| serde_json::json!({
             "type": "TXT", "name": format!("{}.{}", ext::CHALLENGE_LABEL, domain), "value": t,
             "next": "publish the TXT record, then POST /api/v1/zones/{id}/verify"
@@ -5387,7 +5548,8 @@ async fn create_record(
             "published": false
         }));
     }
-    ext::snapshot_zone(db, &zone_id_str, Some(&tok.claims.sub), "record created").await;
+    let revision_snapshot_ok =
+        ext::snapshot_zone(db, &zone_id_str, Some(&tok.claims.sub), "record created").await;
     audit(
         db,
         Some(&tok.claims.sub),
@@ -5403,7 +5565,8 @@ async fn create_record(
         "name": rec.name,
         "type": rec.rtype,
         "value": rec.value,
-        "ttl": rec.ttl
+        "ttl": rec.ttl,
+        "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" }
     }))
 }
 
@@ -5615,10 +5778,14 @@ async fn update_record(
                 }
                 return publish_failed_rolled_back(&e);
             }
-            ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "record updated").await;
+            let revision_snapshot_ok =
+                ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "record updated").await;
             audit(db, Some(&tok.claims.sub), "update_record", "record", Some(record_id.clone()), &req,
                   serde_json::json!({"zone": access.domain})).await;
-            HttpResponse::Ok().finish()
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" }
+            }))
         }
         Err(e) => {
             let err_str = full_error_string(&e);
@@ -5704,7 +5871,9 @@ async fn delete_record(
                 }
                 return publish_failed_rolled_back(&e);
             }
-            ext::snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "record deleted").await;
+            let revision_snapshot_ok =
+                ext::snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "record deleted")
+                    .await;
             audit(
                 &data.db,
                 Some(&tok.claims.sub),
@@ -5717,7 +5886,9 @@ async fn delete_record(
             .await;
             HttpResponse::Ok().json(ApiResponse {
                 success: true,
-                data: Some(()),
+                data: Some(serde_json::json!({
+                    "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" }
+                })),
                 error: None,
             })
         }
@@ -6093,7 +6264,8 @@ async fn update_zone(
             "published": false
         }));
     }
-    ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "zone updated").await;
+    let revision_snapshot_ok =
+        ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "zone updated").await;
     audit(
         db,
         Some(&tok.claims.sub),
@@ -6106,7 +6278,10 @@ async fn update_zone(
     .await;
     HttpResponse::Ok().json(ApiResponse {
         success: true,
-        data: Some(serde_json::json!({"zone_id": zone_id})),
+        data: Some(serde_json::json!({
+            "zone_id": zone_id,
+            "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" }
+        })),
         error: None,
     })
 }
@@ -6377,7 +6552,8 @@ async fn import_zone(
             "published": false
         }));
     }
-    ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "import").await;
+    let revision_snapshot_ok =
+        ext::snapshot_zone(db, &zone_id, Some(&tok.claims.sub), "import").await;
     audit(
         db,
         Some(&tok.claims.sub),
@@ -6393,6 +6569,7 @@ async fn import_zone(
         "imported": imported,
         "skipped": skipped,
         "zone_id": zone_id,
+        "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" },
         "message": format!("Successfully imported {} records", imported)
     }))
 }
@@ -6953,7 +7130,8 @@ async fn clone_zone(
             .await;
         return publish_failed_rolled_back(&e);
     }
-    ext::snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "cloned zone").await;
+    let revision_snapshot_ok =
+        ext::snapshot_zone(&data.db, &zone_id, Some(&tok.claims.sub), "cloned zone").await;
     audit(
         &data.db,
         Some(&tok.claims.sub),
@@ -6964,7 +7142,10 @@ async fn clone_zone(
         serde_json::json!({"source": access.domain, "domain": domain}),
     )
     .await;
-    HttpResponse::Created().json(serde_json::json!({"id": zone_id, "domain": domain, "status": status, "records": names.len()}))
+    HttpResponse::Created().json(serde_json::json!({
+        "id": zone_id, "domain": domain, "status": status, "records": names.len(),
+        "revision_snapshot": if revision_snapshot_ok { "saved" } else { "failed" }
+    }))
 }
 
 #[derive(Deserialize)]
@@ -7211,6 +7392,7 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::delete().to(delete_nameserver),
         )
         // Zones
+        .route("/api/v1/zone-templates", web::get().to(list_zone_templates))
         .route("/api/v1/zones", web::get().to(list_zones))
         .route("/api/v1/zones", web::post().to(create_zone))
         .route(

@@ -43,7 +43,14 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
   const restore = async (r) => {
     if (!(await askConfirm({ title: 'Restore this revision?', message: `Restore the zone to the state of ${new Date(r.created_at).toLocaleString()}? The current state is saved as a revision first.`, confirmLabel: 'Restore', danger: false }))) return
     setBusy(true); setMsg(null)
-    try { await api.post(`/api/v1/zones/${zone.id}/revisions/${r.id}/restore`, {}); await load(); setMsg({ text: 'Restored and published' }); onChanged && onChanged() }
+    try {
+      const result = (await api.post(`/api/v1/zones/${zone.id}/revisions/${r.id}/restore`, {})).data
+      await load()
+      setMsg(result?.revision_snapshot === 'failed'
+        ? { bad: true, text: 'Zone restored and published, but its revision snapshot could not be saved. Contact an administrator before making further changes.' }
+        : { text: 'Restored and published' })
+      onChanged && onChanged()
+    }
     catch (e) { err(e) }
     setBusy(false)
   }
@@ -156,6 +163,19 @@ export default function ZoneTools({ zone, onClose, onChanged }) {
               {diff.added.map((r, i) => <div key={`a${i}`} className="text-success-600">+ {r.name} {r.record_type} {r.value}</div>)}
               {diff.removed.map((r, i) => <div key={`r${i}`} className="text-danger-500">- {r.name} {r.record_type} {r.value}</div>)}
               {diff.changed.map((r, i) => <div key={`c${i}`}>~ {r.to.name} {r.to.record_type} {r.from.value} → {r.to.value}</div>)}
+              {diff.settings_changed && Object.entries(diff.settings_changed.to)
+                .some(([key, value]) => JSON.stringify(diff.settings_changed.from[key]) !== JSON.stringify(value)) && (
+                <div className="mt-3 border-t border-line pt-2 font-sans">
+                  <h3 className="font-semibold mb-1">Zone settings</h3>
+                  {Object.entries(diff.settings_changed.to)
+                    .filter(([key, value]) => JSON.stringify(diff.settings_changed.from[key]) !== JSON.stringify(value))
+                    .map(([key, value]) => (
+                      <div key={key}>
+                        {key}: {JSON.stringify(diff.settings_changed.from[key])} → {JSON.stringify(value)}
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           )}
           {!owner && <p className="text-sm text-muted">Only the zone owner can restore a revision.</p>}

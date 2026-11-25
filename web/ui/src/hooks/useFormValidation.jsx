@@ -101,10 +101,10 @@ export const validators = {
 /**
  * FormField component - wraps input with label and error display
  */
-export function FormField({ label, error, children }) {
+export function FormField({ label, error, htmlFor, children }) {
   return (
     <div className="mb-3">
-      {label && <label className="form-label">{label}</label>}
+      {label && <label className="form-label" htmlFor={htmlFor}>{label}</label>}
       {children}
       {error && <div role="alert" className="text-danger-500 text-sm mt-1.5">{error}</div>}
     </div>
