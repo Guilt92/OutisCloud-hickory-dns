@@ -44,8 +44,15 @@ use tokio::time::sleep;
 use tracing::warn;
 use tracing::{error, info};
 
+#[cfg(feature = "__dnssec")]
+use hickory_net::DnsMultiplexer;
+use hickory_net::{
+    client::{Client, ClientHandle},
+    runtime::TokioRuntimeProvider,
+    tcp::TcpClientStream,
+};
 use hickory_server::proto::ProtoError;
-use hickory_server::proto::rr::rdata::opt::NSIDPayload;
+use hickory_server::proto::rr::{DNSClass, Name, RecordSet, RecordType, rdata::opt::NSIDPayload};
 #[cfg(feature = "__tls")]
 use hickory_server::server::default_tls_server_config;
 use hickory_server::{
@@ -59,7 +66,7 @@ use hickory_server::{
 mod config;
 #[cfg(feature = "prometheus-metrics")]
 use ::metrics::{counter, describe_counter};
-use config::{Config, ServerStoreConfig, ZoneConfig, ZoneTypeConfig};
+use config::{Config, NotifyPeerConfig, ServerStoreConfig, ZoneConfig, ZoneTypeConfig};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::sync::Arc as SyncArc;
@@ -658,6 +665,8 @@ impl DnsServer {
                         &|| token.cancel(),
                     )
                     .await;
+                    #[cfg(not(feature = "prometheus-metrics"))]
+                    let _ = reloaded;
                     #[cfg(feature = "prometheus-metrics")]
                     if reloaded {
                         reload_readiness.mark_ready();
@@ -768,6 +777,7 @@ async fn reload_zones(
     let count = config.zones.len();
     let mut fingerprints = HashMap::new();
     let mut reused = 0usize;
+    let mut notify_after_reload = Vec::new();
     for zone in config.zones {
         let zone_name = match zone.zone() {
             Ok(n) => n,
@@ -789,9 +799,13 @@ async fn reload_zones(
             continue;
         }
 
+        let notify_peers = zone.notify_peers().to_vec();
         match zone.load(&zone_dir).await {
             Ok(handlers) => {
-                catalog.upsert(zone_name.into(), handlers);
+                catalog.upsert(zone_name.clone().into(), handlers);
+                if !notify_peers.is_empty() {
+                    notify_after_reload.push((zone_name, notify_peers));
+                }
                 if let Some(fingerprint) = fingerprint {
                     fingerprints.insert(key, fingerprint);
                 }
@@ -824,7 +838,135 @@ async fn reload_zones(
         "reloaded {count} zone(s), {reused} unchanged (reload #{})",
         handler.reloads()
     );
+    for (zone_name, peers) in notify_after_reload {
+        let zone_dir = zone_dir.clone();
+        tokio::spawn(async move {
+            for peer in peers {
+                send_zone_notify(zone_name.clone(), peer, &zone_dir).await;
+            }
+        });
+    }
     true
+}
+
+async fn send_zone_notify(zone: Name, peer: NotifyPeerConfig, _zone_dir: &Path) {
+    const ATTEMPTS: usize = 3;
+    const CONNECT_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+    const REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+    #[cfg(feature = "__dnssec")]
+    let signer = match notify_signer(&peer, _zone_dir) {
+        Ok(signer) => signer,
+        Err(error) => {
+            error!("cannot notify {} for {zone}: {error}", peer.address);
+            return;
+        }
+    };
+    for attempt in 0..ATTEMPTS {
+        let provider = TokioRuntimeProvider::new();
+        let (connect, sender) = TcpClientStream::new(peer.address, None, None, provider);
+        let stream = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => {
+                if attempt + 1 == ATTEMPTS {
+                    error!(
+                        "NOTIFY to {} for {zone} failed after {ATTEMPTS} attempts: {error}",
+                        peer.address
+                    );
+                }
+                retry_notify_delay(attempt).await;
+                continue;
+            }
+            Err(_) => {
+                if attempt + 1 == ATTEMPTS {
+                    error!(
+                        "NOTIFY connection to {} for {zone} timed out after {ATTEMPTS} attempts",
+                        peer.address
+                    );
+                }
+                retry_notify_delay(attempt).await;
+                continue;
+            }
+        };
+        #[cfg(feature = "__dnssec")]
+        let (mut client, background) = match signer.clone() {
+            Some(signer) => Client::<TokioRuntimeProvider>::from_sender(
+                DnsMultiplexer::new(stream, sender).with_signer(signer),
+            ),
+            None => Client::<TokioRuntimeProvider>::new(stream, sender),
+        };
+        #[cfg(not(feature = "__dnssec"))]
+        let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+        let background = tokio::spawn(background);
+        let response = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.notify::<RecordSet>(zone.clone(), DNSClass::IN, RecordType::SOA, None),
+        )
+        .await;
+        background.abort();
+        match response {
+            Ok(Ok(response))
+                if response.response_code() == hickory_server::proto::op::ResponseCode::NoError
+                    || response.response_code()
+                        == hickory_server::proto::op::ResponseCode::NotImp =>
+            {
+                info!("NOTIFY for {zone} acknowledged by {}", peer.address);
+                return;
+            }
+            Ok(Ok(response)) => {
+                error!(
+                    "NOTIFY for {zone} refused by {}: {}",
+                    peer.address,
+                    response.response_code()
+                );
+                return;
+            }
+            Ok(Err(error)) => {
+                if attempt + 1 == ATTEMPTS {
+                    error!(
+                        "NOTIFY to {} for {zone} failed after {ATTEMPTS} attempts: {error}",
+                        peer.address
+                    );
+                }
+            }
+            Err(_) => {
+                if attempt + 1 == ATTEMPTS {
+                    error!(
+                        "NOTIFY to {} for {zone} timed out after {ATTEMPTS} attempts",
+                        peer.address
+                    );
+                }
+            }
+        }
+        retry_notify_delay(attempt).await;
+    }
+}
+
+async fn retry_notify_delay(attempt: usize) {
+    let delay = StdDuration::from_millis(200).saturating_mul(1 << attempt.min(4));
+    tokio::time::sleep(delay).await;
+}
+
+#[cfg(feature = "__dnssec")]
+fn notify_signer(
+    peer: &NotifyPeerConfig,
+    zone_dir: &Path,
+) -> Result<Option<hickory_proto::rr::TSigner>, String> {
+    use std::str::FromStr;
+    let Some(config) = peer.tsig.as_ref() else {
+        return Ok(None);
+    };
+    let path = zone_dir.join(&config.key_file);
+    let key = std::fs::read(&path).map_err(|error| {
+        format!(
+            "failed to read NOTIFY TSIG key file {}: {error}",
+            path.display()
+        )
+    })?;
+    let name = Name::from_str(&config.name)
+        .map_err(|error| format!("invalid NOTIFY TSIG key name: {error}"))?;
+    hickory_proto::rr::TSigner::new(key, config.algorithm.clone(), name, config.fudge)
+        .map(Some)
+        .map_err(|error| format!("invalid NOTIFY TSIG key configuration: {error}"))
 }
 
 struct ServerSetup<'a> {

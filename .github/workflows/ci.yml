@@ -75,7 +75,9 @@ jobs:
       - name: IXFR safe fallback interoperability
         run: cargo test -p hickory-dns --test integration ixfr_current_serial_succeeds_and_stale_serial_is_refused_safely
       - name: NOTIFY acknowledgement behavior
-        run: cargo test -p hickory-dns --test integration notify_acknowledges_local_zone_and_rejects_unknown_zone
+        run: |
+          cargo test -p hickory-dns --test integration notify_acknowledges_local_zone_and_rejects_unknown_zone
+          cargo test -p hickory-dns --test integration primary_notifies_configured_secondary_after_zone_reload
       - name: TCP connection admission under fanout
         run: cargo test -p hickory-dns --test integration protocol_admission_fanout_keeps_service_available
       - name: DoH3 client and binary listener interoperability

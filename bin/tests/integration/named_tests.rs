@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::server_harness::{TestServer, query_a, query_a_refused, query_message};
+use crate::server_harness::{ServerProtocol, TestServer, query_a, query_a_refused, query_message};
 use hickory_net::client::{Client, ClientHandle};
 #[cfg(feature = "__h3")]
 use hickory_net::h3::H3ClientStream;
@@ -504,6 +504,164 @@ file = "example.test.zone"
         .await
         .expect("receive unknown-zone NOTIFY response");
     assert_eq!(refused.response_code(), ResponseCode::NotAuth);
+}
+
+#[tokio::test]
+async fn primary_notifies_configured_secondary_after_zone_reload() {
+    let zone = "$ORIGIN notify.test.\n@ 300 IN SOA ns.notify.test. hostmaster.notify.test. 1 3600 600 604800 300\n@ 300 IN NS ns.notify.test.\nns 300 IN A 192.0.2.1\n";
+    let receiver_config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "notify.test"
+zone_type = "Primary"
+file = "notify.zone"
+"#;
+    let receiver = TestServer::start_temporary(receiver_config, &[("notify.zone", zone)]);
+    let receiver_port = receiver.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let primary_config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "notify.test"
+zone_type = "Primary"
+file = "notify.zone"
+[[zones.notify_peers]]
+address = "127.0.0.1:{receiver_port}"
+"#
+    );
+    let primary = TestServer::start_temporary(&primary_config, &[("notify.zone", zone)]);
+    std::thread::sleep(Duration::from_millis(100));
+    let changed = zone.replace(" 1 3600", " 2 3600");
+    primary.write_temporary_file("notify.zone", &changed);
+
+    let metrics_port = receiver
+        .ports
+        .get_v4(ServerProtocol::PrometheusMetrics)
+        .expect("metrics listener");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let metrics = reqwest::get(format!("http://127.0.0.1:{metrics_port}/"))
+            .await
+            .expect("scrape receiver metrics")
+            .text()
+            .await
+            .expect("read receiver metrics");
+        if metrics.lines().any(|line| {
+            line.starts_with("hickory_request_operations_total{operation=\"notify\"}")
+                && line
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|value| value != "0")
+        }) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "configured secondary did not receive a NOTIFY"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+#[cfg(feature = "__dnssec")]
+async fn primary_notifies_with_tsig_and_retries_unresponsive_peer() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind unresponsive NOTIFY test peer");
+    let address = listener.local_addr().unwrap();
+    let received = Arc::new(AtomicUsize::new(0));
+    let saw_tsig = Arc::new(AtomicBool::new(false));
+    let peer_received = received.clone();
+    let peer_saw_tsig = saw_tsig.clone();
+    let peer_task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("accept NOTIFY retry");
+            let received = peer_received.clone();
+            let saw_tsig = peer_saw_tsig.clone();
+            tokio::spawn(async move {
+                let Ok(length) = stream.read_u16().await else {
+                    return;
+                };
+                let mut bytes = vec![0; usize::from(length)];
+                if stream.read_exact(&mut bytes).await.is_err() {
+                    return;
+                }
+                if let Ok(message) = hickory_proto::op::Message::from_vec(&bytes) {
+                    if message.signature().is_some() {
+                        saw_tsig.store(true, Ordering::Relaxed);
+                    }
+                    received.fetch_add(1, Ordering::Relaxed);
+                }
+                // Deliberately never acknowledge the notification. The sender must time out
+                // and retry; each connection closes when that attempt's deadline expires.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            });
+        }
+    });
+
+    let zone = "$ORIGIN signed-notify.test.\n@ 300 IN SOA ns.signed-notify.test. hostmaster.signed-notify.test. 1 3600 600 604800 300\n@ 300 IN NS ns.signed-notify.test.\nns 300 IN A 192.0.2.1\n";
+    let config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "signed-notify.test"
+zone_type = "Primary"
+file = "notify.zone"
+[[zones.notify_peers]]
+address = "{address}"
+tsig = {{ name = "notify-key.", key_file = "notify.key", algorithm = "hmac-sha256" }}
+"#
+    );
+    let primary = TestServer::start_temporary(
+        &config,
+        &[
+            ("notify.zone", zone),
+            ("notify.key", "test-notify-secret-32-bytes-long"),
+        ],
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    let changed = zone.replace(" 1 3600", " 2 3600");
+    primary.write_temporary_file("notify.zone", &changed);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    while received.load(Ordering::Relaxed) < 3 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "sender did not retry three timed-out NOTIFY requests"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        saw_tsig.load(Ordering::Relaxed),
+        "outbound NOTIFY omitted TSIG"
+    );
+
+    let port = primary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("primary TCP listener");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let (connect, sender) = TcpClientStream::new(addr, None, None, TokioRuntimeProvider::new());
+    let stream = connect.await.expect("connect primary while NOTIFY retries");
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let response = client
+        .query(
+            Name::from_str("signed-notify.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+        )
+        .await
+        .expect("primary remains available during NOTIFY retry backoff");
+    assert_eq!(response.response_code(), ResponseCode::NoError);
+    peer_task.abort();
 }
 
 #[tokio::test]

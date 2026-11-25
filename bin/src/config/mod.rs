@@ -9,12 +9,10 @@
 
 #[cfg(feature = "__tls")]
 use std::ffi::OsStr;
-#[cfg(feature = "prometheus-metrics")]
-use std::net::SocketAddr;
 use std::{
     fmt, fs, io,
     marker::PhantomData,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -45,6 +43,8 @@ use crate::dnssec;
 use hickory_net::http::DEFAULT_DNS_QUERY_PATH;
 #[cfg(feature = "__tls")]
 use hickory_net::tls::default_provider;
+#[cfg(feature = "__dnssec")]
+use hickory_proto::rr::rdata::tsig::TsigAlgorithm;
 use hickory_proto::{ProtoError, rr::Name, serialize::txt::ParseError};
 #[cfg(feature = "recursor")]
 use hickory_resolver::recursor::RecursiveConfig;
@@ -284,6 +284,13 @@ pub(crate) struct ZoneConfig {
 }
 
 impl ZoneConfig {
+    pub(crate) fn notify_peers(&self) -> &[NotifyPeerConfig] {
+        match &self.zone_type_config {
+            ZoneTypeConfig::Primary(config) => &config.notify_peers,
+            ZoneTypeConfig::Secondary(_) | ZoneTypeConfig::External { .. } => &[],
+        }
+    }
+
     pub(crate) async fn load(
         self,
         zone_dir: &Path,
@@ -535,6 +542,40 @@ pub(crate) struct ServerZoneConfig {
     #[serde(default = "store_config_default")]
     #[serde(deserialize_with = "store_config_visitor")]
     pub stores: Vec<ServerStoreConfig>,
+    /// Authoritative secondary peers to notify after this zone changes.
+    #[serde(default)]
+    pub notify_peers: Vec<NotifyPeerConfig>,
+}
+
+/// A secondary authoritative server that should be notified after a primary update.
+#[derive(Clone, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NotifyPeerConfig {
+    /// Destination IP and DNS port.
+    pub address: SocketAddr,
+    /// Optional TSIG signer for authenticated NOTIFY messages.
+    #[cfg(feature = "__dnssec")]
+    pub tsig: Option<NotifyTsigConfig>,
+}
+
+#[cfg(feature = "__dnssec")]
+#[derive(Clone, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NotifyTsigConfig {
+    /// Name known to the secondary.
+    pub name: String,
+    /// File containing the unencoded HMAC key.
+    pub key_file: PathBuf,
+    /// TSIG HMAC algorithm.
+    pub algorithm: TsigAlgorithm,
+    /// Maximum permitted request signature age in seconds.
+    #[serde(default = "default_notify_tsig_fudge")]
+    pub fudge: u16,
+}
+
+#[cfg(feature = "__dnssec")]
+fn default_notify_tsig_fudge() -> u16 {
+    300
 }
 
 impl ServerZoneConfig {
