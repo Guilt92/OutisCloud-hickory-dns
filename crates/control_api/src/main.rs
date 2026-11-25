@@ -880,6 +880,19 @@ fn full_error_string(e: &dyn std::error::Error) -> String {
     parts.join(": ")
 }
 
+async fn rollback_transaction(client: &tokio_postgres::Client) {
+    let failed = if let Err(error) = client.batch_execute("ROLLBACK").await {
+        warn!(
+            "database transaction rollback failed: {}",
+            full_error_string(&error)
+        );
+        true
+    } else {
+        false
+    };
+    metrics::record_transaction_rollback(failed);
+}
+
 fn validate_domain(domain: &str) -> Result<(), String> {
     // Wrapper that uses the centralized dns_validator module
     validate_zone_domain(domain).map_err(|e| e.message)
@@ -1644,11 +1657,11 @@ async fn login(
     ).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return HttpResponse::Unauthorized().json(serde_json::json!({"error": "invalid credentials"}));
         }
         Err(e) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("login user lock: {}", full_error_string(&e));
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "session_error"}));
         }
@@ -1657,7 +1670,7 @@ async fn login(
     if locked_hash != stored_hash {
         // The password changed while this login was being verified. Never
         // create a session that would survive the change that just won.
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         return HttpResponse::Unauthorized()
             .json(serde_json::json!({"error": "invalid credentials"}));
     }
@@ -1670,7 +1683,7 @@ async fn login(
         )
         .await
     {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("login session reset: {}", full_error_string(&e));
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": "session_error"}));
@@ -1680,7 +1693,7 @@ async fn login(
          VALUES ($1::text::uuid, $2, $3::text::uuid, to_timestamp($4), 'refresh', $5::text::uuid)",
         &[&Uuid::new_v4().to_string(), &refresh_hash, &id, &(refresh_expires as f64), &session_id]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         // Without a stored refresh token the session cannot be renewed; do not
         // hand out a token that can never work.
         warn!("Failed to store refresh token: {}", e);
@@ -1750,7 +1763,7 @@ async fn logout(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
             "INSERT INTO token_blacklist (id, token_hash, expires_at, token_type) VALUES ($1::text::uuid, $2, to_timestamp($3), 'access')",
             &[&Uuid::new_v4().to_string(), &token_hash, &(expires as f64)]
         ).await {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("Failed to blacklist token: {}", e);
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "logout_failed"}));
         }
@@ -1759,7 +1772,7 @@ async fn logout(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
         "UPDATE users SET token_version = token_version + 1, updated_at = now() WHERE CAST(id AS varchar) = $1",
         &[&tok.claims.sub]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("Failed to invalidate sessions: {}", e);
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "logout_failed"}));
     }
@@ -1767,7 +1780,7 @@ async fn logout(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
         "DELETE FROM token_blacklist WHERE CAST(user_id AS varchar) = $1 AND token_type = 'refresh'",
         &[&tok.claims.sub]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("Failed to invalidate refresh tokens: {}", e);
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "logout_failed"}));
     }
@@ -1836,12 +1849,12 @@ async fn refresh_token(
     let row = match row {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return HttpResponse::Unauthorized()
                 .json(serde_json::json!({"error": "invalid or expired refresh token"}));
         }
         Err(e) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("refresh database error: {}", full_error_string(&e));
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "database_error"}));
@@ -1877,7 +1890,7 @@ async fn refresh_token(
         }));
     }
     if expired {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         return HttpResponse::Unauthorized()
             .json(serde_json::json!({"error": "invalid or expired refresh token"}));
     }
@@ -1888,7 +1901,7 @@ async fn refresh_token(
         "UPDATE token_blacklist SET rotated_at = now(), replaced_by_hash = $2 WHERE CAST(id AS varchar) = $1",
         &[&old_id, &new_hash]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("refresh rotation: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database_error"}));
     }
@@ -1897,7 +1910,7 @@ async fn refresh_token(
          VALUES ($1::text::uuid, $2, $3::text::uuid, to_timestamp($4), 'refresh', $5::text::uuid)",
         &[&Uuid::new_v4().to_string(), &new_hash, &uid, &expires_at, &session_id]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("refresh store: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database_error"}));
     }
@@ -1987,19 +2000,19 @@ async fn replace_password_and_revoke_sessions(
     ).await {
         Ok(n) => n,
         Err(e) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return Err(e);
         }
     };
     if updated == 0 {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         return Ok(false);
     }
     if let Err(e) = c.execute(
         "DELETE FROM token_blacklist WHERE CAST(user_id AS varchar) = $1 AND token_type = 'refresh'",
         &[&user_id],
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         return Err(e);
     }
     if let Err(e) = c.batch_execute("COMMIT").await {
@@ -4004,11 +4017,11 @@ async fn set_agent_zones(
     {
         Ok(Some(_)) => {}
         Ok(None) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return HttpResponse::NotFound().json(serde_json::json!({"error": "agent not found"}));
         }
         Err(e) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("set_agent_zones agent lookup: {}", full_error_string(&e));
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "database error"}));
@@ -4024,14 +4037,14 @@ async fn set_agent_zones(
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = c.batch_execute("ROLLBACK").await;
+                rollback_transaction(c).await;
                 warn!("set_agent_zones zone lookup: {}", full_error_string(&e));
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({"error": "database error"}));
             }
         };
         if found.len() != ids.len() {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return HttpResponse::NotFound()
                 .json(serde_json::json!({"error": "one or more zones were not found"}));
         }
@@ -4043,7 +4056,7 @@ async fn set_agent_zones(
         )
         .await
     {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("set_agent_zones clear: {}", full_error_string(&e));
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": "database error"}));
@@ -4053,7 +4066,7 @@ async fn set_agent_zones(
             "INSERT INTO agent_zones (agent_id, zone_id) SELECT $1::text::uuid, z.id FROM zones z WHERE CAST(z.id AS varchar) = ANY($2::text[])",
             &[&agent_id, &ids],
         ).await {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("set_agent_zones insert: {}", full_error_string(&e));
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
         }
@@ -4065,7 +4078,7 @@ async fn set_agent_zones(
         )
         .await
     {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("set_agent_zones version: {}", full_error_string(&e));
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": "database error"}));
@@ -4712,7 +4725,7 @@ async fn create_zone(
     }
     if let (Some(t), false) = (&zone_tenant, tok.claims.role == "admin") {
         if let Err(resp) = tenants::reserve_quota_tx(c, t, 1, 2 + ns_values.len() as i64).await {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return resp;
         }
     }
@@ -4720,7 +4733,7 @@ async fn create_zone(
         "INSERT INTO zones (id, domain, owner, geodns_enabled, status, verify_token, tenant_id) VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5, $6, $7::text::uuid)",
         &[&zone_id_str, &domain, &owner_uuid_str, &geodns_enabled, &zone_status, &verify_token, &zone_tenant]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         // e.to_string() only shows the top-level "db error"; the actual
         // SQLSTATE message (e.g. the unique-violation detail) is deeper in
         // the error chain, so inspect the whole chain for the conflict.
@@ -4754,7 +4767,7 @@ async fn create_zone(
              FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[]) AS u(id, n, t, v, ttl)",
             &[&zone_id_str, &ids, &names, &types, &assigned_nameservers, &ttls],
         ).await {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("Failed to add default NS records for zone {} ({}): {}", domain, zone_id_str, full_error_string(&e));
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}));
         }
@@ -4778,7 +4791,7 @@ async fn create_zone(
         "INSERT INTO records (id, zone_id, name, record_type, value, ttl) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
         &[&soa_id, &zone_id_str, &"@", &"SOA", &soa_value, &3600]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("Failed to add default SOA record: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to create zone"}));
     }
@@ -5313,14 +5326,14 @@ async fn create_record(
     if let Err(resp) =
         tenants::reserve_zone_records_quota_tx(c, &zone_id_str, 1, tok.claims.role == "admin").await
     {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         return resp;
     }
     if let Err(e) = c.execute(
         "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority) VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7)",
         &[&id_str, &zone_id_str, &rec.name, &rec.rtype, &rec.value, &rec.ttl, &rec.priority]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         let err_str = full_error_string(&e);
         warn!("create_record error for zone {} (type={}, name={}): {}", zone_id_str, rec.rtype, rec.name, err_str);
         return if err_str.contains("unique") || err_str.contains("duplicate") {
@@ -5953,11 +5966,11 @@ async fn update_zone(
     ).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return HttpResponse::NotFound().json(ErrorResponse { error: "zone not found".to_string(), details: None });
         }
         Err(e) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("update_zone lookup: {}", full_error_string(&e));
             return HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to update zone".to_string(), details: None });
         }
@@ -5976,7 +5989,7 @@ async fn update_zone(
                 updated_at = now() WHERE CAST(id AS varchar) = $4",
         &[&new_domain, &zone_type, &body.geodns_enabled, &zone_id, &body.ecs_enabled],
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         let msg = full_error_string(&e);
         if msg.contains("unique") || msg.contains("duplicate") {
             return HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}));
@@ -5992,7 +6005,7 @@ async fn update_zone(
              WHERE CAST(zone_id AS varchar) = $3 AND record_type = 'SOA'",
             &[nd, &old_domain, &zone_id],
         ).await {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("SOA rewrite after rename failed: {}", full_error_string(&e));
             return HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to update zone".to_string(), details: None });
         }
@@ -6036,7 +6049,7 @@ async fn update_zone(
                 if ok {
                     ok = rc.batch_execute("COMMIT").await.is_ok();
                 } else {
-                    let _ = rc.batch_execute("ROLLBACK").await;
+                    rollback_transaction(rc).await;
                 }
                 if ok {
                     restored = publish(&data.dns_manager, db, Some(&old_domain))
@@ -6307,7 +6320,7 @@ async fn import_zone(
     )
     .await
     {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         return resp;
     }
     if let Err(e) = c.execute(
@@ -6316,7 +6329,7 @@ async fn import_zone(
          FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) AS u(id, n, t, v, ttl, p)",
         &[&zone_id, &ids, &names, &types, &values, &ttls, &prios]
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("failed to import records: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "Import failed",
@@ -6417,11 +6430,11 @@ async fn delete_zone(
     ).await {
         Ok(Some(r)) => r.get(0),
         Ok(None) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             return HttpResponse::NotFound().json(ErrorResponse { error: "zone not found".to_string(), details: None });
         }
         Err(e) => {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("delete_zone lookup: {}", full_error_string(&e));
             return HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to delete zone".to_string(), details: None });
         }
@@ -6430,7 +6443,7 @@ async fn delete_zone(
         "UPDATE zones SET status = 'deleting', updated_at = now() WHERE CAST(id AS varchar) = $1",
         &[&zone_id],
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         warn!("delete_zone mark: {}", full_error_string(&e));
         return HttpResponse::InternalServerError().json(ErrorResponse { error: "failed to delete zone".to_string(), details: None });
     }
@@ -6885,7 +6898,7 @@ async fn clone_zone(
          FROM zones WHERE CAST(id AS varchar) = $6",
         &[&zone_id, &domain, &tok.claims.sub, &status, &verify_token, &source_id],
     ).await {
-        let _ = c.batch_execute("ROLLBACK").await;
+        rollback_transaction(c).await;
         let err = full_error_string(&e);
         return if err.contains("unique") || err.contains("duplicate") {
             HttpResponse::Conflict().json(serde_json::json!({"error": "domain already exists"}))
@@ -6903,7 +6916,7 @@ async fn clone_zone(
                   AS u(id, z, n, t, v, ttl, p)",
             &[&ids, &zone_ids, &names, &types, &values, &ttls, &priorities],
         ).await {
-            let _ = c.batch_execute("ROLLBACK").await;
+            rollback_transaction(c).await;
             warn!("clone records: {}", full_error_string(&e));
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "failed to clone zone"}));
         }

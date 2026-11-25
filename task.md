@@ -1771,7 +1771,7 @@ Validation performed for this status update:
 |---|---|---|---|---|
 | 0 | ARCH-001 | P0 | COMPLETED | Migration-from-empty and SQL/runtime schema-drift tests pass on isolated PostgreSQL. |
 | 0 | ARCH-002 | P0 | COMPLETED | Durable per-zone outbox, retry worker, terminal state and admin requeue implemented. Germ/PostgreSQL and filesystem tests cover persistence, process/pool recovery, DB and filesystem failures, concurrency, rollback, migration upgrade, last-known-good preservation and atomic rename failure. |
-| 0 | ARCH-003 | P0 | PARTIALLY COMPLETED | Implemented: configurable bounded transaction pool and germ comparison/rollback tests. Remaining: per-tenant fairness, retry-on-serialization policy, and rollback metrics. |
+| 0 | ARCH-003 | P0 | PARTIALLY COMPLETED | Implemented: configurable bounded transaction pool and germ comparison/rollback tests; control API rollback attempts and rollback failures now have Prometheus counters and use a common instrumented rollback helper. `cargo test -p control_api --bin control_api transaction_rollback_attempts_and_failures_are_exposed` passes 1/1. Remaining: per-tenant fairness and bounded retry-on-serialization policy. |
 | 0 | ARCH-004 | P0 | COMPLETED | Frontend route-contract and lint checks pass; dead controls removed. |
 | 0 | ARCH-005 | P1 | COMPLETED | Docs consistency check passes; README/DELIVERY_SUMMARY corrected. |
 | 0 | ARCH-006 | P0 | COMPLETED | ADR-0002 accepted; scope decision documented. |
@@ -1945,7 +1945,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 | Phase | Gate | Outstanding acceptance work |
 |---|---|---|
-| 0 | OPEN | ARCH-002 completed and verified. ARCH-003 still needs per-tenant admission, serialization retry policy and rollback metrics; ARCH-007 requires replacement of tracked secret material after coordinated credential issuance. Continue independent Phase 1 work while these exact items remain open. |
+| 0 | OPEN | ARCH-002 completed and verified. ARCH-003 still needs per-tenant admission and serialization retry policy; rollback attempt/failure metrics are now implemented and unit tested. ARCH-007 requires replacement of tracked secret material after coordinated credential issuance. Continue independent Phase 1 work while these exact items remain open. |
 | 1 | OPEN | CORE-001 AXFR client and BIND/Knot interoperability; CORE-003 peer configuration and secondary refresh; CORE-004 listener/key readiness checks; CORE-005 backpressure/load evidence; CORE-008 external conformance and dual stack on germ; CORE-009 trust-anchor policy; CORE-010 real DoH3 client exchange; CORE-011 advanced record type API/UI round trip; CORE-013 reload-under-write-load proof. CORE-002 is completed by the explicit safe-refusal decision described below; full IXFR deltas remain outside supported product behavior. See task rows in §19 for per-task dependencies and exact evidence. |
 
 ### Latest implementation and validation evidence
@@ -1959,14 +1959,14 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `ff25bcc1d`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, and `ff25bcc1d` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
+Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `1ea00762e`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, and `1ea00762e` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
 | Task | Status | Remaining implementation and verification |
 |---|---|---|
 | ARCH-002 | COMPLETED | Durable outbox, retries, acknowledgement, operator requeue and all defined failure-mode tests are complete; evidence is recorded below. |
-| ARCH-003 | PARTIALLY COMPLETED | Bounded transaction implementation and test-server comparison are recorded below. Finish per-tenant admission control, serialization retry policy, and rollback metrics before completion. |
+| ARCH-003 | PARTIALLY COMPLETED | Bounded transaction implementation and test-server comparison are recorded below. Rollback metrics are now implemented. Finish per-tenant admission control and serialization retry policy before completion. |
 | ARCH-007 | BLOCKED | Existing tracked credentials require replacement values from their respective service owners. Remove real credentials from the repository after rotation, retain safe local example configuration, verify scanner and prevent future accidental tracking. No real replacement credentials have been issued during this execution. |
 
 ### ARCH-002 implementation update — 2026-11-25
@@ -1985,7 +1985,11 @@ Files: `crates/control_api/src/db_pool.rs`, `crates/control_api/src/main.rs`, `c
 
 On `germ` (Ubuntu test host `fastcreate-472995`; isolated PostgreSQL 16 Docker container reached over SSH local forwarding; existing project containers and database were not modified), `TEST_DATABASE_URL=... cargo test -p control_api --bin control_api bounded_transaction_pool_runs_concurrently_and_rolls_back_isolated_work -- --nocapture` passed 1/1. Four concurrent 200 ms transactions on four distinct PostgreSQL backend sessions took 1.5076 s versus 4.3310 s through the single-slot baseline (2.87x measured speedup); the test also asserts a rolled-back insert is absent. `cargo test -p control_api --bin control_api pool_replaces_dropped_connections -- --nocapture` passed 1/1 after terminating all six pool sessions; both query and transaction pools recovered. `cargo fmt --all` and `git diff --check` pass. The database container was stopped after testing. Remaining: tenant-fair admission control, bounded retry on serialization conflicts, explicit rollback metrics, and broader concurrency/load sweeps. This benchmark does not establish production capacity.
 
-Commit: `b8ad0f418` (`perf(api): add bounded transaction pool with germ benchmark`), local only at this moment; push verification is pending.
+Commit: `b8ad0f418` (`perf(api): add bounded transaction pool with germ benchmark`), pushed to `origin/main`.
+
+### ARCH-003 rollback metrics update — 2026-11-25
+
+Rollback calls in control API transaction handlers now go through a shared helper that logs failures and increments Prometheus counters `outis_db_transaction_rollbacks_total` and `outis_db_transaction_rollback_failures_total`. The metrics test verifies attempt/failure increments and scrape registration. Executed `cargo test -p control_api --bin control_api transaction_rollback_attempts_and_failures_are_exposed -- --nocapture`: passed 1/1; `cargo fmt --all` ran before the test. Files: `crates/control_api/src/main.rs`, `crates/control_api/src/metrics.rs`. Remaining ARCH-003 work is per-tenant admission/fairness and bounded serialization retry. The earlier benchmark commit `b8ad0f418` is pushed; current rollback-metric changes are not committed yet.
 
 ### Phase 1 completion worklist
 

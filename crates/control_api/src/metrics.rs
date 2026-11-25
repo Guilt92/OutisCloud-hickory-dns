@@ -10,6 +10,20 @@ static ZONE_SNAPSHOT_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
     )
     .unwrap()
 });
+static DB_TRANSACTION_ROLLBACKS: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!(
+        "outis_db_transaction_rollbacks_total",
+        "transaction rollback attempts"
+    )
+    .unwrap()
+});
+static DB_TRANSACTION_ROLLBACK_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!(
+        "outis_db_transaction_rollback_failures_total",
+        "failed transaction rollback attempts"
+    )
+    .unwrap()
+});
 
 static ZONES_PUBLISHED: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!("outis_zones_published", "zones published in the last run").unwrap()
@@ -70,6 +84,13 @@ pub fn record_snapshot_failure() {
     ZONE_SNAPSHOT_FAILURES.inc();
 }
 
+pub fn record_transaction_rollback(failed: bool) {
+    DB_TRANSACTION_ROLLBACKS.inc();
+    if failed {
+        DB_TRANSACTION_ROLLBACK_FAILURES.inc();
+    }
+}
+
 /// Make sure all gauges exist (so they are scraped with value 0 before the first run).
 pub fn init() {
     Lazy::force(&ZONES_PUBLISHED);
@@ -80,6 +101,8 @@ pub fn init() {
     Lazy::force(&AGENTS_BEHIND);
     Lazy::force(&DB_HEALTHY);
     Lazy::force(&ZONE_SNAPSHOT_FAILURES);
+    Lazy::force(&DB_TRANSACTION_ROLLBACKS);
+    Lazy::force(&DB_TRANSACTION_ROLLBACK_FAILURES);
 }
 
 #[cfg(test)]
@@ -96,6 +119,27 @@ mod tests {
             prometheus::gather()
                 .iter()
                 .any(|family| family.get_name() == "outis_zone_snapshot_failures_total")
+        );
+    }
+
+    #[test]
+    fn transaction_rollback_attempts_and_failures_are_exposed() {
+        init();
+        let attempts = DB_TRANSACTION_ROLLBACKS.get();
+        let failures = DB_TRANSACTION_ROLLBACK_FAILURES.get();
+        record_transaction_rollback(false);
+        record_transaction_rollback(true);
+        assert_eq!(DB_TRANSACTION_ROLLBACKS.get(), attempts + 2);
+        assert_eq!(DB_TRANSACTION_ROLLBACK_FAILURES.get(), failures + 1);
+        assert!(
+            prometheus::gather()
+                .iter()
+                .any(|family| { family.get_name() == "outis_db_transaction_rollbacks_total" })
+        );
+        assert!(
+            prometheus::gather().iter().any(|family| {
+                family.get_name() == "outis_db_transaction_rollback_failures_total"
+            })
         );
     }
 }
