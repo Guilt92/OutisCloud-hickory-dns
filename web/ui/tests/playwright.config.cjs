@@ -10,6 +10,9 @@ module.exports = defineConfig({
     baseURL: 'http://localhost:3000',
     headless: true,
     viewport: { width: 1280, height: 720 },
+    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+      ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, args: ['--no-sandbox'] } }
+      : {}),
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

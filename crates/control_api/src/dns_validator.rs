@@ -188,7 +188,22 @@ pub fn validate_record_name(name: &str, origin: Option<&Name>) -> Result<Name, V
 /// Validate a DNS record type string using Hickory's RecordType parser.
 pub fn validate_record_type(record_type: &str) -> Result<RecordType, ValidationError> {
     let trimmed = record_type.trim();
-    let parsed = RecordType::from_str(&trimmed.to_ascii_uppercase())
+    let canonical = trimmed.to_ascii_uppercase();
+    // Hickory currently has no RData parser for these standardized record
+    // types. Keep the API contract explicit instead of surfacing its internal
+    // "unknown type" parser error or accepting records that cannot be served.
+    // Add a type here only after parser, zone-file, API and UI round trips are
+    // covered by tests.
+    if matches!(
+        canonical.as_str(),
+        "DNAME" | "LOC" | "AFSDB" | "APL" | "DHCID" | "HIP" | "IPSECKEY" | "KX"
+    ) {
+        return Err(ValidationError::new(
+            "record_type",
+            format!("{canonical} records are not supported by this Hickory build"),
+        ));
+    }
+    let parsed = RecordType::from_str(&canonical)
         .map_err(|err| ValidationError::new("record_type", err.to_string()))?;
 
     Ok(parsed)
@@ -408,5 +423,29 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn unsupported_advanced_record_types_fail_explicitly() {
+        for record_type in [
+            "DNAME", "LOC", "AFSDB", "APL", "DHCID", "HIP", "IPSECKEY", "KX",
+        ] {
+            let error = validate_record_value(record_type, "unsupported.example.").unwrap_err();
+            assert_eq!(error.field, "record_type");
+            assert!(
+                error
+                    .message
+                    .contains("not supported by this Hickory build"),
+                "{record_type}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn caa_rdata_round_trips_through_hickory() {
+        let parsed = validate_record_value("CAA", "0 issue \"letsencrypt.org\"").unwrap();
+        let canonical = parsed.to_string();
+        let reparsed = validate_record_value("caa", &canonical).unwrap();
+        assert_eq!(parsed, reparsed);
     }
 }

@@ -150,6 +150,9 @@ export default function Records(){
     URL.revokeObjectURL(url)
   }
 
+  // CAA is the advanced editable type with end-to-end Hickory/API coverage.
+  // Types not parsed and served by Hickory (for example DNAME and LOC) are
+  // intentionally omitted; the API rejects them with an explicit error.
   const recordTypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'PTR', 'SOA', 'CAA']
 
   return (
@@ -188,25 +191,25 @@ export default function Records(){
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
             <div>
               <label className="form-label">Name</label>
-              <input className="input" placeholder="e.g., www" value={name} onChange={e=>setName(e.target.value)} />
+              <input className="input" aria-label="Record name" placeholder="e.g., www" value={name} onChange={e=>setName(e.target.value)} />
             </div>
             <div>
               <label className="form-label">Type</label>
-              <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-                {recordTypes.map(t => <option key={t} value={t}>{t}</option>)}
+              <select className="select" aria-label="Record type" value={type} onChange={e=>setType(e.target.value)}>
+                {recordTypes.map(t => <option key={t} value={t}>{t === 'CAA' ? 'CAA — Certificate Authority Authorization' : t}</option>)}
               </select>
             </div>
             <div>
               <label className="form-label">Value</label>
-              <input className="input" placeholder="e.g., 192.0.2.1" value={value} onChange={e=>setValue(e.target.value)} />
+              <input className="input" aria-label="Record value" placeholder="e.g., 192.0.2.1" value={value} onChange={e=>setValue(e.target.value)} />
             </div>
             <div>
               <label className="form-label">TTL</label>
-              <input type="number" className="input" placeholder="3600" value={ttl} onChange={e=>setTtl(Number(e.target.value))} />
+              <input type="number" className="input" aria-label="Record TTL" placeholder="3600" value={ttl} onChange={e=>setTtl(Number(e.target.value))} />
             </div>
             <div>
               <label className="form-label">Priority</label>
-              <input type="number" className="input" value={priority} onChange={e => setPriority(Number(e.target.value))} />
+              <input type="number" className="input" aria-label="Record priority" value={priority} onChange={e => setPriority(Number(e.target.value))} />
               <p className="text-xs text-muted mt-1">Only used for MX/SRV</p>
             </div>
             <div className="flex items-end gap-2">

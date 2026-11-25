@@ -7440,6 +7440,69 @@ async fn zone_and_record_metadata_roundtrip() {
 }
 
 #[actix_web::test]
+async fn caa_record_roundtrips_through_api_database_and_zone_publication() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let token = env.token(&env.admin, "admin");
+    let zone_id = make_zone(&env, &app, &token, "caa-roundtrip.example").await;
+
+    let (status, created, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/records"),
+        Some(&token),
+        j(serde_json::json!({
+            "name":"@", "record_type":"CAA",
+            "value":"0 issue \"letsencrypt.org\"", "ttl":300
+        }))
+    );
+    assert_eq!(status, 201, "{raw}");
+    assert_eq!(created["type"], "CAA");
+    assert_eq!(created["value"], "0 issue \"letsencrypt.org\"");
+
+    let (status, listed, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zone_id}/records"),
+        Some(&token),
+        None
+    );
+    assert_eq!(status, 200, "{raw}");
+    assert!(listed.as_array().unwrap().iter().any(|record| {
+        record["record_type"] == "CAA" && record["value"] == "0 issue \"letsencrypt.org\""
+    }));
+
+    let published = std::fs::read_to_string(env.zone_file("caa-roundtrip.example")).unwrap();
+    assert!(
+        published.contains("CAA 0 issue \"letsencrypt.org\""),
+        "{published}"
+    );
+
+    // Unsupported standardized types must fail at the API boundary with an
+    // actionable response, before a database row or zone publication exists.
+    for record_type in ["DNAME", "LOC"] {
+        let (status, body, raw) = call!(
+            app,
+            post,
+            &format!("/api/v1/zones/{zone_id}/records"),
+            Some(&token),
+            j(serde_json::json!({
+                "name":"unsupported", "record_type":record_type,
+                "value":"unsupported.example.", "ttl":300
+            }))
+        );
+        assert_eq!(status, 400, "{record_type}: {raw}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("not supported by this Hickory build")
+        );
+    }
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn clone_zone_copies_records_with_rewritten_domain() {
     let Some(env) = setup().await else { return };
     let app = app!(env);
