@@ -206,6 +206,48 @@ algorithm = "hmac-sha256"
 }
 
 #[tokio::test]
+async fn notify_acknowledges_local_zone_and_rejects_unknown_zone() {
+    let zone = "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 1 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+file = "example.test.zone"
+"#;
+    let server = TestServer::start_temporary(config, &[("example.test.zone", zone)]);
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let (future, sender) = TcpClientStream::new(addr, None, None, TokioRuntimeProvider::new());
+    let stream = future.await.expect("connect local test DNS server");
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+
+    let accepted = client
+        .notify(
+            Name::from_str("example.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await
+        .expect("receive NOTIFY acknowledgement");
+    assert_eq!(accepted.response_code(), ResponseCode::NoError);
+
+    let refused = client
+        .notify(
+            Name::from_str("missing.other.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await
+        .expect("receive unknown-zone NOTIFY response");
+    assert_eq!(refused.response_code(), ResponseCode::NotAuth);
+}
+
+#[tokio::test]
 async fn test_example_toml_startup() {
     subscribe();
     let provider = TokioRuntimeProvider::new();
