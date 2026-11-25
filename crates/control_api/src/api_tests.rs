@@ -71,6 +71,141 @@ async fn setup() -> Option<Env> {
     })
 }
 
+#[actix_web::test]
+async fn publication_outbox_persists_retries_and_serializes_concurrent_workers() {
+    let Some(env) = setup().await else { return };
+    let domain = "outbox.example";
+    env.state.db.execute(
+        "INSERT INTO publication_outbox(zone_domain, attempts, next_attempt, last_error) VALUES($1,0,now(),'first failure') ON CONFLICT(zone_domain) DO UPDATE SET attempts=0,next_attempt=now(),last_error=EXCLUDED.last_error",
+        &[&domain],
+    ).await.unwrap();
+
+    // A duplicate enqueue coalesces to the latest desired committed zone state.
+    env.state.db.execute(
+        "INSERT INTO publication_outbox(zone_domain, attempts, next_attempt, last_error) VALUES($1,0,now(),'second failure') ON CONFLICT(zone_domain) DO UPDATE SET attempts=0,next_attempt=now(),last_error=EXCLUDED.last_error",
+        &[&domain],
+    ).await.unwrap();
+    let row = env
+        .state
+        .db
+        .query_one(
+            "SELECT attempts,status,last_error FROM publication_outbox WHERE zone_domain=$1",
+            &[&domain],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i32>(0), 0);
+    assert_eq!(row.get::<_, String>(1), "pending");
+    assert_eq!(row.get::<_, String>(2), "second failure");
+
+    // Separate pooled connections emulate competing workers. SKIP LOCKED in the
+    // claim/update statement allows only one to obtain this due zone job.
+    let claim = |db: Arc<Pool>| async move {
+        db.query("WITH due AS (SELECT zone_domain FROM publication_outbox WHERE status='pending' AND next_attempt <= now() ORDER BY next_attempt FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE publication_outbox o SET attempts=o.attempts+1,next_attempt=now()+interval '1 minute' FROM due WHERE o.zone_domain=due.zone_domain RETURNING o.zone_domain", &[]).await.unwrap()
+    };
+    let (left, right) = tokio::join!(claim(env.state.db.clone()), claim(env.state.db.clone()));
+    assert_eq!(left.len() + right.len(), 1);
+
+    // A rolled-back record value is never carried by an outbox job. The job
+    // contains only the zone key and retry metadata.
+    let columns = env.state.db.query("SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name='publication_outbox'", &[&env.schema]).await.unwrap();
+    assert!(
+        columns
+            .iter()
+            .any(|row| row.get::<_, String>(0) == "zone_domain")
+    );
+    assert!(
+        !columns
+            .iter()
+            .any(|row| row.get::<_, String>(0).contains("record_value"))
+    );
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn failed_publication_retries_latest_database_state_after_restart() {
+    let Some(env) = setup().await else { return };
+    let zone_id = Uuid::new_v4().to_string();
+    env.state
+        .db
+        .execute(
+            "INSERT INTO zones(id,domain) VALUES($1::text::uuid,$2)",
+            &[&zone_id, &"retry-state.example"],
+        )
+        .await
+        .unwrap();
+    publish_current(
+        &env.state.dns_manager,
+        &env.state.db,
+        Some("retry-state.example"),
+    )
+    .await
+    .unwrap();
+    let original = std::fs::read_to_string(env.zone_file("retry-state.example")).unwrap();
+
+    let obstructed_path = env.dir.path().join("not-a-directory");
+    std::fs::write(&obstructed_path, "block mkdir").unwrap();
+    let failing_dns = DnsManager::new(obstructed_path.to_string_lossy().to_string());
+    let error = publish(&failing_dns, &env.state.db, Some("retry-state.example"))
+        .await
+        .unwrap_err();
+    assert!(!error.is_empty());
+    let queued = env
+        .state
+        .db
+        .query_one(
+            "SELECT status,attempts FROM publication_outbox WHERE zone_domain=$1",
+            &[&"retry-state.example"],
+        )
+        .await
+        .unwrap();
+    assert_eq!(queued.get::<_, String>(0), "pending");
+    assert_eq!(queued.get::<_, i32>(1), 0);
+    assert_eq!(
+        std::fs::read_to_string(env.zone_file("retry-state.example")).unwrap(),
+        original
+    );
+
+    let tx = env.state.db.begin().await.unwrap();
+    tx.client()
+        .execute(
+            "UPDATE records SET value='192.0.2.99' WHERE zone_id=$1::text::uuid",
+            &[&zone_id],
+        )
+        .await
+        .unwrap();
+    tx.client().batch_execute("ROLLBACK").await.unwrap();
+    drop(tx);
+
+    // Emulate process restart by using a newly constructed manager. It reads
+    // current committed DB state and repairs the missing/broken publication.
+    let restarted_dns = DnsManager::new(env.dir.path().to_string_lossy().to_string());
+    publish_current(&restarted_dns, &env.state.db, Some("retry-state.example"))
+        .await
+        .unwrap();
+    let latest = std::fs::read_to_string(env.zone_file("retry-state.example")).unwrap();
+    assert_eq!(latest, original);
+    env.state
+        .db
+        .execute(
+            "DELETE FROM publication_outbox WHERE zone_domain=$1",
+            &[&"retry-state.example"],
+        )
+        .await
+        .unwrap();
+    let remaining = env
+        .state
+        .db
+        .query(
+            "SELECT 1 FROM publication_outbox WHERE zone_domain=$1",
+            &[&"retry-state.example"],
+        )
+        .await
+        .unwrap();
+    assert!(remaining.is_empty());
+    env.cleanup().await;
+}
+
 async fn add_user(state: &AppState, name: &str, pw: &str, role: &str) -> String {
     let id = Uuid::new_v4().to_string();
     let hash = Argon2::default()
