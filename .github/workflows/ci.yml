@@ -74,6 +74,8 @@ jobs:
         run: cargo test -p hickory-dns --test integration notify_acknowledges_local_zone_and_rejects_unknown_zone
       - name: TCP connection admission under fanout
         run: cargo test -p hickory-dns --test integration protocol_admission_fanout_keeps_service_available
+      - name: DoH3 client and binary listener interoperability
+        run: cargo test -p hickory-dns --test integration --features 'h3-ring https-ring' doh3_client_queries_local_authoritative_server
       - name: Server tests
         run: cargo test -p hickory-server --features sqlite --lib
       - name: GeoDNS tests

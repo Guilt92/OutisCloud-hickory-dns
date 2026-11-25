@@ -13,15 +13,95 @@ use std::time::Duration;
 
 use crate::server_harness::{TestServer, query_a, query_a_refused, query_message};
 use hickory_net::client::{Client, ClientHandle};
+#[cfg(feature = "__h3")]
+use hickory_net::h3::H3ClientStream;
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_net::tcp::TcpClientStream;
 use hickory_net::udp::UdpClientStream;
 use hickory_net::xfer::Protocol;
+#[cfg(feature = "__h3")]
+use hickory_net::xfer::{DnsRequestSender, FirstAnswer};
 use hickory_proto::op::ResponseCode;
-#[cfg(feature = "resolver")]
+#[cfg(feature = "__h3")]
+use hickory_proto::op::{DnsRequest, DnsRequestOptions, Message, Query};
+#[cfg(any(feature = "resolver", feature = "__h3"))]
 use hickory_proto::rr::RData;
 use hickory_proto::rr::{DNSClass, Name, RecordType};
+#[cfg(feature = "__h3")]
+use std::sync::Arc;
 use test_support::subscribe;
+
+#[tokio::test]
+#[cfg(all(feature = "__h3", feature = "sqlite"))]
+async fn doh3_client_queries_local_authoritative_server() {
+    let zone = "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 2026112501 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\nwww 300 IN A 192.0.2.42\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[tls_cert]
+path = "cert.pem"
+private_key = "cert-key.pem"
+endpoint_name = "localhost"
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+
+[zones.stores]
+type = "file"
+zone_path = "example.test.zone"
+"#;
+    let generated_cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+        .expect("generate localhost test certificate");
+    let cert_pem = generated_cert.cert.pem();
+    let key_pem = generated_cert.key_pair.serialize_pem();
+    let server = TestServer::start_temporary(
+        config,
+        &[
+            ("example.test.zone", zone),
+            ("cert.pem", &cert_pem),
+            ("cert-key.pem", &key_pem),
+        ],
+    );
+    let port = server.ports.get_v4(Protocol::H3).expect("H3 listener");
+
+    let root_certificates = {
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(generated_cert.cert.der().clone())
+            .expect("add generated test root");
+        roots
+    };
+    let client_config =
+        rustls::ClientConfig::builder_with_provider(Arc::new(hickory_net::tls::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("configure TLS versions")
+            .with_root_certificates(root_certificates)
+            .with_no_client_auth();
+
+    let mut client = H3ClientStream::builder()
+        .crypto_config(client_config)
+        .build(
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            Arc::from("localhost"),
+            Arc::from("/dns-query"),
+        )
+        .await
+        .expect("connect using DoH3");
+    let mut query = Message::query();
+    query.add_query(Query::query(
+        Name::from_str("www.example.test.").unwrap(),
+        RecordType::A,
+    ));
+    let response = client
+        .send_message(DnsRequest::new(query, DnsRequestOptions::default()))
+        .first_answer()
+        .await
+        .expect("DoH3 DNS response");
+    assert!(response.answers().iter().any(|record| {
+        matches!(record.data(), RData::A(address) if *address == hickory_proto::rr::rdata::A(Ipv4Addr::new(192, 0, 2, 42)))
+    }));
+}
 
 #[tokio::test]
 #[cfg(all(feature = "__dnssec", feature = "sqlite"))]

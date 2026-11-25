@@ -187,6 +187,8 @@ impl TestServer {
         command.arg(format!("--https-port={}", 0));
         #[cfg(feature = "__quic")]
         command.arg(format!("--quic-port={}", 0));
+        #[cfg(feature = "__h3")]
+        command.arg(format!("--h3-port={}", 0));
         #[cfg(feature = "prometheus-metrics")]
         command.arg(format!("--prometheus-listen-address=127.0.0.1:{}", 0));
 
@@ -207,7 +209,7 @@ impl TestServer {
 
         // Search strings for the ports used during testing
         let addr_regex = Regex::new(
-            r"listening for (UDP|TCP|TLS|HTTPS|QUIC|Prometheus metrics) on ((?:(?:0\.0\.0\.0)|(?:127\.0\.0\.1)|(?:\[::\])):\d+)",
+            r"listening for (UDP|TCP|TLS|HTTPS|QUIC|H3|HTTP/3|Prometheus metrics) on ((?:(?:0\.0\.0\.0)|(?:127\.0\.0\.1)|(?:\[::\])):\d+)",
         )
         .unwrap();
 
@@ -234,6 +236,8 @@ impl TestServer {
                     "HTTPS" => ports.put(Protocol::Https, socket_addr),
                     #[cfg(feature = "__quic")]
                     "QUIC" => ports.put(Protocol::Quic, socket_addr),
+                    #[cfg(feature = "__h3")]
+                    "H3" | "HTTP/3" => ports.put(Protocol::H3, socket_addr),
                     #[cfg(feature = "metrics")]
                     "Prometheus metrics" => {
                         ports.put(ServerProtocol::PrometheusMetrics, socket_addr)

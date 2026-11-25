@@ -106,6 +106,7 @@ metrics-process = { workspace = true, optional = true }
 libc.workspace = true
 
 [dev-dependencies]
+rcgen = "0.13"
 bytes.workspace = true
 futures-executor = { workspace = true, default-features = false, features = ["std"] }
 regex.workspace = true
