@@ -67,7 +67,10 @@ jobs:
           cargo test -p hickory-dns --test integration test_health_and_ready_endpoints
           cargo test -p hickory-dns --test integration readiness_tracks_failed_zone_reload_and_recovery
       - name: Signed AXFR interoperability
-        run: cargo test -p hickory-dns --test integration signed_axfr_stream_verifies_with_independent_dig_client
+        run: |
+          cargo test -p hickory-dns --test integration signed_axfr_stream_verifies_with_independent_dig_client
+          cargo test -p hickory-dns --test integration signed_axfr_is_supported_for_file_backed_zones
+          cargo test -p hickory-dns --test integration hickory_axfr_client_consumes_multipart_transfer
       - name: IXFR safe fallback interoperability
         run: cargo test -p hickory-dns --test integration ixfr_current_serial_succeeds_and_stale_serial_is_refused_safely
       - name: NOTIFY acknowledgement behavior

@@ -13,6 +13,8 @@ use test_support::subscribe;
 fn file(zone_path: &Path, _module: &str, _test_name: &str) -> FileZoneHandler {
     let config = FileConfig {
         zone_path: zone_path.to_owned(),
+        #[cfg(feature = "__dnssec")]
+        tsig_keys: Vec::new(),
     };
 
     FileZoneHandler::try_from_config(
@@ -36,6 +38,8 @@ fn test_all_lines_are_loaded() {
     subscribe();
     let config = FileConfig {
         zone_path: PathBuf::from("../tests/test-data/test_configs/default/nonewline.zone"),
+        #[cfg(feature = "__dnssec")]
+        tsig_keys: Vec::new(),
     };
 
     let mut handler = FileZoneHandler::try_from_config(
@@ -60,6 +64,8 @@ fn test_implicit_in_class() {
     subscribe();
     let config = FileConfig {
         zone_path: PathBuf::from("../tests/test-data/test_configs/default/implicitclass.zone"),
+        #[cfg(feature = "__dnssec")]
+        tsig_keys: Vec::new(),
     };
 
     let handler = FileZoneHandler::try_from_config(
@@ -79,6 +85,8 @@ async fn test_ttl_wildcard() {
     subscribe();
     let config = FileConfig {
         zone_path: PathBuf::from("../tests/test-data/test_configs/default/test.local.zone"),
+        #[cfg(feature = "__dnssec")]
+        tsig_keys: Vec::new(),
     };
 
     let zone_name = LowerName::from_str("test.local.").unwrap();

@@ -5,6 +5,8 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+#[cfg(feature = "sqlite")]
+use futures_util::StreamExt;
 use std::io::{Read, Write};
 use std::net::*;
 use std::process::{Command, Stdio};
@@ -192,6 +194,182 @@ algorithm = "hmac-sha256"
         signed_output.contains("XFR size: 84 records"),
         "{signed_output}"
     );
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn hickory_axfr_client_consumes_multipart_transfer() {
+    let mut zone = String::from(
+        "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 2026112501 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n",
+    );
+    for index in 0..80 {
+        zone.push_str(&format!(
+            "host{index} 300 IN A 192.0.2.{}\n",
+            index % 250 + 1
+        ));
+    }
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+
+[zones.stores]
+type = "sqlite"
+zone_path = "example.test.zone"
+journal_path = "example.test.jrnl"
+"#;
+    let server = TestServer::start_temporary(config, &[("example.test.zone", &zone)]);
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let (connect, sender) = TcpClientStream::new(address, None, None, TokioRuntimeProvider::new());
+    let stream = connect.await.expect("connect AXFR client");
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+
+    let mut transfer = client.zone_transfer(Name::from_str("example.test.").unwrap(), None);
+    let mut records = Vec::new();
+    while let Some(response) = transfer.next().await {
+        records.extend(
+            response
+                .expect("valid AXFR response message")
+                .answers()
+                .iter()
+                .cloned(),
+        );
+    }
+    assert_eq!(
+        records.len(),
+        84,
+        "both SOA boundaries and all records included"
+    );
+    assert_eq!(records.first().unwrap().record_type(), RecordType::SOA);
+    assert_eq!(records.last().unwrap().record_type(), RecordType::SOA);
+    assert!(records.iter().any(|record| {
+        record.name() == &Name::from_str("host79.example.test.").unwrap()
+            && record.record_type() == RecordType::A
+    }));
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+#[ignore = "requires an isolated BIND server at HICKORY_AXFR_INTEROP_ADDR"]
+async fn hickory_axfr_client_interoperates_with_independent_bind() {
+    let address = std::env::var("HICKORY_AXFR_INTEROP_ADDR")
+        .expect("set HICKORY_AXFR_INTEROP_ADDR to the isolated BIND TCP endpoint")
+        .parse::<SocketAddr>()
+        .expect("valid AXFR server socket address");
+    let (connect, sender) = TcpClientStream::new(address, None, None, TokioRuntimeProvider::new());
+    let stream = connect.await.expect("connect to independent AXFR primary");
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+
+    let mut transfer = client.zone_transfer(Name::from_str("interop.test.").unwrap(), None);
+    let mut records = Vec::new();
+    while let Some(response) = transfer.next().await {
+        records.extend(
+            response
+                .expect("valid independent BIND AXFR response")
+                .answers()
+                .iter()
+                .cloned(),
+        );
+    }
+    assert_eq!(records.first().unwrap().record_type(), RecordType::SOA);
+    assert_eq!(records.last().unwrap().record_type(), RecordType::SOA);
+    assert!(records.iter().any(|record| {
+        record.name() == &Name::from_str("www.interop.test.").unwrap()
+            && record.record_type() == RecordType::A
+    }));
+}
+
+#[tokio::test]
+#[cfg(all(feature = "__dnssec", feature = "sqlite"))]
+async fn signed_axfr_is_supported_for_file_backed_zones() {
+    let secret = "file_store_axfr_test_secret";
+    let secret_b64 = "ZmlsZV9zdG9yZV9heGZyX3Rlc3Rfc2VjcmV0";
+    let zone = "$ORIGIN file.test.\n@ 300 IN SOA ns.file.test. hostmaster.file.test. 2026112501 3600 600 604800 300\n@ 300 IN NS ns.file.test.\nns 300 IN A 192.0.2.1\nwww 300 IN A 192.0.2.80\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "file.test"
+zone_type = "Primary"
+axfr_policy = "AllowSigned"
+
+[zones.stores]
+type = "file"
+zone_path = "file.test.zone"
+
+[[zones.stores.tsig_keys]]
+name = "transfer.file.test."
+key_file = "transfer.key"
+algorithm = "hmac-sha256"
+"#;
+    let server = TestServer::start_temporary(
+        config,
+        &[("file.test.zone", zone), ("transfer.key", secret)],
+    );
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let unsigned = Command::new("dig")
+        .args([
+            "+tcp",
+            "@127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "file.test",
+            "AXFR",
+            "+time=3",
+            "+tries=1",
+        ])
+        .output()
+        .expect("dig is required for independent TSIG AXFR testing");
+    assert!(
+        String::from_utf8_lossy(&unsigned.stdout).contains("Transfer failed"),
+        "unsigned file-store AXFR must be refused"
+    );
+
+    let invalid = Command::new("dig")
+        .args([
+            "+tcp",
+            "@127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "-y",
+            "hmac-sha256:transfer.file.test.:d3Jvbmdfc2VjcmV0",
+            "file.test",
+            "AXFR",
+            "+time=3",
+            "+tries=1",
+        ])
+        .output()
+        .expect("run invalidly signed file-store AXFR");
+    assert!(
+        String::from_utf8_lossy(&invalid.stdout).contains("Transfer failed"),
+        "incorrect TSIG secret must not transfer a file-backed zone"
+    );
+
+    let signed = Command::new("dig")
+        .args([
+            "+tcp",
+            "@127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "-y",
+            &format!("hmac-sha256:transfer.file.test.:{secret_b64}"),
+            "file.test",
+            "AXFR",
+            "+time=3",
+            "+tries=1",
+        ])
+        .output()
+        .expect("run signed file-store AXFR");
+    let output = String::from_utf8_lossy(&signed.stdout);
+    assert!(signed.status.success(), "{output}");
+    assert!(output.contains("www.file.test."), "{output}");
+    assert!(!output.contains("Couldn't verify signature"), "{output}");
 }
 
 #[tokio::test]

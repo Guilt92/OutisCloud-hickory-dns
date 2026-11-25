@@ -7,6 +7,8 @@
 
 //! Zone file based serving with Dynamic DNS and journaling support
 
+#[cfg(feature = "__dnssec")]
+use std::{fs, str::FromStr};
 use std::{
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
@@ -15,12 +17,18 @@ use std::{
 #[cfg(feature = "metrics")]
 use crate::metrics::PersistentStoreMetrics;
 #[cfg(feature = "__dnssec")]
+use crate::proto::rr::{
+    TSigner,
+    rdata::tsig::{TsigAlgorithm, TsigError},
+};
+#[cfg(feature = "__dnssec")]
 use crate::{
     dnssec::NxProofKind,
     proto::dnssec::{DnsSecResult, DnssecSigner},
     zone_handler::{DnssecZoneHandler, Nsec3QueryInfo},
 };
 use crate::{
+    proto::op::ResponseCode,
     proto::rr::{LowerName, Name, RecordType},
     server::{Request, RequestInfo},
     store::in_memory::{InMemoryZoneHandler, zone_from_path},
@@ -31,6 +39,8 @@ use crate::{
 };
 use hickory_proto::rr::TSigResponseContext;
 use serde::Deserialize;
+#[cfg(feature = "__dnssec")]
+use tracing::warn;
 
 /// FileZoneHandler is responsible for storing the resource records for a particular zone.
 ///
@@ -38,6 +48,9 @@ use serde::Deserialize;
 /// start of authority for the zone, is a Secondary, or a cached zone.
 pub struct FileZoneHandler {
     in_memory: InMemoryZoneHandler,
+    axfr_policy: AxfrPolicy,
+    #[cfg(feature = "__dnssec")]
+    tsig_signers: Vec<TSigner>,
     #[cfg(feature = "metrics")]
     #[allow(unused)]
     metrics: PersistentStoreMetrics,
@@ -59,7 +72,11 @@ impl FileZoneHandler {
     ///
     /// The new `ZoneHandler`.
     pub async fn new(in_memory: InMemoryZoneHandler) -> Self {
+        let axfr_policy = in_memory.axfr_policy();
         Self {
+            axfr_policy,
+            #[cfg(feature = "__dnssec")]
+            tsig_signers: Vec::new(),
             #[cfg(feature = "metrics")]
             metrics: {
                 let new = PersistentStoreMetrics::new("file");
@@ -83,9 +100,18 @@ impl FileZoneHandler {
         let zone_path = rooted(&config.zone_path, root_dir);
         let records = zone_from_path(&zone_path, origin.clone())
             .map_err(|e| format!("failed to load zone file: {e}"))?;
+        #[cfg(feature = "__dnssec")]
+        let tsig_signers = config
+            .tsig_keys
+            .iter()
+            .map(|key| key.to_signer(&origin, root_dir))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Don't call `new()`, since it needs to be async to get the number of records to initialize metrics
         Ok(Self {
+            axfr_policy,
+            #[cfg(feature = "__dnssec")]
+            tsig_signers,
             #[cfg(feature = "metrics")]
             metrics: {
                 let new = PersistentStoreMetrics::new("file");
@@ -96,11 +122,78 @@ impl FileZoneHandler {
                 origin,
                 records,
                 zone_type,
-                axfr_policy,
+                // The file wrapper performs the configured transfer policy and TSIG
+                // verification before delegating to this in-memory record store.
+                AxfrPolicy::AllowAll,
                 #[cfg(feature = "__dnssec")]
                 nx_proof_kind,
             )?,
         })
+    }
+
+    #[cfg(feature = "__dnssec")]
+    async fn authorize_axfr(
+        &self,
+        request: &Request,
+        now: u64,
+    ) -> (Result<(), ResponseCode>, Option<TSigResponseContext>) {
+        match self.axfr_policy {
+            AxfrPolicy::Deny => (Err(ResponseCode::Refused), None),
+            AxfrPolicy::AllowAll => (Ok(()), None),
+            AxfrPolicy::AllowSigned => match request.signature() {
+                Some(tsig) => {
+                    let req_id = request.header().id();
+                    let Some(signer) = self
+                        .tsig_signers
+                        .iter()
+                        .find(|signer| signer.signer_name() == tsig.name())
+                    else {
+                        warn!("no TSIG key name matched for AXFR request id {req_id}");
+                        return (
+                            Err(ResponseCode::NotAuth),
+                            Some(TSigResponseContext::unknown_key(
+                                req_id,
+                                now,
+                                tsig.name().clone(),
+                            )),
+                        );
+                    };
+                    let Ok((_, _, range)) =
+                        signer.verify_message_byte(request.as_slice(), None, true)
+                    else {
+                        warn!("invalid TSIG signature for AXFR request id {req_id}");
+                        return (
+                            Err(ResponseCode::NotAuth),
+                            Some(TSigResponseContext::bad_signature(
+                                req_id,
+                                now,
+                                signer.clone(),
+                            )),
+                        );
+                    };
+                    let (response, error) = if range.contains(&now) {
+                        (Ok(()), None)
+                    } else {
+                        warn!("expired TSIG signature for AXFR request id {req_id}");
+                        (Err(ResponseCode::NotAuth), Some(TsigError::BadTime))
+                    };
+                    (
+                        response,
+                        Some(TSigResponseContext::new(
+                            req_id,
+                            now,
+                            signer.clone(),
+                            tsig.data().mac().to_vec(),
+                            error,
+                        )),
+                    )
+                }
+                None => {
+                    warn!("AXFR request was not signed");
+                    (Err(ResponseCode::Refused), None)
+                }
+            },
+        }
     }
 }
 
@@ -127,7 +220,7 @@ impl ZoneHandler for FileZoneHandler {
 
     /// Return the policy for determining if AXFR requests are allowed
     fn axfr_policy(&self) -> AxfrPolicy {
-        self.in_memory.axfr_policy()
+        self.axfr_policy
     }
 
     /// Get the origin of this zone, i.e. example.com is the origin for www.example.com
@@ -190,9 +283,24 @@ impl ZoneHandler for FileZoneHandler {
         Result<ZoneTransfer, LookupError>,
         Option<TSigResponseContext>,
     )> {
-        self.in_memory
+        #[cfg(feature = "__dnssec")]
+        let signer = match self.authorize_axfr(request, now).await {
+            (Ok(()), signer) => signer,
+            (Err(code), signer) => return Some((Err(LookupError::ResponseCode(code)), signer)),
+        };
+        #[cfg(not(feature = "__dnssec"))]
+        if self.axfr_policy != AxfrPolicy::AllowAll {
+            return Some((Err(LookupError::ResponseCode(ResponseCode::Refused)), None));
+        }
+
+        let (transfer, _) = self
+            .in_memory
             .zone_transfer(request, lookup_options, now)
-            .await
+            .await?;
+        #[cfg(feature = "__dnssec")]
+        return Some((transfer, signer));
+        #[cfg(not(feature = "__dnssec"))]
+        Some((transfer, None))
     }
 
     /// Return the NSEC records based on the given name
@@ -251,6 +359,43 @@ impl DnssecZoneHandler for FileZoneHandler {
 pub struct FileConfig {
     /// path to the zone file
     pub zone_path: PathBuf,
+    /// TSIG keys allowed to authenticate signed AXFR requests.
+    #[cfg(feature = "__dnssec")]
+    #[serde(default)]
+    pub tsig_keys: Vec<TsigKeyConfig>,
+}
+
+/// Configuration for a TSIG key used by file-backed zone transfers.
+#[cfg(feature = "__dnssec")]
+#[derive(Clone, Deserialize, PartialEq, Eq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TsigKeyConfig {
+    /// The key name.
+    pub name: String,
+    /// File containing the unencoded symmetric HMAC key data.
+    pub key_file: PathBuf,
+    /// The TSIG HMAC algorithm.
+    pub algorithm: TsigAlgorithm,
+    /// Maximum permitted request signature age in seconds.
+    #[serde(default = "default_fudge")]
+    pub fudge: u16,
+}
+
+#[cfg(feature = "__dnssec")]
+impl TsigKeyConfig {
+    fn to_signer(&self, zone_name: &Name, root_dir: Option<&Path>) -> Result<TSigner, String> {
+        let key_file = rooted(&self.key_file, root_dir);
+        let key_data = fs::read(&key_file)
+            .map_err(|e| format!("error reading TSIG key file: {}: {e}", key_file.display()))?;
+        let signer_name = Name::from_str(&self.name).unwrap_or_else(|_| zone_name.clone());
+        TSigner::new(key_data, self.algorithm.clone(), signer_name, self.fudge)
+            .map_err(|e| format!("invalid TSIG key configuration: {e}"))
+    }
+}
+
+#[cfg(feature = "__dnssec")]
+fn default_fudge() -> u16 {
+    300
 }
 
 pub(crate) fn rooted(zone_file: &Path, root_dir: Option<&Path>) -> PathBuf {
@@ -279,6 +424,8 @@ mod tests {
         #[cfg(feature = "__dnssec")]
         let config = FileConfig {
             zone_path: PathBuf::from("../../tests/test-data/test_configs/dnssec/example.com.zone"),
+            #[cfg(feature = "__dnssec")]
+            tsig_keys: Vec::new(),
         };
         #[cfg(not(feature = "__dnssec"))]
         let config = FileConfig {

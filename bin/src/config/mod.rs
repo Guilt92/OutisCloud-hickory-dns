@@ -244,7 +244,11 @@ where
                             "having `file` and `[zones.store]` item with type `file` is ambiguous",
                         ))
                     } else {
-                        let store = ServerStoreConfig::File(FileConfig { zone_path: file });
+                        let store = ServerStoreConfig::File(FileConfig {
+                            zone_path: file,
+                            #[cfg(feature = "__dnssec")]
+                            tsig_keys: Vec::new(),
+                        });
 
                         if server_config.stores.len() == 1
                             && matches!(&server_config.stores[0], ServerStoreConfig::Default)
