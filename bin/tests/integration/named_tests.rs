@@ -13,22 +13,28 @@ use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::server_harness::{ServerProtocol, TestServer, query_a, query_a_refused, query_message};
+#[cfg(feature = "metrics")]
+use crate::server_harness::ServerProtocol;
+use crate::server_harness::{TestServer, query_a, query_a_refused, query_message};
 use hickory_net::client::{Client, ClientHandle};
 #[cfg(feature = "__h3")]
 use hickory_net::h3::H3ClientStream;
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_net::tcp::TcpClientStream;
 use hickory_net::udp::UdpClientStream;
+#[cfg(feature = "__dnssec")]
+use hickory_net::xfer::DnsMultiplexer;
 use hickory_net::xfer::Protocol;
 #[cfg(feature = "__h3")]
 use hickory_net::xfer::{DnsRequestSender, FirstAnswer};
 use hickory_proto::op::ResponseCode;
 #[cfg(feature = "__h3")]
 use hickory_proto::op::{DnsRequest, DnsRequestOptions, Message, Query};
-#[cfg(any(feature = "resolver", feature = "__h3"))]
 use hickory_proto::rr::RData;
+use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RecordType};
+#[cfg(feature = "__dnssec")]
+use hickory_proto::rr::{TSigner, rdata::tsig::TsigAlgorithm};
 #[cfg(feature = "__h3")]
 use std::sync::Arc;
 use test_support::subscribe;
@@ -507,6 +513,90 @@ file = "example.test.zone"
 }
 
 #[tokio::test]
+#[cfg(feature = "__dnssec")]
+async fn notify_requires_and_verifies_configured_file_store_tsig() {
+    let zone = "$ORIGIN signed-notify.test.\n@ 300 IN SOA ns.signed-notify.test. hostmaster.signed-notify.test. 1 3600 600 604800 300\n@ 300 IN NS ns.signed-notify.test.\nns 300 IN A 192.0.2.1\n";
+    let secret = "valid-notify-test-secret-material";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "signed-notify.test"
+zone_type = "Primary"
+
+[zones.stores]
+type = "file"
+zone_path = "notify.zone"
+
+[[zones.stores.tsig_keys]]
+name = "notify-key."
+key_file = "notify.key"
+algorithm = "hmac-sha256"
+"#;
+    let server =
+        TestServer::start_temporary(config, &[("notify.zone", zone), ("notify.key", secret)]);
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+
+    let (connect, sender) = TcpClientStream::new(address, None, None, TokioRuntimeProvider::new());
+    let stream = connect.await.expect("connect unsigned NOTIFY client");
+    let (mut unsigned, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let response = unsigned
+        .notify(
+            Name::from_str("signed-notify.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await
+        .expect("receive unsigned NOTIFY refusal");
+    assert_eq!(response.response_code(), ResponseCode::Refused);
+
+    let make_signed_client = |key: &'static [u8]| async move {
+        let signer = TSigner::new(
+            key.to_vec(),
+            TsigAlgorithm::HmacSha256,
+            Name::from_str("notify-key.").unwrap(),
+            300,
+        )
+        .unwrap();
+        let (connect, sender) =
+            TcpClientStream::new(address, None, None, TokioRuntimeProvider::new());
+        let stream = connect.await.expect("connect signed NOTIFY client");
+        let (client, background) = Client::<TokioRuntimeProvider>::from_sender(
+            DnsMultiplexer::new(stream, sender).with_signer(signer),
+        );
+        tokio::spawn(background);
+        client
+    };
+
+    let mut valid = make_signed_client(secret.as_bytes()).await;
+    let response = valid
+        .notify(
+            Name::from_str("signed-notify.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await
+        .expect("valid TSIG NOTIFY response verifies");
+    assert_eq!(response.response_code(), ResponseCode::NoError);
+
+    let mut invalid = make_signed_client(b"different-notify-secret-material").await;
+    let result = invalid
+        .notify(
+            Name::from_str("signed-notify.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await;
+    assert!(result.is_err(), "invalid request MAC must not be accepted");
+}
+
+#[tokio::test]
+#[cfg(feature = "metrics")]
 async fn primary_notifies_configured_secondary_after_zone_reload() {
     let zone = "$ORIGIN notify.test.\n@ 300 IN SOA ns.notify.test. hostmaster.notify.test. 1 3600 600 604800 300\n@ 300 IN NS ns.notify.test.\nns 300 IN A 192.0.2.1\n";
     let receiver_config = r#"
@@ -561,6 +651,221 @@ address = "127.0.0.1:{receiver_port}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+#[tokio::test]
+async fn accepted_notify_refreshes_secondary_by_axfr_and_preserves_last_known_good_on_failure() {
+    let primary_zone = "$ORIGIN secondary.test.\n@ 300 IN SOA ns.secondary.test. hostmaster.secondary.test. 2 3600 600 604800 300\n@ 300 IN NS ns.secondary.test.\nns 300 IN A 192.0.2.1\nwww 300 IN A 192.0.2.22\n";
+    let primary_config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "secondary.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+file = "primary.zone"
+"#;
+    let primary = TestServer::start_temporary(primary_config, &[("primary.zone", primary_zone)]);
+    let primary_port = primary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("primary TCP listener");
+    let master = format!("127.0.0.1:{primary_port}");
+    let (connect, sender) = TcpClientStream::new(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, primary_port)),
+        None,
+        None,
+        TokioRuntimeProvider::new(),
+    );
+    let stream = connect
+        .await
+        .expect("connect directly to primary for AXFR sanity check");
+    let (mut primary_client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let mut transfer =
+        primary_client.zone_transfer(Name::from_str("secondary.test.").unwrap(), None);
+    let mut transferred = Vec::new();
+    while let Some(response) = transfer.next().await {
+        transferred.extend(
+            response
+                .expect("primary AXFR response parses")
+                .answers()
+                .iter()
+                .cloned(),
+        );
+    }
+    assert_eq!(transferred.len(), 5, "complete SOA-bounded AXFR");
+    assert_eq!(
+        transferred.first().and_then(|record| match record.data() {
+            RData::SOA(soa) => Some(soa),
+            _ => None,
+        }),
+        transferred.last().and_then(|record| match record.data() {
+            RData::SOA(soa) => Some(soa),
+            _ => None,
+        }),
+        "AXFR boundary SOAs must be identical"
+    );
+    let secondary_zone = "$ORIGIN secondary.test.\n@ 300 IN SOA ns.secondary.test. hostmaster.secondary.test. 1 3600 600 604800 300\n@ 300 IN NS ns.secondary.test.\nns 300 IN A 192.0.2.1\nwww 300 IN A 192.0.2.11\n";
+    let secondary_config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "secondary.test"
+zone_type = "Secondary"
+file = "secondary.zone"
+[[zones.masters]]
+address = "{master}"
+"#
+    );
+    let secondary =
+        TestServer::start_temporary(&secondary_config, &[("secondary.zone", secondary_zone)]);
+    #[cfg(unix)]
+    secondary.allow_child_zone_file_replacement();
+    let secondary_port = secondary
+        .ports
+        .get_v4(Protocol::Udp)
+        .expect("secondary UDP listener");
+    let secondary_tcp_port = secondary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("secondary TCP listener");
+    let stream = UdpClientStream::builder(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, secondary_port)),
+        TokioRuntimeProvider::new(),
+    )
+    .build();
+    let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(background);
+    let name = Name::from_str("www.secondary.test.").unwrap();
+    let before = client
+        .query(name.clone(), DNSClass::IN, RecordType::A)
+        .await
+        .unwrap();
+    assert!(before.answers().iter().any(|record| {
+        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 11))
+    }));
+
+    let (connect, sender) = TcpClientStream::new(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, secondary_tcp_port)),
+        None,
+        None,
+        TokioRuntimeProvider::new(),
+    );
+    let stream = connect.await.expect("connect to secondary for NOTIFY");
+    let (mut notifier, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let response = notifier
+        .notify(
+            Name::from_str("secondary.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await
+        .expect("secondary acknowledges configured master NOTIFY");
+    assert_eq!(response.response_code(), ResponseCode::NoError);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = client
+            .query(name.clone(), DNSClass::IN, RecordType::A)
+            .await
+            .unwrap();
+        if response.answers().iter().any(|record| {
+        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 22))
+        }) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "secondary did not serve the complete AXFR after accepted NOTIFY; installed file: {}",
+            secondary.read_temporary_file("secondary.zone")
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A failed transfer is retried, but a fresh secondary must continue
+    // serving its last-known-good file throughout the failure.
+    let denied_primary_config = primary_config.replace("AllowAll", "Deny");
+    let denied_primary =
+        TestServer::start_temporary(&denied_primary_config, &[("primary.zone", primary_zone)]);
+    let denied_port = denied_primary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("denied primary TCP listener");
+    let failed_secondary_config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "secondary.test"
+zone_type = "Secondary"
+file = "secondary.zone"
+[[zones.masters]]
+address = "127.0.0.1:{denied_port}"
+"#
+    );
+    let failed_secondary = TestServer::start_temporary(
+        &failed_secondary_config,
+        &[("secondary.zone", secondary_zone)],
+    );
+    let failed_udp_port = failed_secondary
+        .ports
+        .get_v4(Protocol::Udp)
+        .expect("failed secondary UDP listener");
+    let failed_tcp_port = failed_secondary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("failed secondary TCP listener");
+    let failed_stream = UdpClientStream::builder(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, failed_udp_port)),
+        TokioRuntimeProvider::new(),
+    )
+    .build();
+    let (mut failed_query_client, background) =
+        Client::<TokioRuntimeProvider>::from_sender(failed_stream);
+    tokio::spawn(background);
+    let failed_before = failed_query_client
+        .query(
+            Name::from_str("www.secondary.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::A,
+        )
+        .await
+        .unwrap();
+    assert!(failed_before.answers().iter().any(|record| {
+        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 11))
+    }));
+    let (connect, sender) = TcpClientStream::new(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, failed_tcp_port)),
+        None,
+        None,
+        TokioRuntimeProvider::new(),
+    );
+    let stream = connect.await.expect("connect for failed-transfer NOTIFY");
+    let (mut notifier, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let response = notifier
+        .notify(
+            Name::from_str("secondary.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::SOA,
+            None::<hickory_proto::rr::RecordSet>,
+        )
+        .await
+        .expect("failed secondary still acknowledges valid NOTIFY");
+    assert_eq!(response.response_code(), ResponseCode::NoError);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let failed_after = failed_query_client
+        .query(
+            Name::from_str("www.secondary.test.").unwrap(),
+            DNSClass::IN,
+            RecordType::A,
+        )
+        .await
+        .unwrap();
+    assert!(failed_after.answers().iter().any(|record| {
+        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 11))
+    }));
 }
 
 #[tokio::test]

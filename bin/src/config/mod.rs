@@ -291,6 +291,15 @@ impl ZoneConfig {
         }
     }
 
+    /// Configured primaries a secondary may refresh from after receiving a
+    /// NOTIFY. Source IPs are checked before a transfer is attempted.
+    pub(crate) fn masters(&self) -> &[NotifyPeerConfig] {
+        match &self.zone_type_config {
+            ZoneTypeConfig::Secondary(config) => &config.masters,
+            ZoneTypeConfig::Primary(_) | ZoneTypeConfig::External { .. } => &[],
+        }
+    }
+
     pub(crate) async fn load(
         self,
         zone_dir: &Path,
@@ -545,6 +554,10 @@ pub(crate) struct ServerZoneConfig {
     /// Authoritative secondary peers to notify after this zone changes.
     #[serde(default)]
     pub notify_peers: Vec<NotifyPeerConfig>,
+    /// Primary endpoints accepted for secondary refresh and authenticated
+    /// transfers. The same key is used for NOTIFY verification and AXFR.
+    #[serde(default)]
+    pub masters: Vec<NotifyPeerConfig>,
 }
 
 /// A secondary authoritative server that should be notified after a primary update.

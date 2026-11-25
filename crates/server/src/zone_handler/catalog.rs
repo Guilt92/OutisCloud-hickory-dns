@@ -8,7 +8,7 @@
 // TODO, I've implemented this as a separate entity from the cache, but I wonder if the cache
 //  should be the only "front-end" for lookups, where if that misses, then we go to the catalog
 //  then, if requested, do a recursive lookup... i.e. the catalog would only point to files.
-use std::{collections::HashMap, iter, sync::Arc};
+use std::{collections::HashMap, iter, net::SocketAddr, sync::Arc};
 
 use tracing::{debug, error, info, trace, warn};
 
@@ -49,6 +49,7 @@ use crate::{
 pub struct Catalog {
     nsid_payload: Option<NSIDPayload>,
     handlers: HashMap<LowerName, Vec<Arc<dyn ZoneHandler>>>,
+    notify_refresh_tx: Option<tokio::sync::mpsc::UnboundedSender<(LowerName, SocketAddr)>>,
     #[cfg(feature = "metrics")]
     metrics: CatalogMetrics,
 }
@@ -141,7 +142,8 @@ impl RequestHandler for Catalog {
                 }
                 OpCode::Notify => {
                     debug!("notify received: {}", request.id());
-                    self.notify(request, response_edns, response_handle).await
+                    self.notify(request, response_edns, now, response_handle)
+                        .await
                 }
                 c => {
                     warn!("unimplemented op_code: {:?}", c);
@@ -174,6 +176,7 @@ impl Catalog {
         Self {
             handlers: HashMap::new(),
             nsid_payload: None,
+            notify_refresh_tx: None,
             #[cfg(feature = "metrics")]
             metrics: CatalogMetrics::default(),
         }
@@ -399,11 +402,14 @@ impl Catalog {
         .await
     }
 
+    /// Acknowledge a NOTIFY for a configured authoritative zone and enqueue
+    /// a configured secondary refresh after the zone handler accepts it.
     pub async fn notify<R: ResponseHandler>(
         &self,
         request: &Request,
         response_edns: Option<&Edns>,
-        response_handle: R,
+        now: u64,
+        mut response_handle: R,
     ) -> ResponseInfo {
         let Ok(request_info) = request.request_info() else {
             return send_error_response(
@@ -414,12 +420,52 @@ impl Catalog {
             )
             .await;
         };
-        let code = if self.find(request_info.query.name()).is_some() {
-            ResponseCode::NoError
-        } else {
-            ResponseCode::NotAuth
+        let handlers = self.find(request_info.query.name());
+        let Some(handler) = handlers.and_then(|handlers| handlers.first()) else {
+            return send_error_response(
+                request,
+                ResponseCode::NotAuth,
+                response_edns,
+                response_handle,
+            )
+            .await;
         };
-        send_error_response(request, code, response_edns, response_handle).await
+        let (code, signer) = handler.notify(request, now).await;
+        if code == ResponseCode::NoError {
+            if let Some(tx) = &self.notify_refresh_tx {
+                let _ = tx.send((request_info.query.name().clone(), request.src()));
+            }
+        }
+        #[allow(unused_mut)]
+        let mut response = MessageResponseBuilder::new(request.raw_queries(), response_edns)
+            .error_msg(request.header(), code);
+        #[cfg(feature = "__dnssec")]
+        if let Some(context) = signer {
+            let tbs_response = MessageResponseBuilder::new(request.raw_queries(), response_edns)
+                .error_msg(request.header(), code);
+            let mut tbs = Vec::with_capacity(256);
+            let mut encoder = BinEncoder::new(&mut tbs);
+            if let Err(error) = tbs_response.destructive_emit(&mut encoder) {
+                error!(%error, "failed to encode NOTIFY response for TSIG");
+                return ResponseInfo::serve_failed(request);
+            }
+            match context.sign(&tbs) {
+                Ok(signature) => response.set_signature(signature),
+                Err(error) => {
+                    error!(%error, "failed to sign NOTIFY response");
+                    return ResponseInfo::serve_failed(request);
+                }
+            }
+        }
+        #[cfg(not(feature = "__dnssec"))]
+        let _ = signer;
+        match response_handle.send_response(response).await {
+            Ok(info) => info,
+            Err(error) => {
+                error!(%error, "failed to send NOTIFY response");
+                ResponseInfo::serve_failed(request)
+            }
+        }
     }
 
     /// Handles a dynamic DNS update request.
@@ -750,6 +796,16 @@ impl Catalog {
     pub fn clone_handlers_from(&mut self, other: &Self) {
         self.nsid_payload = other.nsid_payload.clone();
         self.handlers = other.handlers.clone();
+        self.notify_refresh_tx = other.notify_refresh_tx.clone();
+    }
+
+    /// Configure the channel used to enqueue accepted secondary NOTIFY
+    /// messages for bounded asynchronous refresh processing.
+    pub fn set_notify_refresh_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<(LowerName, SocketAddr)>,
+    ) {
+        self.notify_refresh_tx = Some(tx);
     }
 
     /// Recursively searches the catalog for a matching zone handler

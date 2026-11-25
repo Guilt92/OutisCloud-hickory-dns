@@ -44,6 +44,7 @@ use tokio::time::sleep;
 use tracing::warn;
 use tracing::{error, info};
 
+use futures_util::StreamExt;
 #[cfg(feature = "__dnssec")]
 use hickory_net::DnsMultiplexer;
 use hickory_net::{
@@ -52,7 +53,10 @@ use hickory_net::{
     tcp::TcpClientStream,
 };
 use hickory_server::proto::ProtoError;
-use hickory_server::proto::rr::{DNSClass, Name, RecordSet, RecordType, rdata::opt::NSIDPayload};
+use hickory_server::proto::rr::{
+    DNSClass, Name, RData, Record, RecordSet, RecordType, rdata::opt::NSIDPayload,
+};
+use hickory_server::proto::serialize::txt::Parser as ZoneParser;
 #[cfg(feature = "__tls")]
 use hickory_server::server::default_tls_server_config;
 use hickory_server::{
@@ -69,9 +73,12 @@ use ::metrics::{counter, describe_counter};
 use config::{Config, NotifyPeerConfig, ServerStoreConfig, ZoneConfig, ZoneTypeConfig};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::sync::Arc as SyncArc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
+use uuid::Uuid;
 
 #[cfg(feature = "__dnssec")]
 pub mod dnssec;
@@ -373,7 +380,9 @@ impl DnsServer {
         // exit flag to distinguish SIGTERM (exit) from file-change reloads
         let exit_flag = SyncArc::new(AtomicBool::new(false));
 
+        let (notify_refresh_tx, mut notify_refresh_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut catalog = Catalog::new();
+        catalog.set_notify_refresh_tx(notify_refresh_tx);
         let mut zone_fingerprints = HashMap::new();
         let mut nsid_final = nsid;
         if nsid_hostname {
@@ -440,6 +449,22 @@ impl DnsServer {
         }
         let handler = SwapHandler::new(catalog, rate_limit);
         handler.set_zone_fingerprints(zone_fingerprints);
+        let refresh_config_path = config_path.to_path_buf();
+        let refresh_zone_dir = zone_dir.clone();
+        tokio::spawn(async move {
+            while let Some((zone, source)) = notify_refresh_rx.recv().await {
+                if let Err(error) = refresh_secondary_from_notify(
+                    zone,
+                    source,
+                    &refresh_config_path,
+                    &refresh_zone_dir,
+                )
+                .await
+                {
+                    error!(%error, "secondary zone refresh after NOTIFY failed");
+                }
+            }
+        });
         let mut server = Server::with_access(handler.clone(), deny_networks, allow_networks);
 
         let mut listen_addrs = listen_addrs_ipv4
@@ -944,6 +969,228 @@ async fn send_zone_notify(zone: Name, peer: NotifyPeerConfig, _zone_dir: &Path) 
 async fn retry_notify_delay(attempt: usize) {
     let delay = StdDuration::from_millis(200).saturating_mul(1 << attempt.min(4));
     tokio::time::sleep(delay).await;
+}
+
+/// A NOTIFY is only a hint. Re-read the active config, require a configured
+/// secondary/master relationship, then fetch a complete AXFR before replacing
+/// the served zone file. The existing file and catalog remain authoritative
+/// until the transfer validates and the atomic rename succeeds.
+async fn refresh_secondary_from_notify(
+    requested_zone: hickory_server::proto::rr::LowerName,
+    source: SocketAddr,
+    config_path: &Path,
+    zone_dir: &Path,
+) -> Result<(), String> {
+    let config = Config::read_config(config_path)
+        .map_err(|error| format!("could not read active config: {error}"))?;
+    let zone = config
+        .zones
+        .into_iter()
+        .find(|zone| {
+            zone.zone()
+                .map(|name| hickory_server::proto::rr::LowerName::from(name) == requested_zone)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| format!("NOTIFY zone {requested_zone} is not configured"))?;
+    let ZoneTypeConfig::Secondary(server_config) = &zone.zone_type_config else {
+        return Ok(());
+    };
+    let master = zone
+        .masters()
+        .iter()
+        .find(|master| master.address.ip() == source.ip())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "NOTIFY source {} is not a configured primary for {requested_zone}",
+                source.ip()
+            )
+        })?;
+    let file = server_config
+        .stores
+        .iter()
+        .find_map(|store| match store {
+            ServerStoreConfig::File(file) => Some(file.zone_path.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| format!("secondary {requested_zone} has no file-backed zone store"))?;
+    let destination = zone_dir.join(file);
+
+    let mut last_error = String::from("AXFR failed without an error detail");
+    for attempt in 0..3 {
+        match fetch_zone_axfr(&master, requested_zone.clone().into(), zone_dir).await {
+            Ok(records) => match atomically_install_axfr(&requested_zone, &destination, &records) {
+                Ok(()) => {
+                    info!(%requested_zone, %source, "secondary zone refreshed from configured primary");
+                    return Ok(());
+                }
+                Err(error) => last_error = error,
+            },
+            Err(error) => last_error = error,
+        }
+        if attempt < 2 {
+            retry_notify_delay(attempt).await;
+        }
+    }
+    Err(format!(
+        "AXFR refresh for {requested_zone} failed after three attempts: {last_error}"
+    ))
+}
+
+async fn fetch_zone_axfr(
+    master: &NotifyPeerConfig,
+    zone: Name,
+    zone_dir: &Path,
+) -> Result<Vec<Record>, String> {
+    const TIMEOUT: StdDuration = StdDuration::from_secs(10);
+    let provider = TokioRuntimeProvider::new();
+    let (connect, sender) = TcpClientStream::new(master.address, None, None, provider);
+    let stream = tokio::time::timeout(TIMEOUT, connect)
+        .await
+        .map_err(|_| format!("TCP connect to {} timed out", master.address))?
+        .map_err(|error| format!("TCP connect to {} failed: {error}", master.address))?;
+
+    #[cfg(feature = "__dnssec")]
+    let (mut client, background) = {
+        let signer = notify_signer(master, zone_dir)?;
+        match signer {
+            Some(signer) => Client::<TokioRuntimeProvider>::from_sender(
+                DnsMultiplexer::new(stream, sender).with_signer(signer),
+            ),
+            None => Client::<TokioRuntimeProvider>::new(stream, sender),
+        }
+    };
+    #[cfg(not(feature = "__dnssec"))]
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    let background = tokio::spawn(background);
+
+    let mut transfer = client.zone_transfer(zone, None);
+    let mut records = Vec::new();
+    let result = async {
+        while let Some(response) = tokio::time::timeout(TIMEOUT, transfer.next())
+            .await
+            .map_err(|_| String::from("AXFR response timed out"))?
+        {
+            let response = response.map_err(|error| format!("invalid AXFR response: {error}"))?;
+            if response.response_code() != hickory_server::proto::op::ResponseCode::NoError {
+                return Err(format!("primary returned {}", response.response_code()));
+            }
+            records.extend(response.answers().iter().cloned());
+            if records.len() > 100_000 {
+                return Err(String::from("AXFR exceeds the 100000-record safety limit"));
+            }
+        }
+        Ok(records)
+    }
+    .await;
+    background.abort();
+    result
+}
+
+fn atomically_install_axfr(
+    zone: &Name,
+    destination: &Path,
+    records: &[Record],
+) -> Result<(), String> {
+    if records.len() < 2 {
+        return Err(String::from("AXFR did not contain SOA transfer boundaries"));
+    }
+    let (Some(first_soa), Some(last_soa)) = (
+        records.first().and_then(|record| match record.data() {
+            RData::SOA(soa) if record.name() == zone => Some(soa),
+            _ => None,
+        }),
+        records.last().and_then(|record| match record.data() {
+            RData::SOA(soa) if record.name() == zone => Some(soa),
+            _ => None,
+        }),
+    ) else {
+        return Err(String::from("AXFR has invalid opening or closing SOA"));
+    };
+    if first_soa != last_soa {
+        return Err(String::from("AXFR SOA boundaries do not match"));
+    }
+
+    let zone_ascii = zone.to_ascii().to_ascii_lowercase();
+    let mut content = format!("$ORIGIN {zone}\n");
+    for record in records.iter().take(records.len() - 1) {
+        let owner = record.name().to_ascii().to_ascii_lowercase();
+        if owner != zone_ascii && !owner.ends_with(&format!(".{zone_ascii}")) {
+            return Err(format!("AXFR contains out-of-zone owner {owner}"));
+        }
+        content.push_str(&record.to_string());
+        content.push('\n');
+        if content.len() > 32 * 1024 * 1024 {
+            return Err(String::from(
+                "AXFR exceeds the 32 MiB zone-file safety limit",
+            ));
+        }
+    }
+    let (_, parsed) = ZoneParser::new(content.clone(), None, Some(zone.clone()))
+        .parse()
+        .map_err(|error| format!("AXFR zone failed Hickory parser validation: {error}"))?;
+    if parsed.is_empty()
+        || !parsed
+            .iter()
+            .any(|(_, rrset)| rrset.record_type() == RecordType::SOA)
+    {
+        return Err(String::from(
+            "AXFR zone file is missing its SOA after parsing",
+        ));
+    }
+
+    let old_soa = fs::read_to_string(destination)
+        .ok()
+        .and_then(|old| ZoneParser::new(old, None, Some(zone.clone())).parse().ok())
+        .and_then(|(_, records)| {
+            records.into_iter().find_map(|(_, rrset)| {
+                if rrset.record_type() == RecordType::SOA {
+                    rrset.into_iter().find_map(|record| match record.data() {
+                        RData::SOA(soa) => Some(soa.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                }
+            })
+        });
+    if let Some(old) = old_soa {
+        let serial = first_soa.serial();
+        let delta = serial.wrapping_sub(old.serial());
+        if serial == old.serial() || delta >= (1 << 31) {
+            return Ok(()); // stale/replayed NOTIFY must never roll a secondary backwards
+        }
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| String::from("zone file path has no parent directory"))?;
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| String::from("zone file path has no valid file name"))?;
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|error| format!("create staged AXFR file failed: {error}"))?;
+        file.write_all(content.as_bytes())
+            .map_err(|error| format!("write staged AXFR file failed: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("sync staged AXFR file failed: {error}"))?;
+        fs::rename(&temp_path, destination)
+            .map_err(|error| format!("atomic zone file replacement failed: {error}"))?;
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 #[cfg(feature = "__dnssec")]

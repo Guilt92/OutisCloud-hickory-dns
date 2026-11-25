@@ -285,12 +285,32 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
     tx.client().batch_execute("ROLLBACK").await.unwrap();
     drop(tx);
 
-    // Emulate process restart by using a newly constructed manager. It reads
-    // current committed DB state and repairs the missing/broken publication.
-    let restarted_dns = DnsManager::new(env.dir.path().to_string_lossy().to_string());
-    publish_current(&restarted_dns, &env.state.db, Some("retry-state.example"))
-        .await
-        .unwrap();
+    // Run the retry worker in a separate test process after the enqueueing
+    // process has persisted the job and exited. The child gets only the
+    // isolated schema and zone directory, not a mutation payload.
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "--ignored",
+            "api_tests::publication_worker_restart_child_claims_persisted_job",
+            "--nocapture",
+        ])
+        .env("PUBLICATION_RESTART_SCHEMA", &env.schema)
+        .env("PUBLICATION_RESTART_ZONE_DIR", env.dir.path())
+        .output()
+        .expect("start a fresh process for durable publication recovery");
+    assert!(
+        child.status.success(),
+        "restart worker failed:\n{}\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&child.stdout)
+            .contains("publication_worker_restart_child_claims_persisted_job ... ok"),
+        "the new process must actually execute its worker test:\n{}",
+        String::from_utf8_lossy(&child.stdout)
+    );
     let latest = std::fs::read_to_string(env.zone_file("retry-state.example")).unwrap();
     assert!(latest.contains("192.0.2.10"));
     assert!(!latest.contains("192.0.2.99"));
@@ -313,6 +333,25 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
         .unwrap();
     assert!(remaining.is_empty());
     env.cleanup().await;
+}
+
+#[actix_web::test]
+#[ignore = "launched as a separate process by failed_publication_retries_latest_database_state_after_restart"]
+async fn publication_worker_restart_child_claims_persisted_job() {
+    let schema = std::env::var("PUBLICATION_RESTART_SCHEMA")
+        .expect("restart child requires its isolated schema");
+    let zone_dir = std::env::var("PUBLICATION_RESTART_ZONE_DIR")
+        .expect("restart child requires its isolated zone directory");
+    let url = std::env::var("TEST_DATABASE_URL").expect("restart child requires TEST_DATABASE_URL");
+    let pool = Pool::connect(&url, 2, Some(&schema))
+        .await
+        .expect("connect restarted worker to the persisted schema");
+    let dns = DnsManager::new(zone_dir);
+    assert!(
+        publication_retry_once(&dns, &pool)
+            .await
+            .expect("restarted publication worker claims and publishes the durable job")
+    );
 }
 
 #[actix_web::test]

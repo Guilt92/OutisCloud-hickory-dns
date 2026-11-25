@@ -166,6 +166,29 @@ impl TestServer {
         fs::write(path, contents).expect("write temporary server fixture");
     }
 
+    /// Read a fixture after the child server has exercised file-backed behavior.
+    pub fn read_temporary_file(&self, name: &str) -> String {
+        let temp_dir = self
+            ._temp_dir
+            .as_ref()
+            .expect("temporary files are only available for temporary servers");
+        fs::read_to_string(temp_dir.path().join(name)).expect("read temporary server fixture")
+    }
+
+    /// Permit the isolated child server's dropped-privilege account to atomically
+    /// replace zone fixtures, as a real secondary must do after a valid AXFR.
+    #[cfg(unix)]
+    pub fn allow_child_zone_file_replacement(&self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = self
+            ._temp_dir
+            .as_ref()
+            .expect("temporary files are only available for temporary servers");
+        fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o777))
+            .expect("allow the isolated child to replace zone files");
+    }
+
     fn start_from_paths(
         config_path: PathBuf,
         zone_dir: PathBuf,
@@ -258,7 +281,7 @@ impl TestServer {
 
         // Drain child output continuously. Leaving the captured pipe unread until Drop
         // deadlocks the DNS process under query-load tests once its pipe buffer fills.
-        let output = Arc::new(Mutex::new(VecDeque::with_capacity(256)));
+        let output = Arc::new(Mutex::new(VecDeque::with_capacity(2048)));
         let output_for_reader = output.clone();
         let output_reader = thread::spawn(move || {
             for line in stdout.lines() {

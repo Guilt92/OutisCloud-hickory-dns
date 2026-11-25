@@ -69,6 +69,18 @@ pub trait ZoneHandler: Send + Sync {
         (Err(ResponseCode::NotImp), None)
     }
 
+    /// Authorize a NOTIFY request for this zone and return the TSIG context
+    /// required to authenticate its response. Stores with configured keys can
+    /// require a valid signature; the default preserves unsigned operation for
+    /// zones that have no NOTIFY authentication configured.
+    async fn notify(
+        &self,
+        _request: &Request,
+        _now: u64,
+    ) -> (ResponseCode, Option<TSigResponseContext>) {
+        (ResponseCode::NoError, None)
+    }
+
     /// Get the origin of this zone, i.e. example.com is the origin for www.example.com
     fn origin(&self) -> &LowerName;
 

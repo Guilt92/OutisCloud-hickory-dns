@@ -213,6 +213,73 @@ impl DerefMut for FileZoneHandler {
 
 #[async_trait::async_trait]
 impl ZoneHandler for FileZoneHandler {
+    async fn notify(
+        &self,
+        request: &Request,
+        now: u64,
+    ) -> (ResponseCode, Option<TSigResponseContext>) {
+        #[cfg(feature = "__dnssec")]
+        {
+            if self.tsig_signers.is_empty() {
+                return if request.signature().is_some() {
+                    (ResponseCode::NotAuth, None)
+                } else {
+                    (ResponseCode::NoError, None)
+                };
+            }
+            let Some(tsig) = request.signature() else {
+                return (ResponseCode::Refused, None);
+            };
+            let request_id = request.header().id();
+            let Some(signer) = self
+                .tsig_signers
+                .iter()
+                .find(|signer| signer.signer_name() == tsig.name())
+            else {
+                return (
+                    ResponseCode::NotAuth,
+                    Some(TSigResponseContext::unknown_key(
+                        request_id,
+                        now,
+                        tsig.name().clone(),
+                    )),
+                );
+            };
+            let Ok((_, _, range)) = signer.verify_message_byte(request.as_slice(), None, true)
+            else {
+                return (
+                    ResponseCode::NotAuth,
+                    Some(TSigResponseContext::bad_signature(
+                        request_id,
+                        now,
+                        signer.clone(),
+                    )),
+                );
+            };
+            let expired = !range.contains(&now);
+            let context = TSigResponseContext::new(
+                request_id,
+                now,
+                signer.clone(),
+                tsig.data().mac().to_vec(),
+                expired.then_some(TsigError::BadTime),
+            );
+            return (
+                if expired {
+                    ResponseCode::NotAuth
+                } else {
+                    ResponseCode::NoError
+                },
+                Some(context),
+            );
+        }
+        #[cfg(not(feature = "__dnssec"))]
+        {
+            let _ = (request, now);
+            (ResponseCode::NoError, None)
+        }
+    }
+
     /// What type is this zone
     fn zone_type(&self) -> ZoneType {
         self.in_memory.zone_type()
