@@ -1771,7 +1771,7 @@ Validation performed for this status update:
 |---|---|---|---|---|
 | 0 | ARCH-001 | P0 | COMPLETED | Migration-from-empty and SQL/runtime schema-drift tests pass on isolated PostgreSQL. |
 | 0 | ARCH-002 | P0 | PARTIALLY COMPLETED | Implemented: ADR-0001 exists. Remaining: durable outbox implementation deferred to PERF-001/002. |
-| 0 | ARCH-003 | P0 | PARTIALLY COMPLETED | Implemented: ADR-0005 selects a model. Remaining: benchmark and implementation pending. |
+| 0 | ARCH-003 | P0 | PARTIALLY COMPLETED | Implemented: configurable bounded transaction pool and germ comparison/rollback tests. Remaining: per-tenant fairness, retry-on-serialization policy, and rollback metrics. |
 | 0 | ARCH-004 | P0 | COMPLETED | Frontend route-contract and lint checks pass; dead controls removed. |
 | 0 | ARCH-005 | P1 | COMPLETED | Docs consistency check passes; README/DELIVERY_SUMMARY corrected. |
 | 0 | ARCH-006 | P0 | COMPLETED | ADR-0002 accepted; scope decision documented. |
@@ -1875,7 +1875,7 @@ Validation performed for this status update:
 | 9 | SEC-007 | P0 | PARTIALLY COMPLETED | Implemented: Per-source governor and admission limits exist. Remaining: full RRL coverage pending. |
 | 9 | SEC-008 | P1 | PARTIALLY COMPLETED | Added `deny.toml`, CI audit/deny gates, CycloneDX SBOM script, release checksum signing and provenance workflow. Remaining: image signature verification policy. |
 | 10 | PERF-001 | P0 | PARTIALLY COMPLETED | Implemented: ADR state machine exists. Remaining: outbox implementation pending. |
-| 10 | PERF-002 | P0 | PARTIALLY COMPLETED | Implemented: ADR selected concurrency model. Remaining: benchmark/implementation pending. |
+| 10 | PERF-002 | P0 | PARTIALLY COMPLETED | Implemented: bounded transaction sessions with reconnect supervision; germ run showed 2.87x over one-session baseline for the measured workload. Broader load/latency sweeps and fairness remain. |
 | 10 | PERF-003 | P1 | COMPLETED | Overview/query-count tests and local 5,000-zone benchmark exist. |
 | 10 | PERF-004 | P1 | NEEDS VERIFICATION | Implemented: Admission limits implemented. Remaining: capacity proof pending. Verification gap: High-concurrency capacity proof was not run. |
 | 10 | HA-001 | P0 | BLOCKED | Requires multi-replica infrastructure and publication outbox. |
@@ -1965,7 +1965,7 @@ Current branch is `main`; remote is `origin`. Local HEAD `d0a8eee58` is one comm
 | Task | Status | Remaining implementation and verification |
 |---|---|---|
 | ARCH-002 | PARTIALLY COMPLETED | Implement durable outbox, retries, last-known-good state and acknowledgement semantics or explicitly scope the ADR acceptance criteria. Run failure/restart integration tests. |
-| ARCH-003 | PARTIALLY COMPLETED | Measure the selected transaction concurrency model with concurrent writes, rollback and contention; preserve results and test command here. |
+| ARCH-003 | PARTIALLY COMPLETED | Bounded transaction implementation and test-server comparison are recorded below. Finish per-tenant admission control, serialization retry policy, and rollback metrics before completion. |
 | ARCH-007 | BLOCKED | Existing tracked credentials require replacement values from their respective service owners. Remove real credentials from the repository after rotation, retain safe local example configuration, verify scanner and prevent future accidental tracking. No real replacement credentials have been issued during this execution. |
 
 ### ARCH-002 implementation update — 2026-11-25
@@ -1975,6 +1975,14 @@ Current branch is `main`; remote is `origin`. Local HEAD `d0a8eee58` is one comm
 Files: `crates/control_api/src/main.rs`, `crates/control_api/migrations/007_publication_outbox.sql`.
 
 Executed: `cargo fmt --all -- --check` and `git diff --check` pass; unit tests `publication_retry_tests` pass 2/2. Against a disposable PostgreSQL 16 container on germ, `publication_outbox_persists_retries_and_serializes_concurrent_workers` passes 1/1, verifying idempotent enqueue, persistent job state, and two concurrent claims returning exactly one job. `failed_publication_retries_latest_database_state_after_restart` passes 1/1, verifying a filesystem directory-creation failure enqueues a retry, preserves the previously served file, a rollback cannot inject a proposed record value into the retry, and a newly constructed manager republishes current database state. The test database was separate from the running project database and is stopped after validation. Remaining: automated worker loop restart/reclaim, ten-attempt terminal state and operator requeue, last-known-good replacement failure at the atomic file swap boundary, and migration upgrade from a pre-existing outbox schema. Do not mark ARCH-002 complete until remaining cases pass.
+
+### ARCH-003 / PERF-002 implementation update — 2026-11-25
+
+**Status: PARTIALLY COMPLETED.** Replaced the single reserved transaction session with a separately bounded transaction pool. `DB_TRANSACTION_POOL_SIZE` sets the ceiling and defaults to `min(DB_POOL_SIZE, 4)`; each slot is exclusively held for a transaction and has automatic reconnect supervision. Query and transaction pool sizes are reported independently by the pool, while transaction sessions are included in health checks. `.env.example` documents the capacity knobs. ADR-0005 now records the implemented state and remaining architecture work.
+
+Files: `crates/control_api/src/db_pool.rs`, `crates/control_api/src/main.rs`, `crates/control_api/src/api_tests.rs`, `.env.example`, `docs/adr/ADR-0005-transaction-concurrency.md`.
+
+On `germ` (Ubuntu test host `fastcreate-472995`; isolated PostgreSQL 16 Docker container reached over SSH local forwarding; existing project containers and database were not modified), `TEST_DATABASE_URL=... cargo test -p control_api --bin control_api bounded_transaction_pool_runs_concurrently_and_rolls_back_isolated_work -- --nocapture` passed 1/1. Four concurrent 200 ms transactions on four distinct PostgreSQL backend sessions took 1.5076 s versus 4.3310 s through the single-slot baseline (2.87x measured speedup); the test also asserts a rolled-back insert is absent. `cargo test -p control_api --bin control_api pool_replaces_dropped_connections -- --nocapture` passed 1/1 after terminating all six pool sessions; both query and transaction pools recovered. `cargo fmt --all` and `git diff --check` pass. The database container was stopped after testing. Remaining: tenant-fair admission control, bounded retry on serialization conflicts, explicit rollback metrics, and broader concurrency/load sweeps. This benchmark does not establish production capacity.
 
 ### Phase 1 completion worklist
 

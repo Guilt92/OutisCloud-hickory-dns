@@ -3101,17 +3101,117 @@ async fn pool_replaces_dropped_connections() {
         let _ = conn.await;
     });
     let n = c.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'pooltest'", &[]).await.unwrap();
-    assert_eq!(n, 4, "3 pooled + 1 reserved transaction connection");
+    assert_eq!(n, 6, "3 query + 3 transaction pool connections");
     // within a few seconds the supervisors have reconnected and queries work again
     let mut ok = false;
     for _ in 0..40 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        if pool.healthy() == 3 && pool.query_one("SELECT 1", &[]).await.is_ok() {
+        if pool.healthy() == 3
+            && pool.healthy_transactions() == 3
+            && pool.query_one("SELECT 1", &[]).await.is_ok()
+        {
             ok = true;
             break;
         }
     }
     assert!(ok, "pool must recover after its connections were killed");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn bounded_transaction_pool_runs_concurrently_and_rolls_back_isolated_work() {
+    let Some(env) = setup().await else { return };
+    let pool = env.state.db.clone();
+    let mut session_ids = std::collections::HashSet::new();
+    for _ in 0..4 {
+        let tx = pool.begin().await.unwrap();
+        session_ids.insert(
+            tx.client()
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await
+                .unwrap()
+                .get::<_, i32>(0),
+        );
+    }
+    assert_eq!(
+        session_ids.len(),
+        4,
+        "each transaction slot must be a distinct PostgreSQL backend"
+    );
+    let started = std::time::Instant::now();
+    let tasks = (0..4).map(|_| {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let tx = pool.begin().await.unwrap();
+            tx.client().batch_execute("BEGIN").await.unwrap();
+            tx.client()
+                .query_one("SELECT pg_sleep(0.2)", &[])
+                .await
+                .unwrap();
+            tx.client().batch_execute("ROLLBACK").await.unwrap();
+        })
+    });
+    for task in futures_util::future::join_all(tasks).await {
+        task.unwrap();
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "four bounded transactions should overlap despite remote round-trip latency; took {elapsed:?}"
+    );
+    eprintln!(
+        "ARCH-003 bounded transaction benchmark: 4 concurrent pg_sleep(200ms) transactions completed in {elapsed:?} over germ SSH tunnel"
+    );
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let serial_pool = Pool::connect(&url, 1, Some(&env.schema)).await.unwrap();
+    let serial_started = std::time::Instant::now();
+    let serial_tasks = (0..4).map(|_| {
+        let pool = serial_pool.clone();
+        tokio::spawn(async move {
+            let tx = pool.begin().await.unwrap();
+            tx.client().batch_execute("BEGIN").await.unwrap();
+            tx.client()
+                .query_one("SELECT pg_sleep(0.2)", &[])
+                .await
+                .unwrap();
+            tx.client().batch_execute("ROLLBACK").await.unwrap();
+        })
+    });
+    for task in futures_util::future::join_all(serial_tasks).await {
+        task.unwrap();
+    }
+    let serial_elapsed = serial_started.elapsed();
+    assert!(
+        elapsed < serial_elapsed,
+        "bounded pool {elapsed:?} must outperform one transaction slot {serial_elapsed:?}"
+    );
+    eprintln!(
+        "ARCH-003 single-slot baseline: 4 concurrent pg_sleep(200ms) transactions completed in {serial_elapsed:?}; bounded speedup {:.2}x",
+        serial_elapsed.as_secs_f64() / elapsed.as_secs_f64()
+    );
+
+    env.state
+        .db
+        .batch_execute("CREATE TABLE tx_rollback_probe (value integer NOT NULL)")
+        .await
+        .unwrap();
+    let tx = env.state.db.begin().await.unwrap();
+    tx.client().batch_execute("BEGIN").await.unwrap();
+    tx.client()
+        .execute("INSERT INTO tx_rollback_probe(value) VALUES(1)", &[])
+        .await
+        .unwrap();
+    tx.client().batch_execute("ROLLBACK").await.unwrap();
+    drop(tx);
+    assert_eq!(
+        env.state
+            .db
+            .query_one("SELECT count(*) FROM tx_rollback_probe", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     env.cleanup().await;
 }
 

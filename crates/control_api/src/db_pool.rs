@@ -14,10 +14,12 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Config, Error, NoTls, Row};
 
 pub struct Pool {
-    /// the last slot is reserved for transactions (see [`Pool::begin`])
     slots: Vec<RwLock<Arc<Client>>>,
     next: AtomicUsize,
-    tx_lock: tokio::sync::Mutex<()>,
+    /// A bounded set of independent sessions for multi-statement work. Each
+    /// session is exclusively checked out for the lifetime of a transaction.
+    tx_slots: Vec<TxSlot>,
+    next_tx: AtomicUsize,
     cfg: Config,
     #[cfg(test)]
     queries: AtomicUsize,
@@ -29,12 +31,16 @@ pub struct AdvisoryLock {
     _client: Client,
 }
 
-/// Exclusive use of the reserved connection. Statements issued through
-/// `client()` are the only ones on that session, so `BEGIN … COMMIT` cannot be
-/// interleaved with other requests.
+/// Exclusive use of one transaction session. Statements issued through
+/// `client()` cannot be interleaved with another transaction on that session.
 pub struct TxConn<'a> {
     _guard: tokio::sync::MutexGuard<'a, ()>,
     client: Arc<Client>,
+}
+
+struct TxSlot {
+    client: RwLock<Arc<Client>>,
+    lock: tokio::sync::Mutex<()>,
 }
 
 impl TxConn<'_> {
@@ -57,11 +63,22 @@ async fn open(cfg: &Config) -> Result<Arc<Client>, tokio_postgres::Error> {
 }
 
 impl Pool {
-    /// Open `size` connections. `search_path` is applied to every connection
-    /// (used by the tests to isolate a schema).
+    /// Open `size` general-purpose and `size` transaction connections.
+    /// Transaction capacity is therefore bounded by the configured pool size,
+    /// while each transaction owns a dedicated PostgreSQL session.
     pub async fn connect(
         url: &str,
         size: usize,
+        search_path: Option<&str>,
+    ) -> Result<Arc<Pool>, tokio_postgres::Error> {
+        Self::connect_with_transaction_size(url, size, size.min(4), search_path).await
+    }
+
+    /// Open the query pool and a separately bounded transaction pool.
+    pub async fn connect_with_transaction_size(
+        url: &str,
+        size: usize,
+        transaction_size: usize,
         search_path: Option<&str>,
     ) -> Result<Arc<Pool>, tokio_postgres::Error> {
         let mut cfg: Config = url.parse()?;
@@ -69,19 +86,28 @@ impl Pool {
             cfg.options(format!("-c search_path={}", sp));
         }
         let size = size.max(1);
-        let mut slots = Vec::with_capacity(size + 1);
-        for _ in 0..=size {
+        let transaction_size = transaction_size.max(1);
+        let mut slots = Vec::with_capacity(size);
+        for _ in 0..size {
             slots.push(RwLock::new(open(&cfg).await?));
+        }
+        let mut tx_slots = Vec::with_capacity(transaction_size);
+        for _ in 0..transaction_size {
+            tx_slots.push(TxSlot {
+                client: RwLock::new(open(&cfg).await?),
+                lock: tokio::sync::Mutex::new(()),
+            });
         }
         let pool = Arc::new(Pool {
             slots,
             next: AtomicUsize::new(0),
-            tx_lock: tokio::sync::Mutex::new(()),
+            tx_slots,
+            next_tx: AtomicUsize::new(0),
             cfg: cfg.clone(),
             #[cfg(test)]
             queries: AtomicUsize::new(0),
         });
-        for i in 0..=size {
+        for i in 0..(size + transaction_size) {
             let p = pool.clone();
             let cfg = cfg.clone();
             tokio::spawn(async move { p.supervise(i, cfg).await });
@@ -93,16 +119,29 @@ impl Pool {
         let mut backoff = Duration::from_millis(500);
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let closed = self.slots[idx]
-                .read()
-                .map(|c| c.is_closed())
-                .unwrap_or(true);
+            let closed = if idx < self.slots.len() {
+                self.slots[idx]
+                    .read()
+                    .map(|c| c.is_closed())
+                    .unwrap_or(true)
+            } else {
+                self.tx_slots[idx - self.slots.len()]
+                    .client
+                    .read()
+                    .map(|c| c.is_closed())
+                    .unwrap_or(true)
+            };
             if !closed {
                 continue;
             }
             match open(&cfg).await {
                 Ok(c) => {
-                    if let Ok(mut w) = self.slots[idx].write() {
+                    let target = if idx < self.slots.len() {
+                        &self.slots[idx]
+                    } else {
+                        &self.tx_slots[idx - self.slots.len()].client
+                    };
+                    if let Ok(mut w) = target.write() {
                         *w = c;
                     }
                     info!("postgres connection {} re-established", idx);
@@ -135,14 +174,22 @@ impl Pool {
 
     /// Number of general-purpose connections currently usable.
     pub fn healthy(&self) -> usize {
-        self.slots[..self.slots.len() - 1]
+        self.slots
             .iter()
             .filter(|s| s.read().map(|c| !c.is_closed()).unwrap_or(false))
             .count()
     }
 
+    /// Number of usable transaction sessions, for readiness and diagnostics.
+    pub fn healthy_transactions(&self) -> usize {
+        self.tx_slots
+            .iter()
+            .filter(|slot| slot.client.read().map(|c| !c.is_closed()).unwrap_or(false))
+            .count()
+    }
+
     pub fn size(&self) -> usize {
-        self.slots.len() - 1
+        self.slots.len()
     }
 
     /// Borrow one healthy connection. The `Arc` keeps it alive even if the
@@ -158,7 +205,7 @@ impl Pool {
     }
 
     fn pick(&self) -> Arc<Client> {
-        let n = self.slots.len() - 1; // the reserved slot is never handed out here
+        let n = self.slots.len();
         let start = self.next.fetch_add(1, Ordering::Relaxed);
         for off in 0..n {
             let c = self.slots[(start + off) % n]
@@ -228,11 +275,14 @@ impl Pool {
         client.batch_execute(query).await
     }
 
-    /// Check out the reserved connection for a transaction. Any transaction a
-    /// cancelled request left open on it is rolled back first.
+    /// Check out a bounded transaction session. Any transaction a cancelled
+    /// request left open on it is rolled back before the session is reused.
     pub async fn begin(&self) -> Result<TxConn<'_>, tokio_postgres::Error> {
-        let guard = self.tx_lock.lock().await;
-        let client = self.slots[self.slots.len() - 1]
+        let idx = self.next_tx.fetch_add(1, Ordering::Relaxed) % self.tx_slots.len();
+        let slot = &self.tx_slots[idx];
+        let guard = slot.lock.lock().await;
+        let client = slot
+            .client
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone();

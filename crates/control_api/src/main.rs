@@ -7423,10 +7423,15 @@ async fn main() -> std::io::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8);
-    // Connections are replaced automatically when they drop (see db_pool).
-    let client = Pool::connect(&database_url, pool_size, None)
-        .await
-        .expect("cannot connect to db");
+    let transaction_pool_size: usize = std::env::var("DB_TRANSACTION_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(pool_size.min(4));
+    // Both bounded pools reconnect automatically when a session drops.
+    let client =
+        Pool::connect_with_transaction_size(&database_url, pool_size, transaction_pool_size, None)
+            .await
+            .expect("cannot connect to db");
     // Several replicas starting together run the same idempotent DDL; PostgreSQL can reject the loser of a
     // concurrent CREATE ... IF NOT EXISTS race, so retry (the second run finds everything in place).
     {
