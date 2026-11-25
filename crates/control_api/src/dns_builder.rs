@@ -319,6 +319,17 @@ impl SafeZoneFileWriter {
         content: &str,
         origin: Option<&hickory_proto::rr::domain::Name>,
     ) -> Result<()> {
+        Self::write_validated_with_rename(zone_path, content, origin, |source, destination| {
+            fs::rename(source, destination)
+        })
+    }
+
+    fn write_validated_with_rename(
+        zone_path: &Path,
+        content: &str,
+        origin: Option<&hickory_proto::rr::domain::Name>,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> Result<()> {
         // Keep the full file name and append ".tmp": `with_extension` would
         // replace the last label of "zone.example.com" and make different
         // zones share one temporary file.
@@ -352,7 +363,7 @@ impl SafeZoneFileWriter {
             "Zone file validation passed, moving to final location: {:?}",
             zone_path
         );
-        if let Err(e) = fs::rename(&tmp_path, zone_path) {
+        if let Err(e) = rename(&tmp_path, zone_path) {
             let _ = fs::remove_file(&tmp_path);
             return Err(e)
                 .with_context(|| format!("Failed to rename temp zone file to {:?}", zone_path));
@@ -660,6 +671,25 @@ impl Default for TomlConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_zone_rename_failure_preserves_last_known_good_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zone.example.com");
+        let previous = "last known good";
+        fs::write(&path, previous).unwrap();
+        let origin = Name::from_utf8("example.com.").unwrap();
+        let candidate = "example.com. 3600 IN SOA ns1.example.com. hostmaster.example.com. 1 3600 600 604800 300\nexample.com. 3600 IN NS ns1.example.com.\nwww.example.com. 300 IN A 192.0.2.55\n";
+        let result = SafeZoneFileWriter::write_validated_with_rename(
+            &path,
+            candidate,
+            Some(&origin),
+            |_, _| Err(std::io::Error::other("injected atomic rename failure")),
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), previous);
+        assert!(!dir.path().join("zone.example.com.tmp").exists());
+    }
 
     #[test]
     fn test_dns_record_creation_a() {

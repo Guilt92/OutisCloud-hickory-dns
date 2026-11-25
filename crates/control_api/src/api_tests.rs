@@ -271,6 +271,130 @@ async fn publication_worker_recovers_persisted_jobs_and_stops_after_ten_attempts
     assert_eq!(terminal.get::<_, i32>(0), 10);
     assert_eq!(terminal.get::<_, String>(1), "failed");
     assert!(!publication_retry_once(&bad_dns, &restarted).await.unwrap());
+
+    // A database outage is temporary: a failed claim leaves the due job
+    // durable and the pool reconnect supervisor restores worker access.
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let marked_url = if url.contains('?') {
+        format!("{url}&application_name=publication-outage-test")
+    } else {
+        format!("{url}?application_name=publication-outage-test")
+    };
+    restarted.execute(
+        "UPDATE publication_outbox SET attempts=0,status='pending',next_attempt=now() WHERE zone_domain=$1",
+        &[&domain],
+    ).await.unwrap();
+    let outage_pool = Pool::connect(&marked_url, 1, Some(&env.schema))
+        .await
+        .unwrap();
+    let (admin, admin_conn) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = admin_conn.await;
+    });
+    let killed = admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='publication-outage-test'",
+        &[],
+    ).await.unwrap();
+    assert_eq!(killed, 2);
+    assert!(
+        publication_retry_once(&bad_dns, &outage_pool)
+            .await
+            .is_err()
+    );
+    let mut reconnected = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if outage_pool.healthy() == 1
+            && outage_pool.healthy_transactions() == 1
+            && outage_pool.query_one("SELECT 1", &[]).await.is_ok()
+        {
+            reconnected = true;
+            break;
+        }
+    }
+    assert!(
+        reconnected,
+        "database sessions should recover after transient connection loss"
+    );
+    assert!(
+        publication_retry_once(&bad_dns, &outage_pool)
+            .await
+            .unwrap()
+    );
+    let after_db_recovery = restarted
+        .query_one(
+            "SELECT attempts,status FROM publication_outbox WHERE zone_domain=$1",
+            &[&domain],
+        )
+        .await
+        .unwrap();
+    assert_eq!(after_db_recovery.get::<_, i32>(0), 1);
+    assert_eq!(after_db_recovery.get::<_, String>(1), "pending");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn publication_retry_requeue_requires_admin_and_resets_terminal_job() {
+    let Some(env) = setup().await else { return };
+    env.state.db.execute(
+        "INSERT INTO publication_outbox(zone_domain,attempts,status,next_attempt,last_error) VALUES('requeue.example',10,'failed',now(),'terminal failure')",
+        &[],
+    ).await.unwrap();
+    let viewer = add_user(&env.state, "requeue-viewer", "viewer-password-1", "user").await;
+    let viewer_token = env.token(&viewer, "user");
+    let app = test::init_service(
+        App::new()
+            .wrap(actix_web::middleware::from_fn(security_headers))
+            .wrap(actix_web::middleware::from_fn(auth_middleware))
+            .app_data(web::Data::new(env.state.clone()))
+            .app_data(web::Data::new(env.full.clone()))
+            .configure(configure_routes),
+    )
+    .await;
+    let viewer_response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/admin/publication-outbox/requeue.example/retry")
+            .insert_header(("Authorization", format!("Bearer {viewer_token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(viewer_response.status().as_u16(), 403);
+    let admin_token = env.token(&env.admin, "admin");
+    let admin_response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri("/api/v1/admin/publication-outbox/requeue.example/retry")
+            .insert_header(("Authorization", format!("Bearer {admin_token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(admin_response.status().as_u16(), 202);
+    let row = env.state.db.query_one(
+        "SELECT attempts,status,last_error FROM publication_outbox WHERE zone_domain='requeue.example'",
+        &[],
+    ).await.unwrap();
+    assert_eq!(row.get::<_, i32>(0), 0);
+    assert_eq!(row.get::<_, String>(1), "pending");
+    assert_eq!(row.get::<_, String>(2), "operator requested retry");
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn publication_outbox_upgrade_adds_missing_status_column_idempotently() {
+    let Some(env) = setup().await else { return };
+    env.state
+        .db
+        .batch_execute("ALTER TABLE publication_outbox DROP COLUMN status")
+        .await
+        .unwrap();
+    migrate_db(&env.state.db).await.unwrap();
+    migrate_db(&env.state.db).await.unwrap();
+    let status_column = env.state.db.query_opt(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='publication_outbox' AND column_name='status'",
+        &[&env.schema],
+    ).await.unwrap();
+    assert!(status_column.is_some());
     env.cleanup().await;
 }
 

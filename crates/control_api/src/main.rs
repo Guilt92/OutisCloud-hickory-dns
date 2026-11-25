@@ -572,6 +572,52 @@ async fn publication_retry_once(
     Ok(true)
 }
 
+/// Requeue a terminal publication failure after an operator has corrected its
+/// filesystem or database cause. Only a verified administrator may invoke it.
+async fn retry_failed_publication(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let token = match auth_from_header(&req, &data.jwt_secret) {
+        Some(token) => token,
+        None => return unauthorized(),
+    };
+    if token.claims.role != "admin" {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "admin role required"}));
+    }
+    let domain = path.into_inner().trim_end_matches('.').to_ascii_lowercase();
+    if dns_validator::validate_zone_domain(&domain).is_err() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "invalid zone domain"}));
+    }
+    let updated = match data.db.execute(
+        "UPDATE publication_outbox SET attempts=0,status='pending',next_attempt=now(),last_error='operator requested retry',updated_at=now() WHERE zone_domain=$1",
+        &[&domain],
+    ).await {
+        Ok(updated) => updated,
+        Err(error) => {
+            warn!("unable to requeue publication for {}: {}", domain, error);
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    if updated == 0 {
+        return HttpResponse::NotFound()
+            .json(serde_json::json!({"error": "publication retry not found"}));
+    }
+    audit(
+        &data.db,
+        Some(&token.claims.sub),
+        "publication_retry_requeued",
+        "zone",
+        Some(domain.clone()),
+        &req,
+        serde_json::json!({"domain": domain}),
+    )
+    .await;
+    HttpResponse::Accepted().json(serde_json::json!({"domain": domain, "status": "pending"}))
+}
+
 #[cfg(test)]
 mod publication_retry_tests {
     #[test]
@@ -7100,6 +7146,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/api/v1/auth/logout", web::post().to(logout))
         .route("/api/v1/auth/refresh", web::post().to(refresh_token))
         .route("/api/v1/auth/me", web::get().to(get_current_user))
+        .route(
+            "/api/v1/admin/publication-outbox/{domain}/retry",
+            web::post().to(retry_failed_publication),
+        )
         .route(
             "/api/v1/auth/change-password",
             web::post().to(change_password),
