@@ -699,6 +699,11 @@ impl Catalog {
         };
 
         let query_type = request_info.query.query_type();
+        let transfer_zone = request_info.query.name().to_string();
+        let transfer_client = request.src().to_string();
+
+        #[cfg(feature = "metrics")]
+        let started = std::time::Instant::now();
 
         // RFC 5936: AXFR is a stream-oriented transfer. Reject it on datagram
         // transports instead of allowing truncated/partial transfers over UDP.
@@ -707,6 +712,8 @@ impl Catalog {
                 "AXFR requested over a datagram transport from {}",
                 request.src()
             );
+            #[cfg(feature = "metrics")]
+            record_zone_transfer_metrics("refused", started.elapsed().as_secs_f64());
             return send_error_response(
                 request,
                 ResponseCode::Refused,
@@ -722,8 +729,6 @@ impl Catalog {
                 .await;
         }
 
-        #[cfg(feature = "metrics")]
-        let started = std::time::Instant::now();
         let info = if query_type == RecordType::AXFR {
             if handlers
                 .iter()
@@ -763,6 +768,23 @@ impl Catalog {
             .await
         };
 
+        if query_type == RecordType::AXFR {
+            let result = match info.response_code() {
+                ResponseCode::NoError => "success",
+                ResponseCode::Refused | ResponseCode::NotAuth => "refused",
+                _ => "failure",
+            };
+            info!(
+                zone = %transfer_zone,
+                client = %transfer_client,
+                result,
+                response_code = ?info.response_code(),
+                "authoritative zone transfer completed"
+            );
+            #[cfg(feature = "metrics")]
+            record_zone_transfer_metrics(result, started.elapsed().as_secs_f64());
+        }
+
         #[cfg(feature = "metrics")]
         if let Some(zone) = zone_label {
             let result = match info.response_code() {
@@ -785,6 +807,11 @@ impl Catalog {
                 ResponseCode::NXDomain => "nxdomain",
                 _ => "error",
             };
+            metrics::describe_histogram!(
+                "hickory_query_duration_seconds",
+                metrics::Unit::Seconds,
+                "End-to-end DNS query processing duration."
+            );
             metrics::histogram!("hickory_query_duration_seconds", "result" => result)
                 .record(started.elapsed().as_secs_f64());
         }
@@ -820,6 +847,23 @@ impl Catalog {
             }
         })
     }
+}
+
+#[cfg(feature = "metrics")]
+fn record_zone_transfer_metrics(result: &'static str, elapsed_seconds: f64) {
+    metrics::describe_counter!(
+        "hickory_zone_transfers_total",
+        metrics::Unit::Count,
+        "Authoritative AXFR attempts by outcome."
+    );
+    metrics::counter!("hickory_zone_transfers_total", "result" => result).increment(1);
+    metrics::describe_histogram!(
+        "hickory_zone_transfer_duration_seconds",
+        metrics::Unit::Seconds,
+        "Time spent handling authoritative AXFR requests."
+    );
+    metrics::histogram!("hickory_zone_transfer_duration_seconds", "result" => result)
+        .record(elapsed_seconds);
 }
 
 async fn lookup<R: ResponseHandler + Unpin>(

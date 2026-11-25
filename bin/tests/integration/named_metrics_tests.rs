@@ -19,6 +19,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::StreamExt;
 use prometheus_parse::{Scrape, Value};
 #[cfg(all(feature = "__dnssec", feature = "sqlite"))]
 use rustls_pki_types::PrivatePkcs8KeyDer;
@@ -215,6 +216,88 @@ async fn test_health_and_ready_endpoints() {
 
     let missing = reqwest::get(format!("{base}/not-a-route")).await.unwrap();
     assert_eq!(missing.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn axfr_outcomes_and_latency_are_exported_without_zone_cardinality() {
+    subscribe();
+    let allowed_zone = "$ORIGIN allowed.example.test.\n@ 3600 IN SOA ns1.allowed.example.test. hostmaster.allowed.example.test. 1 3600 600 604800 300\n@ 3600 IN NS ns1.allowed.example.test.\nns1 3600 IN A 192.0.2.1\n";
+    let denied_zone = "$ORIGIN denied.example.test.\n@ 3600 IN SOA ns1.denied.example.test. hostmaster.denied.example.test. 1 3600 600 604800 300\n@ 3600 IN NS ns1.denied.example.test.\nns1 3600 IN A 192.0.2.1\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "allowed.example.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+[zones.stores]
+type = "file"
+zone_path = "allowed.zone"
+
+[[zones]]
+zone = "denied.example.test"
+zone_type = "Primary"
+axfr_policy = "Deny"
+[zones.stores]
+type = "file"
+zone_path = "denied.zone"
+"#;
+    let server = TestServer::start_temporary(
+        config,
+        &[("allowed.zone", allowed_zone), ("denied.zone", denied_zone)],
+    );
+    let mut client = create_local_client(&server.ports, None).await;
+    let mut allowed = client.zone_transfer(Name::from_str("allowed.example.test.").unwrap(), None);
+    let mut records = Vec::new();
+    while let Some(response) = allowed.next().await {
+        records.extend(
+            response
+                .expect("successful transfer response")
+                .answers()
+                .iter()
+                .cloned(),
+        );
+    }
+    assert!(records.len() >= 4);
+
+    let mut denied = client.zone_transfer(Name::from_str("denied.example.test.").unwrap(), None);
+    let refused = denied
+        .next()
+        .await
+        .expect("refused transfer response")
+        .expect("DNS refusal response is a valid response message");
+    assert_eq!(
+        refused.response_code(),
+        hickory_proto::op::ResponseCode::Refused
+    );
+    drop(client);
+
+    let metrics = fetch_parse_check_metrics(&server.ports).await;
+    verify_metric(
+        &metrics,
+        "hickory_zone_transfers_total",
+        &[("result", "success")],
+        Some(1.0),
+    );
+    verify_metric(
+        &metrics,
+        "hickory_zone_transfers_total",
+        &[("result", "refused")],
+        Some(1.0),
+    );
+    verify_metric(
+        &metrics,
+        "hickory_zone_transfer_duration_seconds",
+        &[("result", "success")],
+        None,
+    );
+    verify_metric(
+        &metrics,
+        "hickory_zone_transfer_duration_seconds",
+        &[("result", "refused")],
+        None,
+    );
+    verify_all_histograms_have_buckets(&metrics);
 }
 
 #[tokio::test]

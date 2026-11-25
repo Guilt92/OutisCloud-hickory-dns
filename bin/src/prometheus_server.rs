@@ -199,6 +199,10 @@ const HISTOGRAMS: &[(&str, &[f64])] = &[
     #[cfg(feature = "recursor")]
     (CACHE_HIT_DURATION, INTERNAL_LATENCY_BUCKETS),
     ("hickory_query_duration_seconds", QUERY_LATENCY_BUCKETS),
+    (
+        "hickory_zone_transfer_duration_seconds",
+        QUERY_LATENCY_BUCKETS,
+    ),
 ];
 
 /// Buckets for the end-to-end authoritative query duration histogram.
