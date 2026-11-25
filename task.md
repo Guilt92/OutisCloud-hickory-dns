@@ -1752,7 +1752,7 @@ Validation performed for this status update:
 ### Phase-level status
 | Phase | Status | Counts | Gate note |
 |---|---|---|---|
-| 0 | PARTIALLY COMPLETED | COMPLETED: 5, PARTIALLY COMPLETED: 2, BLOCKED: 1 | ARCH-007 secret rotation remains blocked; phase gate not closed. |
+| 0 | PARTIALLY COMPLETED | COMPLETED: 6, PARTIALLY COMPLETED: 1, BLOCKED: 1 | ARCH-003 concurrency fairness and ARCH-007 secret rotation remain open; phase gate not closed. |
 | 1 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 5, NEEDS VERIFICATION: 5 | Signed-transfer interop, H3 client, load/backpressure and incremental-reload proofs remain unverified. |
 | 2 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 7, NOT STARTED: 2 | Bulk import, RRset batch mutation and full lifecycle/export work remain open. |
 | 3 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 3, BLOCKED: 5 | Key custody, backup/restore, NSEC3/parent coordination and multi-signer remain blocked. |
@@ -1932,13 +1932,13 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 | OPS-002 | PARTIALLY COMPLETED | Helm now renders API, DNS and UI Deployments/Services/Ingress, ConfigMaps, shared pre-provisioned RWX claim mounts, and probes; lint/render and structural checks pass. Agent/DB templates and Kubernetes cluster validation remain; external Secret, images and claim must be supplied. |
 | OPS-006 | PARTIALLY COMPLETED | GeoIP atomic update automation exists; production certificate lifecycle and upgrade/rollback tests are absent. |
 
-## 21. Single-File Execution Ledger — 2026-11-24
+## 21. Single-File Execution Ledger — 2026-11-25
 
 This ledger is the only current task and implementation report. Historical status matrices above are preserved, but their counts are superseded here. Phase 0 and Phase 1 are not complete, so Phase 2 implementation has not begun in this execution.
 
 ### Current roadmap totals
 
-133 tasks total. COMPLETED 34 (25.6%), PARTIALLY COMPLETED 54, NEEDS VERIFICATION 8, BLOCKED 36, NOT STARTED 1. Counts include the two recovery tasks moved from BLOCKED to PARTIALLY COMPLETED after tests on `germ`. Counts exclude prose-only feature-matrix rows and count each roadmap task ID once.
+133 tasks total. COMPLETED 35 (26.3%), PARTIALLY COMPLETED 53, NEEDS VERIFICATION 8, BLOCKED 36, NOT STARTED 1. ARCH-002 moved from PARTIALLY COMPLETED to COMPLETED after database and filesystem failure tests. Counts exclude prose-only feature-matrix rows and count each roadmap task ID once.
 
 ### Phase 0 and Phase 1 execution state
 
@@ -1949,7 +1949,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Latest implementation and validation evidence
 
-- **Bulk import UX (ZONE-001, ADM-002, CUI-003): PARTIAL.** Local uncommitted changes add RFC-compatible CSV parsing via `csv-parse`, a dry-run preview before commit, 1 MiB and 5,000-row client limits, duplicate/error feedback, and keyboard reachable file selection. Chromium tests in `web/ui/tests/modal-focus.spec.cjs` cover keyboard selection and quoted CSV values through preview and confirmation. `npm --prefix web/ui run lint`, `npm --prefix web/ui run test:routes` (83 pairs), and `npm --prefix web/ui run build` pass. The browser preview test passed 3/3 in the prior run before the latest import implementation. After the latest implementation, the 3 browser cases passed against Vite and mocked HTTP. No production data was touched. Commit and `task.md` per-task status update remain outstanding.
+- **Bulk import UX (ZONE-001, ADM-002, CUI-003): PARTIAL.** CSV parser, dry-run preview, 1 MiB and 5,000-row client limits, duplicate/error feedback, and keyboard reachable file selection were committed in `a75b0e87b` and pushed. Existing browser test evidence is in the earlier work log; CUI-003 remains partially complete because other dialog, labeling, chart alternatives and full WCAG review remain.
 - **germ environment inspection:** `ssh germ` succeeded. Host `fastcreate-472995` runs four healthy containers: UI, DNS, control API, and PostgreSQL 15. Read-only checks through SSH returned API `/health` 200, `/ready` 200, and UI 200. Local direct curls returned proxy 503 because `HTTP_PROXY` routes loopback; this is local test setup, not a germ service failure.
 - **germ authoritative DNS smoke:** `dig @127.0.0.1 uid0.ir SOA +norecurse` returned authoritative NOERROR and serial `2026111900`; unrelated `example.com` returned REFUSED; AXFR of `uid0.ir` returned REFUSED. These are read-only tests of the deployed service, not evidence that local uncommitted code was deployed.
 - **PostgreSQL backup/PITR drills:** `scripts/postgres_restore_drill.sh` on germ verified encrypted dump checksum, failed-dump cleanup, overwrite refusal, and restored `drill.invalid` in one second. `scripts/postgres_pitr_drill.sh` verified the physical base backup with `pg_verifybackup` and restored to a named point, retaining the pre-target row and excluding the post-target row. Both used isolated, network-disabled disposable PostgreSQL 16 containers on tmpfs. Code commits are `746c4f89a` and `d0a8eee58`; status documentation commit is `0341a909c`.
@@ -1958,7 +1958,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`. Local HEAD `d0a8eee58` is one commit ahead of `origin/main` at `0341a909c` and has not been pushed. The bulk import implementation and its package lock changes are uncommitted. No secret, environment file, database, DNS zone state, or generated runtime artifact is staged. `task.md` is the only file to update for current status and delivery tracking.
+Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `6270a728e`. Commits `b8ad0f418`, `13fb2de3c`, and `6270a728e` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
@@ -1974,7 +1974,7 @@ Current branch is `main`; remote is `origin`. Local HEAD `d0a8eee58` is one comm
 
 Files: `crates/control_api/src/main.rs`, `crates/control_api/migrations/007_publication_outbox.sql`.
 
-Executed on an isolated PostgreSQL 16 container on `germ` (never the running project DB): `publication_outbox_persists_retries_and_serializes_concurrent_workers` passed 1/1; `failed_publication_retries_latest_database_state_after_restart` passed 1/1 with a real `BEGIN`/`ROLLBACK` and committed-state verification; `publication_worker_recovers_persisted_jobs_and_stops_after_ten_attempts` passed 1/1, including filesystem failure, new-pool recovery, killing both worker pool sessions, automatic reconnect and successful retry; `publication_retry_requeue_requires_admin_and_resets_terminal_job` passed 1/1 (viewer denied, admin requeue resets terminal row and audit is written); `publication_outbox_upgrade_adds_missing_status_column_idempotently` passed 1/1. Local filesystem checks `failing_zone_keeps_last_known_good_and_does_not_stop_others` and `atomic_zone_rename_failure_preserves_last_known_good_file` each passed 1/1. Unit tests `publication_retry_tests` passed 2/2; `cargo fmt --all -- --check` and `git diff --check` pass. A first rollback test attempt failed because the test had omitted `BEGIN`; after correcting the test, the real rollback test passed and the candidate value was absent from the republished file. No implementation defects remained in this task. Commits: `e939d7853`, `ba0dda5e6`, `13fb2de3c`, and the operator/migration/atomic-test follow-up recorded after commit. The isolated database container was stopped after every run.
+Executed on isolated PostgreSQL 16 containers on `germ` (never the running project DB): `publication_outbox_persists_retries_and_serializes_concurrent_workers` passed 1/1; `failed_publication_retries_latest_database_state_after_restart` passed 1/1 with a real `BEGIN`/`ROLLBACK` and committed-state verification; `publication_worker_recovers_persisted_jobs_and_stops_after_ten_attempts` passed 1/1, including filesystem failure, new-pool recovery, terminating both worker pool sessions, automatic reconnect, and successful retry; `publication_retry_requeue_requires_admin_and_resets_terminal_job` passed 1/1 (viewer denied; admin requeue resets terminal row); `publication_outbox_upgrade_adds_missing_status_column_idempotently` passed 1/1. Local filesystem checks `failing_zone_keeps_last_known_good_and_does_not_stop_others` and `atomic_zone_rename_failure_preserves_last_known_good_file` each passed 1/1. Unit tests `publication_retry_tests` passed 2/2; `cargo fmt --all -- --check` and `git diff --check` pass. A first rollback test attempt failed because the test omitted `BEGIN`; after correcting the test, the actual rollback check passed and the candidate value was absent from the republished file. Commits: `e939d7853`, `ba0dda5e6`, `13fb2de3c`, `6270a728e` (pushed). Isolated containers were stopped after runs.
 
 ### ARCH-003 / PERF-002 implementation update — 2026-11-25
 
