@@ -134,6 +134,10 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
         )
         .await
         .unwrap();
+    env.state.db.execute(
+        "INSERT INTO records(id,zone_id,name,record_type,value,ttl) VALUES($1::text::uuid,$2::text::uuid,'www','A','192.0.2.10',300)",
+        &[&Uuid::new_v4().to_string(), &zone_id],
+    ).await.unwrap();
     publish_current(
         &env.state.dns_manager,
         &env.state.db,
@@ -142,6 +146,7 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
     .await
     .unwrap();
     let original = std::fs::read_to_string(env.zone_file("retry-state.example")).unwrap();
+    assert!(original.contains("192.0.2.10"));
 
     let obstructed_path = env.dir.path().join("not-a-directory");
     std::fs::write(&obstructed_path, "block mkdir").unwrap();
@@ -167,13 +172,16 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
     );
 
     let tx = env.state.db.begin().await.unwrap();
-    tx.client()
+    tx.client().batch_execute("BEGIN").await.unwrap();
+    let updated = tx
+        .client()
         .execute(
             "UPDATE records SET value='192.0.2.99' WHERE zone_id=$1::text::uuid",
             &[&zone_id],
         )
         .await
         .unwrap();
+    assert_eq!(updated, 1);
     tx.client().batch_execute("ROLLBACK").await.unwrap();
     drop(tx);
 
@@ -184,7 +192,8 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
         .await
         .unwrap();
     let latest = std::fs::read_to_string(env.zone_file("retry-state.example")).unwrap();
-    assert_eq!(latest, original);
+    assert!(latest.contains("192.0.2.10"));
+    assert!(!latest.contains("192.0.2.99"));
     env.state
         .db
         .execute(
@@ -203,6 +212,65 @@ async fn failed_publication_retries_latest_database_state_after_restart() {
         .await
         .unwrap();
     assert!(remaining.is_empty());
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn publication_worker_recovers_persisted_jobs_and_stops_after_ten_attempts() {
+    let Some(env) = setup().await else { return };
+    let domain = "worker-restart.example";
+    env.state
+        .db
+        .execute(
+            "INSERT INTO zones(id,domain) VALUES($1::text::uuid,$2)",
+            &[&Uuid::new_v4().to_string(), &domain],
+        )
+        .await
+        .unwrap();
+    env.state.db.execute(
+        "INSERT INTO publication_outbox(zone_domain,attempts,next_attempt,last_error) VALUES($1,0,now(),'restart test')",
+        &[&domain],
+    ).await.unwrap();
+
+    // A newly-created pool represents a worker process starting after the
+    // enqueueing process has exited; the persisted due row remains claimable.
+    let restarted = Pool::connect(
+        &std::env::var("TEST_DATABASE_URL").unwrap(),
+        2,
+        Some(&env.schema),
+    )
+    .await
+    .unwrap();
+    let bad_dir = env.dir.path().join("worker-not-a-directory");
+    std::fs::write(&bad_dir, "block mkdir").unwrap();
+    let bad_dns = DnsManager::new(bad_dir.to_string_lossy().to_string());
+    assert!(publication_retry_once(&bad_dns, &restarted).await.unwrap());
+    let row = restarted
+        .query_one(
+            "SELECT attempts,status,last_error FROM publication_outbox WHERE zone_domain=$1",
+            &[&domain],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i32>(0), 1);
+    assert_eq!(row.get::<_, String>(1), "pending");
+    assert!(!row.get::<_, String>(2).is_empty());
+
+    restarted.execute(
+        "UPDATE publication_outbox SET attempts=9,next_attempt=now(),status='pending' WHERE zone_domain=$1",
+        &[&domain],
+    ).await.unwrap();
+    assert!(publication_retry_once(&bad_dns, &restarted).await.unwrap());
+    let terminal = restarted
+        .query_one(
+            "SELECT attempts,status FROM publication_outbox WHERE zone_domain=$1",
+            &[&domain],
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminal.get::<_, i32>(0), 10);
+    assert_eq!(terminal.get::<_, String>(1), "failed");
+    assert!(!publication_retry_once(&bad_dns, &restarted).await.unwrap());
     env.cleanup().await;
 }
 

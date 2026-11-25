@@ -458,14 +458,27 @@ async fn publish(
     zone_domain: Option<&str>,
 ) -> Result<(), String> {
     let result = publish_current(dns, db, zone_domain).await;
-    if let Err(error) = &result {
-        if let Some(domain) = zone_domain {
+    if let Some(domain) = zone_domain {
+        match &result {
+            Ok(()) => {
+                if let Err(error) = db
+                    .execute(
+                        "DELETE FROM publication_outbox WHERE zone_domain=$1",
+                        &[&domain],
+                    )
+                    .await
+                {
+                    warn!("unable to acknowledge published zone {}: {}", domain, error);
+                }
+            }
+            Err(error) => {
             if let Err(queue_error) = db.execute(
                 "INSERT INTO publication_outbox(zone_domain, attempts, next_attempt, last_error) VALUES($1,0,now(),$2) ON CONFLICT(zone_domain) DO UPDATE SET attempts=0,next_attempt=now(),last_error=EXCLUDED.last_error,updated_at=now()",
                 &[&domain, error],
             ).await {
                 warn!("unable to persist publication retry for {}: {}", domain, queue_error);
             }
+        }
         }
     }
     result
@@ -507,42 +520,56 @@ async fn publish_current(
 async fn publication_retry_worker(dns: Arc<DnsManager>, db: Arc<Pool>) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let due = match db.query(
-            "WITH due AS (SELECT zone_domain FROM publication_outbox WHERE status='pending' AND next_attempt <= now() ORDER BY next_attempt FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE publication_outbox o SET attempts=o.attempts+1,status=CASE WHEN o.attempts >= 9 THEN 'failed' ELSE 'pending' END,next_attempt=now()+LEAST(300, power(2, LEAST(o.attempts,8))::int)*interval '1 second',updated_at=now() FROM due WHERE o.zone_domain=due.zone_domain RETURNING o.zone_domain,o.attempts",
-            &[],
-        ).await {
-            Ok(rows) => rows.into_iter().next(),
-            Err(error) => { warn!("publication retry poll failed: {}", error); continue; }
-        };
-        let Some(due) = due else {
-            continue;
-        };
-        let domain: String = due.get(0);
-        let attempts: i32 = due.get(1);
-        match publish_current(&dns, &db, Some(&domain)).await {
-            Ok(()) => {
-                if let Err(error) = db
-                    .execute(
-                        "DELETE FROM publication_outbox WHERE zone_domain=$1",
-                        &[&domain],
-                    )
-                    .await
-                {
-                    warn!(
-                        "published {} but could not acknowledge retry job: {}",
-                        domain, error
-                    );
-                }
-            }
-            Err(error) => {
-                warn!(
-                    "publication retry {} for {} failed: {}",
-                    attempts, domain, error
-                );
-                let _ = db.execute("UPDATE publication_outbox SET last_error=$2,updated_at=now() WHERE zone_domain=$1", &[&domain, &error]).await;
-            }
+        if let Err(error) = publication_retry_once(&dns, &db).await {
+            warn!("publication retry poll failed: {}", error);
         }
     }
+}
+
+/// Claim and process at most one due publication job. Keeping this as a
+/// single iteration lets integration tests exercise worker restart/reclaim
+/// behavior without relying on wall-clock sleeps.
+async fn publication_retry_once(
+    dns: &DnsManager,
+    db: &Arc<Pool>,
+) -> Result<bool, tokio_postgres::Error> {
+    let due = db.query(
+            "WITH due AS (SELECT zone_domain FROM publication_outbox WHERE status='pending' AND next_attempt <= now() ORDER BY next_attempt FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE publication_outbox o SET attempts=o.attempts+1,status=CASE WHEN o.attempts >= 9 THEN 'failed' ELSE 'pending' END,next_attempt=now()+LEAST(300, power(2, LEAST(o.attempts,8))::int)*interval '1 second',updated_at=now() FROM due WHERE o.zone_domain=due.zone_domain RETURNING o.zone_domain,o.attempts",
+            &[],
+        ).await?.into_iter().next();
+    let Some(due) = due else {
+        return Ok(false);
+    };
+    let domain: String = due.get(0);
+    let attempts: i32 = due.get(1);
+    match publish_current(dns, db, Some(&domain)).await {
+        Ok(()) => {
+            if let Err(error) = db
+                .execute(
+                    "DELETE FROM publication_outbox WHERE zone_domain=$1",
+                    &[&domain],
+                )
+                .await
+            {
+                warn!(
+                    "published {} but could not acknowledge retry job: {}",
+                    domain, error
+                );
+            }
+        }
+        Err(error) => {
+            warn!(
+                "publication retry {} for {} failed: {}",
+                attempts, domain, error
+            );
+            db.execute(
+                "UPDATE publication_outbox SET last_error=$2,updated_at=now() WHERE zone_domain=$1",
+                &[&domain, &error],
+            )
+            .await?;
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
