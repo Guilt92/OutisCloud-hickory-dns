@@ -108,12 +108,33 @@ impl TestServer {
             PathBuf::from(format!("{server_path}/tests/test-data/test_configs/{toml}")),
             PathBuf::from(format!("{server_path}/tests/test-data/test_configs")),
             None,
+            &[],
+        )
+    }
+
+    /// Starts a checked-in test server config with isolated process environment overrides.
+    pub fn start_with_env(toml: &str, child_env: &[(&str, &str)]) -> Self {
+        let server_path = env::var("TDNS_WORKSPACE_ROOT").unwrap_or_else(|_| "..".to_owned());
+        Self::start_from_paths(
+            PathBuf::from(format!("{server_path}/tests/test-data/test_configs/{toml}")),
+            PathBuf::from(format!("{server_path}/tests/test-data/test_configs")),
+            None,
+            child_env,
         )
     }
 
     /// Start an isolated server with fixtures written to a temporary directory.
     /// The directory remains alive until the child server is dropped.
     pub fn start_temporary(config: &str, files: &[(&str, &str)]) -> Self {
+        Self::start_temporary_with_env(config, files, &[])
+    }
+
+    /// Starts an isolated server with fixture files and process environment overrides.
+    pub fn start_temporary_with_env(
+        config: &str,
+        files: &[(&str, &str)],
+        child_env: &[(&str, &str)],
+    ) -> Self {
         let temp_dir = tempfile::tempdir().expect("create temporary DNS config directory");
         for (name, contents) in files {
             let path = temp_dir.path().join(name);
@@ -124,7 +145,12 @@ impl TestServer {
         }
         let config_path = temp_dir.path().join("named.toml");
         fs::write(&config_path, config).expect("write temporary named config");
-        Self::start_from_paths(config_path, temp_dir.path().to_path_buf(), Some(temp_dir))
+        Self::start_from_paths(
+            config_path,
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir),
+            child_env,
+        )
     }
 
     /// Replace a fixture in a temporary server directory to exercise reload behavior.
@@ -141,6 +167,7 @@ impl TestServer {
         config_path: PathBuf,
         zone_dir: PathBuf,
         temp_dir: Option<tempfile::TempDir>,
+        child_env: &[(&str, &str)],
     ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_hickory-dns"));
         command
@@ -149,6 +176,7 @@ impl TestServer {
             "RUST_LOG",
             "hickory_dns=debug,hickory_client=debug,hickory_proto=debug,hickory_resolver=debug,hickory_server=debug",
         )
+        .envs(child_env.iter().copied())
         .arg("-d")
         .arg(format!("--config={}", config_path.display()))
         .arg(format!("--zonedir={}", zone_dir.display()))

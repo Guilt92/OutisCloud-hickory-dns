@@ -5,10 +5,11 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::*;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::server_harness::{TestServer, query_a, query_a_refused};
 use hickory_net::client::{Client, ClientHandle};
@@ -511,6 +512,54 @@ async fn test_server_continues_on_bad_data_tcp() {
     let (mut client, bg) = Client::<TokioRuntimeProvider>::new(stream, sender);
     tokio::spawn(bg);
 
+    query_a(&mut client).await;
+}
+
+#[tokio::test]
+async fn tcp_connection_limit_rejects_fanout_and_keeps_service_available() {
+    subscribe();
+    let server = TestServer::start_with_env("example.toml", &[("DNS_MAX_TCP_CONNECTIONS", "8")]);
+    let tcp_addr = SocketAddr::from((
+        Ipv4Addr::LOCALHOST,
+        server.ports.get_v4(Protocol::Tcp).expect("no TCP port"),
+    ));
+
+    // Hold 96 idle TCP connections concurrently. The server should retain at
+    // most eight DNS connection permits and close the excess before it can
+    // consume all available file descriptors.
+    let mut clients = Vec::new();
+    for _ in 0..96 {
+        clients.push(std::thread::spawn(move || {
+            let Ok(mut stream) = TcpStream::connect_timeout(&tcp_addr, Duration::from_secs(3))
+            else {
+                return false;
+            };
+            std::thread::sleep(Duration::from_millis(250));
+            stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let mut byte = [0u8; 1];
+            matches!(stream.read(&mut byte), Ok(0))
+        }));
+    }
+    let closed_before_request = clients
+        .into_iter()
+        .map(|client| client.join().expect("TCP load worker panicked"))
+        .filter(|closed| *closed)
+        .count();
+    assert!(
+        closed_before_request >= 32,
+        "expected excess connections to be rejected, got {closed_before_request} closed"
+    );
+
+    // The listener remains usable after the burst; a normal UDP query still
+    // gets the authoritative fixture answer.
+    let udp_port = server.ports.get_v4(Protocol::Udp).expect("no UDP port");
+    let provider = TokioRuntimeProvider::new();
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, udp_port));
+    let stream = UdpClientStream::builder(addr, provider).build();
+    let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(bg);
     query_a(&mut client).await;
 }
 

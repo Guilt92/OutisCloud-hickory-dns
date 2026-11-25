@@ -72,6 +72,8 @@ jobs:
         run: cargo test -p hickory-dns --test integration ixfr_current_serial_succeeds_and_stale_serial_is_refused_safely
       - name: NOTIFY acknowledgement behavior
         run: cargo test -p hickory-dns --test integration notify_acknowledges_local_zone_and_rejects_unknown_zone
+      - name: TCP connection admission under fanout
+        run: cargo test -p hickory-dns --test integration tcp_connection_limit_rejects_fanout_and_keeps_service_available
       - name: Server tests
         run: cargo test -p hickory-server --features sqlite --lib
       - name: GeoDNS tests
