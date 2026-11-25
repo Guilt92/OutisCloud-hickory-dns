@@ -427,6 +427,7 @@ struct TomlZone {
     zone: String,
     zone_type: String,
     zone_path: String,
+    axfr_policy: String,
     geodns_enabled: bool,
     ecs: bool,
     geo_rules: Vec<TomlGeoRule>,
@@ -541,6 +542,7 @@ impl TomlConfigBuilder {
             zone,
             zone_type: "Primary".to_string(),
             zone_path,
+            axfr_policy: "Deny".to_string(),
             geodns_enabled,
             ecs: false,
             geo_rules: rules,
@@ -561,6 +563,18 @@ impl TomlConfigBuilder {
     pub fn set_last_zone_ecs(&mut self, ecs: bool) {
         if let Some(z) = self.zones.last_mut() {
             z.ecs = ecs;
+        }
+    }
+
+    /// Set the transfer policy for the most recently added zone. Unknown
+    /// values fail closed to Deny so database/config drift cannot expose AXFR.
+    pub fn set_last_zone_axfr_policy(&mut self, policy: &str) {
+        if let Some(z) = self.zones.last_mut() {
+            z.axfr_policy = match policy.trim().to_ascii_lowercase().as_str() {
+                "allowall" | "allow_all" | "allow-all" => "AllowAll".to_string(),
+                "allowsigned" | "allow_signed" | "allow-signed" => "AllowSigned".to_string(),
+                _ => "Deny".to_string(),
+            };
         }
     }
 
@@ -607,6 +621,7 @@ impl TomlConfigBuilder {
                 "zone_type = \"{}\"\n",
                 toml_escape(&zone.zone_type)
             ));
+            result.push_str(&format!("axfr_policy = \"{}\"\n", zone.axfr_policy));
 
             if zone.geodns_enabled {
                 result.push_str(if zone.ecs {
@@ -841,8 +856,32 @@ mod tests {
         assert!(result.is_ok());
         let toml_str = result.unwrap();
         assert!(toml_str.contains("zone = \"example.com\""));
+        assert!(toml_str.contains("axfr_policy = \"Deny\""));
         assert!(toml_str.contains("directory = \"/etc/hickory\""));
         assert!(toml_str.contains("listen_addrs_ipv4"));
+    }
+
+    #[test]
+    fn axfr_policy_is_per_zone_and_unknown_values_fail_closed() {
+        let mut builder = TomlConfigBuilder::new();
+        builder
+            .add_zone("one.example".into(), "/z/one".into(), false, vec![])
+            .unwrap();
+        builder.set_last_zone_axfr_policy("AllowAll");
+        builder
+            .add_zone("two.example".into(), "/z/two".into(), false, vec![])
+            .unwrap();
+        builder.set_last_zone_axfr_policy("untrusted-value\n[[zones]]");
+        let output = builder.build().unwrap();
+        assert!(output.contains(
+            "zone = \"one.example\"\nzone_type = \"Primary\"\naxfr_policy = \"AllowAll\""
+        ));
+        assert!(
+            output.contains(
+                "zone = \"two.example\"\nzone_type = \"Primary\"\naxfr_policy = \"Deny\""
+            )
+        );
+        assert_eq!(output.matches("axfr_policy =").count(), 2);
     }
 
     // Comprehensive validation tests verifying Hickory delegation

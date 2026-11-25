@@ -1919,24 +1919,80 @@ const DEFAULT_VALIDATION_CACHE_SIZE: usize = 1_048_576;
 
 #[cfg(test)]
 mod test {
-    use super::{no_closer_matches, verify_nsec};
+    use super::{RrsigValidity, no_closer_matches, rrset::Rrset, verify_nsec};
     use crate::{
         dnssec::Proof,
         proto::{
             ProtoError,
             dnssec::{
-                Algorithm,
-                rdata::{DNSSECRData, NSEC as rdataNSEC, RRSIG as rdataRRSIG, SigInput},
+                Algorithm, PublicKeyBuf,
+                rdata::{
+                    DNSKEY as rdataDNSKEY, DNSSECRData, NSEC as rdataNSEC, RRSIG as rdataRRSIG,
+                    SigInput,
+                },
             },
             op::{Query, ResponseCode},
             rr::{
                 Name, RData, Record,
                 RecordType::{A, AAAA, DNSKEY, MX, NS, NSEC, RRSIG, SOA, TXT},
                 SerialNumber, rdata,
+                resource::RecordRef,
             },
         },
     };
     use test_support::subscribe;
+
+    #[test]
+    fn expired_rrsig_is_rejected_at_the_expiration_boundary() -> Result<(), ProtoError> {
+        subscribe();
+        let owner = Name::from_ascii("signed.example.")?;
+        let algorithm = Algorithm::ED25519;
+        let dnskey_data = rdataDNSKEY::new(
+            true,
+            true,
+            false,
+            PublicKeyBuf::new(vec![1, 2, 3, 4], algorithm),
+        );
+        let key_tag = dnskey_data.calculate_key_tag().unwrap();
+        let dnskey_record = Record::from_rdata(
+            owner.clone(),
+            3600,
+            RData::DNSSEC(DNSSECRData::DNSKEY(dnskey_data)),
+        );
+        let dnskey = RecordRef::<'_, rdataDNSKEY>::try_from(&dnskey_record).unwrap();
+        let answer = Record::from_rdata(owner.clone(), 300, RData::A(rdata::A::new(192, 0, 2, 5)));
+        let rrset = Rrset::new(&answer);
+        let sig_input = SigInput {
+            type_covered: A,
+            algorithm,
+            num_labels: owner.num_labels(),
+            original_ttl: 300,
+            sig_expiration: SerialNumber::new(100),
+            sig_inception: SerialNumber::new(10),
+            key_tag,
+            signer_name: owner.clone(),
+        };
+        let signature = rdataRRSIG::from_sig(sig_input, vec![]);
+        let signature_record =
+            Record::from_rdata(owner, 300, RData::DNSSEC(DNSSECRData::RRSIG(signature)));
+        let signature_ref = RecordRef::<'_, rdataRRSIG>::try_from(&signature_record).unwrap();
+
+        assert!(
+            matches!(
+                RrsigValidity::check(signature_ref, &rrset, dnskey, 100),
+                RrsigValidity::ValidRrsig,
+            ),
+            "the expiration instant itself remains valid"
+        );
+        assert!(
+            matches!(
+                RrsigValidity::check(signature_ref, &rrset, dnskey, 101),
+                RrsigValidity::ExpiredRrsig,
+            ),
+            "a signature one second beyond expiration is bogus"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_no_closer_matches() -> Result<(), ProtoError> {

@@ -8057,6 +8057,8 @@ async fn zone_transfer_policy_endpoint_and_validation() {
     );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["policy"], "AllowAll");
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(named.contains("zone = \"transfer-policy.example\"\nzone_type = \"Primary\"\naxfr_policy = \"AllowAll\""), "policy must reach the running-server config: {named}");
     let stored: String = env
         .state
         .db
@@ -8068,6 +8070,60 @@ async fn zone_transfer_policy_endpoint_and_validation() {
         .unwrap()
         .get(0);
     assert_eq!(stored, "AllowAll");
+
+    let (st, body, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/transfer-policy"),
+        Some(&t),
+        j(serde_json::json!({"policy":"Deny"}))
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(body["policy"], "Deny");
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(
+        named.contains(
+            "zone = \"transfer-policy.example\"\nzone_type = \"Primary\"\naxfr_policy = \"Deny\""
+        ),
+        "deny policy must be republished: {named}"
+    );
+
+    // A publication read failure must restore the persisted policy and leave
+    // the already published Deny configuration untouched.
+    env.state
+        .db
+        .batch_execute("ALTER TABLE georules RENAME TO georules_transfer_test")
+        .await
+        .unwrap();
+    let (st, body, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/transfer-policy"),
+        Some(&t),
+        j(serde_json::json!({"policy":"AllowAll"}))
+    );
+    assert_eq!(st, 500, "{body}");
+    let restored: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT axfr_policy FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(restored, "Deny");
+    let preserved = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(
+        preserved.contains("axfr_policy = \"Deny\""),
+        "failed publication must preserve last known config: {preserved}"
+    );
+    env.state
+        .db
+        .batch_execute("ALTER TABLE georules_transfer_test RENAME TO georules")
+        .await
+        .unwrap();
 
     let (st, _, _) = call!(
         app,

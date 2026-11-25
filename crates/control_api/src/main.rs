@@ -7314,6 +7314,24 @@ async fn set_zone_transfer_policy(
             "error": "policy must be Deny or AllowAll; signed transfers require TSIG key custody"
         })),
     };
+    let previous = match data
+        .db
+        .query_opt(
+            "SELECT COALESCE(axfr_policy, 'Deny') FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+    {
+        Ok(Some(row)) => row.get::<_, String>(0),
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error":"zone not found"}));
+        }
+        Err(e) => {
+            warn!("read transfer policy: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error":"database error"}));
+        }
+    };
     if let Err(e) = data
         .db
         .execute(
@@ -7325,6 +7343,23 @@ async fn set_zone_transfer_policy(
         warn!("set_zone_transfer_policy: {}", full_error_string(&e));
         return HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": "database error"}));
+    }
+    if let Err(e) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await {
+        let rollback = data.db.execute(
+            "UPDATE zones SET axfr_policy = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
+            &[&previous, &zone_id],
+        ).await;
+        if let Err(rollback_error) = rollback {
+            log::error!(
+                "transfer policy publication failed ({e}); policy rollback also failed: {}",
+                full_error_string(&rollback_error)
+            );
+        } else if let Err(republish_error) =
+            publish(&data.dns_manager, &data.db, Some(&access.domain)).await
+        {
+            log::error!("transfer policy rollback republish failed: {republish_error}");
+        }
+        return publish_failed_rolled_back(&e.to_string());
     }
     audit(
         &data.db,
