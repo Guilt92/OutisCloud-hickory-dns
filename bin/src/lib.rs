@@ -57,6 +57,8 @@ use hickory_server::{
 };
 
 mod config;
+#[cfg(feature = "prometheus-metrics")]
+use ::metrics::{counter, describe_counter};
 use config::{Config, ServerStoreConfig, ZoneConfig, ZoneTypeConfig};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
@@ -804,6 +806,20 @@ async fn reload_zones(
     }
     handler.swap(catalog);
     handler.set_zone_fingerprints(fingerprints);
+    #[cfg(feature = "prometheus-metrics")]
+    {
+        describe_counter!(
+            "outis_zone_reload_rebuilt_zones_total",
+            "Number of zone handlers rebuilt during configuration reloads."
+        );
+        describe_counter!(
+            "outis_zone_reload_reused_zones_total",
+            "Number of unchanged zone handlers reused during configuration reloads."
+        );
+        counter!("outis_zone_reload_rebuilt_zones_total")
+            .increment((count.saturating_sub(reused)) as u64);
+        counter!("outis_zone_reload_reused_zones_total").increment(reused as u64);
+    }
     info!(
         "reloaded {count} zone(s), {reused} unchanged (reload #{})",
         handler.reloads()

@@ -66,6 +66,7 @@ jobs:
         run: |
           cargo test -p hickory-dns --test integration test_health_and_ready_endpoints
           cargo test -p hickory-dns --test integration readiness_tracks_failed_zone_reload_and_recovery
+          cargo test -p hickory-dns --test integration single_zone_reload_reuses_unchanged_catalog_during_query_load
       - name: Signed AXFR interoperability
         run: |
           cargo test -p hickory-dns --test integration signed_axfr_stream_verifies_with_independent_dig_client

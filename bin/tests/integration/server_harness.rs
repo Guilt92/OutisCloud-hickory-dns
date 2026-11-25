@@ -1,13 +1,15 @@
 #![allow(unreachable_pub)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env, fs,
     io::{BufRead, BufReader},
     net::SocketAddr,
     path::PathBuf,
-    process::{Child, ChildStdout, Command, Stdio},
+    process::{Child, Command, Stdio},
     str::FromStr,
+    sync::{Arc, Mutex},
+    thread,
     time::*,
 };
 
@@ -93,7 +95,8 @@ fn collect_and_print<R: BufRead>(read: &mut R, output: &mut String) {
 pub struct TestServer {
     pub ports: SocketPorts,
     child: Child,
-    stdout: BufReader<ChildStdout>,
+    output: Arc<Mutex<VecDeque<String>>>,
+    output_reader: Option<thread::JoinHandle<()>>,
     _temp_dir: Option<tempfile::TempDir>,
 }
 
@@ -253,10 +256,26 @@ impl TestServer {
         assert!(found);
         println!("Test server started. ports: {ports:?}");
 
+        // Drain child output continuously. Leaving the captured pipe unread until Drop
+        // deadlocks the DNS process under query-load tests once its pipe buffer fills.
+        let output = Arc::new(Mutex::new(VecDeque::with_capacity(256)));
+        let output_for_reader = output.clone();
+        let output_reader = thread::spawn(move || {
+            for line in stdout.lines() {
+                let Ok(line) = line else { break };
+                let mut recent = output_for_reader.lock().expect("test server output mutex");
+                if recent.len() == 256 {
+                    recent.pop_front();
+                }
+                recent.push_back(line);
+            }
+        });
+
         Self {
             ports,
             child: named,
-            stdout,
+            output,
+            output_reader: Some(output_reader),
             _temp_dir: temp_dir,
         }
     }
@@ -269,18 +288,17 @@ impl Drop for TestServer {
             Err(err) => warn!("could not kill test server: {err}"),
         }
 
-        let mut line = String::new();
-        loop {
-            match self.stdout.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    print!("SRV: {line}");
-                    line.clear();
-                }
-                Err(err) => {
-                    warn!("could not read remaining stdout: {err}");
-                    break;
-                }
+        if let Err(err) = self.child.wait() {
+            warn!("could not wait for test server: {err}");
+        }
+        if let Some(reader) = self.output_reader.take() {
+            if reader.join().is_err() {
+                warn!("test server output reader panicked");
+            }
+        }
+        if let Ok(output) = self.output.lock() {
+            for line in output.iter() {
+                println!("SRV: {line}");
             }
         }
     }

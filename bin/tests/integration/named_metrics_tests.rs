@@ -270,6 +270,125 @@ file = "example.test.zone"
 }
 
 #[tokio::test]
+async fn single_zone_reload_reuses_unchanged_catalog_during_query_load() {
+    subscribe();
+    let zone_a = "$ORIGIN a.example.test.\n@ 300 IN SOA ns.a.example.test. hostmaster.a.example.test. 1 3600 600 604800 300\n@ 300 IN NS ns.a.example.test.\nns 300 IN A 192.0.2.1\nwww 300 IN A 192.0.2.10\n";
+    let zone_a_updated = "$ORIGIN a.example.test.\n@ 300 IN SOA ns.a.example.test. hostmaster.a.example.test. 2 3600 600 604800 300\n@ 300 IN NS ns.a.example.test.\nns 300 IN A 192.0.2.1\nwww 300 IN A 192.0.2.11\n";
+    let zone_b = "$ORIGIN b.example.test.\n@ 300 IN SOA ns.b.example.test. hostmaster.b.example.test. 1 3600 600 604800 300\n@ 300 IN NS ns.b.example.test.\nns 300 IN A 192.0.2.2\nwww 300 IN A 192.0.2.20\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "a.example.test"
+zone_type = "Primary"
+file = "a.zone"
+
+[[zones]]
+zone = "b.example.test"
+zone_type = "Primary"
+file = "b.zone"
+"#;
+    let server = TestServer::start_temporary_with_env(
+        config,
+        &[("a.zone", zone_a), ("b.zone", zone_b)],
+        &[("RUST_LOG", "hickory_dns=info,hickory_server=warn")],
+    );
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut workers = Vec::new();
+    // Keep pressure sustained but bounded. A tight loop creates an unbounded number of
+    // concurrent TCP exchanges in Hickory's client and tests overload rather than reload.
+    for _ in 0..1 {
+        let mut client = create_local_client(&server.ports, None).await;
+        let stop = stop.clone();
+        workers.push(tokio::spawn(async move {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for name in ["www.a.example.test.", "www.b.example.test."] {
+                    let response = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        client.query(Name::from_str(name).unwrap(), DNSClass::IN, RecordType::A),
+                    )
+                    .await
+                    .expect("loaded zone query stays bounded")
+                    .expect("loaded zone remains queryable during reload");
+                    assert_eq!(
+                        response.response_code(),
+                        hickory_proto::op::ResponseCode::NoError
+                    );
+                    assert!(!response.answers().is_empty());
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        }));
+    }
+
+    let mut observer = create_local_client(&server.ports, None).await;
+    // Allow the server's watcher thread to install its watches before changing a fixture.
+    sleep(Duration::from_millis(100)).await;
+    server.write_temporary_file("a.zone", zone_a_updated);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            observer.query(
+                Name::from_str("www.a.example.test.").unwrap(),
+                DNSClass::IN,
+                RecordType::A,
+            ),
+        )
+        .await
+        .expect("reload observation query stays bounded")
+        .expect("query completes during hot reload");
+        if response.answers().iter().any(|record| {
+            matches!(record.data(), RData::A(address) if address == &A::new(192, 0, 2, 11))
+        }) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "updated zone was not published under load"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for worker in workers {
+        tokio::time::timeout(Duration::from_secs(3), worker)
+            .await
+            .expect("query worker drains")
+            .expect("query worker task succeeds");
+    }
+
+    let port = server
+        .ports
+        .get_v4(ServerProtocol::PrometheusMetrics)
+        .expect("prometheus listener");
+    let body = reqwest::get(format!("http://127.0.0.1:{port}/"))
+        .await
+        .expect("scrape reload evidence")
+        .text()
+        .await
+        .expect("read reload metrics");
+    let lines = body
+        .lines()
+        .map(|line| Ok(line.to_owned()))
+        .collect::<Vec<_>>();
+    let metrics = Scrape::parse(lines.into_iter()).expect("parse reload metrics");
+    let value = |name: &str| {
+        metrics
+            .samples
+            .iter()
+            .find(|sample| sample.metric == name)
+            .map(|sample| match sample.value {
+                Value::Counter(value) | Value::Gauge(value) | Value::Untyped(value) => value,
+                _ => panic!("expected counter metric {name}"),
+            })
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+    };
+    assert_eq!(value("outis_zone_reload_rebuilt_zones_total"), 1.0);
+    assert!(value("outis_zone_reload_reused_zones_total") >= 1.0);
+}
+
+#[tokio::test]
 async fn test_request_response() {
     subscribe();
 
