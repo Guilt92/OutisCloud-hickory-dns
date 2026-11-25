@@ -659,6 +659,8 @@ impl DnsServer {
                     #[cfg(feature = "prometheus-metrics")]
                     if reloaded {
                         reload_readiness.mark_ready();
+                    } else {
+                        reload_readiness.mark_not_ready();
                     }
                 }
             });

@@ -1958,7 +1958,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `6270a728e`. Commits `b8ad0f418`, `13fb2de3c`, and `6270a728e` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
+Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `5b85126d5`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, and `5b85126d5` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
@@ -1997,3 +1997,11 @@ Use the task-level status table in §19 as the canonical list of Phase 1 IDs and
 Files changed: `crates/server/src/zone_handler/catalog.rs`, `crates/proto/src/rr/tsig.rs`, `bin/tests/integration/named_tests.rs`, `bin/tests/integration/server_harness.rs`, `.github/workflows/ci.yml`.
 
 Executed: `cargo test -p hickory-dns --test integration signed_axfr_stream_verifies_with_independent_dig_client -- --nocapture` passed 1/1, using an isolated temporary DNS server and independent BIND `dig` client (signed multi-message transfer passed; unsigned transfer returned promptly with REFUSED). `ssh germ 'dig @127.0.0.1 uid0.ir SOA +time=2 +tries=1 +noall +answer'` returned authoritative SOA; the read-only UDP AXFR request returned REFUSED. `ssh germ` inspection confirmed the existing four healthy project containers; no container or live state was changed. `cargo fmt --all -- --check` and `git diff --check` passed before the final proto test completed. Remaining acceptance: AXFR client implementation and interoperability against an independent BIND/Knot server, file-store TSIG/key policy, and transfer audit/config coverage; therefore CORE-001/XFR-01 are not marked completed.
+
+Commit `5b85126d5` was pushed to `origin/main`; remote SHA matches local `HEAD`.
+
+### CORE-004 implementation update — 2026-11-25
+
+**Status: PARTIALLY COMPLETED.** DNS `/ready` now turns unavailable after a zone reload/configuration failure and returns to ready after a successful reload; the server continues serving the last-known-good catalog during the failed reload. Added writable isolated fixture support to the integration harness and a regression test that starts ready, writes a malformed zone, waits for HTTP 503, restores valid zone data, then verifies HTTP 200 recovery.
+
+Files changed: `bin/src/lib.rs`, `bin/tests/integration/server_harness.rs`, `bin/tests/integration/named_metrics_tests.rs`. Executed `cargo test -p hickory-dns --test integration readiness_tracks_failed_zone_reload_and_recovery -- --nocapture`: passed 1/1. Remaining: readiness does not yet actively probe every DNS listener or signing-key availability; cluster-level compose/Helm transition validation and publication-age semantics still need verification.

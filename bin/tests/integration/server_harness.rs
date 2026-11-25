@@ -127,6 +127,16 @@ impl TestServer {
         Self::start_from_paths(config_path, temp_dir.path().to_path_buf(), Some(temp_dir))
     }
 
+    /// Replace a fixture in a temporary server directory to exercise reload behavior.
+    pub fn write_temporary_file(&self, name: &str, contents: &str) {
+        let temp_dir = self
+            ._temp_dir
+            .as_ref()
+            .expect("temporary files are only available for temporary servers");
+        let path = temp_dir.path().join(name);
+        fs::write(path, contents).expect("write temporary server fixture");
+    }
+
     fn start_from_paths(
         config_path: PathBuf,
         zone_dir: PathBuf,

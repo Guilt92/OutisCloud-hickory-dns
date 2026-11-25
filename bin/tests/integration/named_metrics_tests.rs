@@ -218,6 +218,58 @@ async fn test_health_and_ready_endpoints() {
 }
 
 #[tokio::test]
+async fn readiness_tracks_failed_zone_reload_and_recovery() {
+    subscribe();
+    let zone = "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 1 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+file = "example.test.zone"
+"#;
+    let server = TestServer::start_temporary(config, &[("example.test.zone", zone)]);
+    let port = server
+        .ports
+        .get_v4(ServerProtocol::PrometheusMetrics)
+        .expect("prometheus listener");
+    let ready_url = format!("http://127.0.0.1:{port}/ready");
+    assert_eq!(
+        reqwest::get(&ready_url).await.unwrap().status(),
+        reqwest::StatusCode::OK
+    );
+
+    server.write_temporary_file("example.test.zone", "this is not valid zone data\n");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if reqwest::get(&ready_url).await.unwrap().status()
+            == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "readiness stayed OK after failed reload"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    server.write_temporary_file("example.test.zone", zone);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if reqwest::get(&ready_url).await.unwrap().status() == reqwest::StatusCode::OK {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "readiness did not recover after valid reload"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
 async fn test_request_response() {
     subscribe();
 
