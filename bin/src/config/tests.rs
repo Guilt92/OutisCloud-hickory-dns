@@ -184,6 +184,47 @@ signer_name = \"ns.example.com.\"
     );
 }
 
+#[cfg(feature = "__dnssec")]
+#[tokio::test]
+async fn dnssec_zone_with_unavailable_signing_key_fails_load() {
+    let directory = tempfile::tempdir().expect("temporary zone directory");
+    fs::write(
+        directory.path().join("example.test.zone"),
+        "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 1 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n",
+    )
+    .expect("write valid zone fixture");
+    let config = Config::from_toml(
+        r#"
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+[zones.stores]
+type = "file"
+zone_path = "example.test.zone"
+[[zones.keys]]
+key_path = "missing-signing-key.pk8"
+algorithm = "ED25519"
+"#,
+    )
+    .expect("valid DNSSEC configuration");
+
+    let result = config
+        .zones
+        .into_iter()
+        .next()
+        .unwrap()
+        .load(directory.path())
+        .await;
+    let error = match result {
+        Ok(_) => panic!("zone must not load without its configured signing key"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("missing-signing-key.pk8"),
+        "unexpected DNSSEC load failure: {error}"
+    );
+}
+
 #[test]
 #[cfg(feature = "__tls")]
 fn test_parse_tls() {
