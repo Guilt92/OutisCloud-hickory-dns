@@ -1432,6 +1432,55 @@ mod admission_tests {
         drop(h2);
         assert!(cx.try_admit_h2().is_some());
     }
+
+    #[tokio::test]
+    async fn concurrent_protocol_admission_never_exceeds_configured_caps() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Barrier;
+
+        const CAP: usize = 8;
+        const WORKERS: usize = 64;
+
+        let cx = Arc::new(context());
+        cx.udp_inflight.add_permits(CAP - 1);
+        cx.tcp_connections.add_permits(CAP - 1);
+        cx.h2_streams.add_permits(CAP - 1);
+
+        for (protocol, protocol_name) in [(0, "UDP"), (1, "TCP/TLS"), (2, "HTTP/2")] {
+            let admitted = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(Barrier::new(WORKERS + 1));
+            let mut workers = Vec::with_capacity(WORKERS);
+
+            for _ in 0..WORKERS {
+                let cx = cx.clone();
+                let admitted = admitted.clone();
+                let barrier = barrier.clone();
+                workers.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    let permit = match protocol {
+                        0 => cx.try_admit_udp(),
+                        1 => cx.try_admit_tcp(),
+                        2 => cx.try_admit_h2(),
+                        _ => unreachable!("test only covers bounded protocols"),
+                    };
+                    if let Some(_permit) = permit {
+                        admitted.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                }));
+            }
+
+            barrier.wait().await;
+            for worker in workers {
+                worker.await.expect("admission worker panicked");
+            }
+            assert_eq!(
+                admitted.load(Ordering::SeqCst),
+                CAP,
+                "{protocol_name} admitted work beyond its configured cap or starved all workers"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
