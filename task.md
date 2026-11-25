@@ -477,7 +477,7 @@ Source keys are defined in §17: `CF` (Cloudflare), `HICK` (Hickory/source), `CO
 | ID | Capability and why it matters | Source | Current implementation and components | Status | Missing / dependency | Priority | Phase | Task |
 |---|---|---|---|---|---|---|---|---|
 | XFR-01 | AXFR server and client. Standards-based full-zone replication. | RFC, BIND, KNOT | Server builds one response; default Deny; file store effectively AllowAll only; UDP accepted. No client. | IMPLEMENTED_BUT_INCOMPLETE | TCP-only enforcement, multi-message streaming, client, TSIG. | P1 | 1 | CORE-001 |
-| XFR-02 | IXFR. Efficient incremental replication and journal use. | RFC, BIND, KNOT | Absent; only metrics and update pre-scan references. | NOT_IMPLEMENTED | IXFR server/client and journal integration. | P1 | 1 | CORE-002 |
+| XFR-02 | IXFR. Efficient incremental replication and journal use. | RFC, BIND, KNOT | Current-serial request returns one SOA; stale serial is explicitly refused because recovery-journal rows lack RFC 1995 old/new SOA boundaries. | IMPLEMENTED_BUT_INCOMPLETE | Versioned delta journal, IXFR server/client, and interop tests; clients must use AXFR for stale serials. | P1 | 1 | CORE-002 |
 | XFR-03 | NOTIFY. Fast propagation of zone changes. | RFC, BIND, KNOT | Catalog returns `NotImp`; no sender or receiver. | NOT_IMPLEMENTED | NOTIFY sender/receiver and retry tests. | P1 | 1 | CORE-003 |
 | XFR-04 | TSIG and SIG(0). Authenticates transfers and updates. | RFC, BIND, KNOT | TSIG only for SQLite updates/AXFR; file-store signed AXFR unsupported; no SIG(0). | IMPLEMENTED_BUT_INCOMPLETE | Complete TSIG policy coverage, SIG(0), key storage. | P1 | 4 | TRANSFER-002 |
 | XFR-05 | Transfer ACLs, configuration, audit, and metrics. Safe operation at scale. | CF, BIND | Engine policy is default Deny but there is no control-plane ACL/peer/key management or transfer audit. | NOT_IMPLEMENTED | Schema, API, UI, audit, metrics. | P1 | 4 | TRANSFER-001, TRANSFER-003 |
@@ -1915,6 +1915,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 |---|---|---|
 | ARCH-001 | PARTIALLY COMPLETED | PostgreSQL migration/runtime parity was verified; SQLite verification is not applicable to the PostgreSQL-only control plane. |
 | CORE-004 | PARTIALLY COMPLETED | DNS /health and /ready integration test passes. Compose and newly rendered Helm DNS probes target `/health` and `/ready`; cluster-level probe transition and key/catalog/freshness failure checks remain unverified. |
+| XFR-02 | IMPLEMENTED_BUT_INCOMPLETE | Current serial returns one SOA and stale serial returns NOTIMP; full IXFR deltas remain disabled because the durable update journal does not encode the required old/new SOA boundaries. |
 | CORE-006 | COMPLETED | Query logging now supports off/info/debug and `DNS_QUERY_LOG_SAMPLE_EVERY`; request, response, refused and parse-error paths redact addresses, and DEBUG query names are redacted. `cargo test -p hickory-server --lib query_log_tests` passes 2/2. |
 | BAK-005 | PARTIALLY COMPLETED | ADR-0003 documents RPO/RTO targets; per-component DR exercise, owner assignment and drill evidence are missing. |
 | SEC-003 | PARTIALLY COMPLETED | Rotation tool exists; JWT key IDs/rotation and separate agent signing keys are not implemented. |
@@ -1958,7 +1959,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `5b85126d5`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, and `5b85126d5` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
+Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `ff25bcc1d`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, and `ff25bcc1d` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
