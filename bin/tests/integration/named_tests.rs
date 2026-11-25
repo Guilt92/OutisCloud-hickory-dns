@@ -261,6 +261,39 @@ journal_path = "example.test.jrnl"
 
 #[tokio::test]
 #[cfg(feature = "sqlite")]
+async fn file_store_axfr_peer_acl_refuses_unlisted_client() {
+    let zone = "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 2026112501 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+
+[zones.stores]
+type = "file"
+zone_path = "example.test.zone"
+allowed_transfer_peers = ["192.0.2.44"]
+"#;
+    let server = TestServer::start_temporary(config, &[("example.test.zone", zone)]);
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let (connect, sender) = TcpClientStream::new(address, None, None, TokioRuntimeProvider::new());
+    let stream = connect.await.expect("connect AXFR client");
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let mut transfer = client.zone_transfer(Name::from_str("example.test.").unwrap(), None);
+    let refused = transfer
+        .next()
+        .await
+        .expect("peer ACL refusal response")
+        .expect("peer ACL returns a valid DNS response");
+    assert_eq!(refused.response_code(), ResponseCode::Refused);
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
 #[ignore = "requires an isolated BIND server at HICKORY_AXFR_INTEROP_ADDR"]
 async fn hickory_axfr_client_interoperates_with_independent_bind() {
     let address = std::env::var("HICKORY_AXFR_INTEROP_ADDR")

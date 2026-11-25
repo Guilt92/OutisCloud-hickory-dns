@@ -49,6 +49,7 @@ use tracing::warn;
 pub struct FileZoneHandler {
     in_memory: InMemoryZoneHandler,
     axfr_policy: AxfrPolicy,
+    allowed_transfer_peers: Vec<std::net::IpAddr>,
     #[cfg(feature = "__dnssec")]
     tsig_signers: Vec<TSigner>,
     #[cfg(feature = "metrics")]
@@ -75,6 +76,7 @@ impl FileZoneHandler {
         let axfr_policy = in_memory.axfr_policy();
         Self {
             axfr_policy,
+            allowed_transfer_peers: Vec::new(),
             #[cfg(feature = "__dnssec")]
             tsig_signers: Vec::new(),
             #[cfg(feature = "metrics")]
@@ -110,6 +112,7 @@ impl FileZoneHandler {
         // Don't call `new()`, since it needs to be async to get the number of records to initialize metrics
         Ok(Self {
             axfr_policy,
+            allowed_transfer_peers: config.allowed_transfer_peers.clone(),
             #[cfg(feature = "__dnssec")]
             tsig_signers,
             #[cfg(feature = "metrics")]
@@ -350,6 +353,12 @@ impl ZoneHandler for FileZoneHandler {
         Result<ZoneTransfer, LookupError>,
         Option<TSigResponseContext>,
     )> {
+        if !self.allowed_transfer_peers.is_empty()
+            && !self.allowed_transfer_peers.contains(&request.src().ip())
+        {
+            tracing::warn!(client = %request.src(), "AXFR request rejected by peer ACL");
+            return Some((Err(LookupError::ResponseCode(ResponseCode::Refused)), None));
+        }
         #[cfg(feature = "__dnssec")]
         let signer = match self.authorize_axfr(request, now).await {
             (Ok(()), signer) => signer,
@@ -426,6 +435,10 @@ impl DnssecZoneHandler for FileZoneHandler {
 pub struct FileConfig {
     /// path to the zone file
     pub zone_path: PathBuf,
+    /// Optional IP allowlist for AXFR. An empty list leaves authorization to
+    /// `axfr_policy`; a non-empty list is checked before TSIG authorization.
+    #[serde(default)]
+    pub allowed_transfer_peers: Vec<std::net::IpAddr>,
     /// TSIG keys allowed to authenticate signed AXFR requests.
     #[cfg(feature = "__dnssec")]
     #[serde(default)]
@@ -491,12 +504,14 @@ mod tests {
         #[cfg(feature = "__dnssec")]
         let config = FileConfig {
             zone_path: PathBuf::from("../../tests/test-data/test_configs/dnssec/example.com.zone"),
+            allowed_transfer_peers: Vec::new(),
             #[cfg(feature = "__dnssec")]
             tsig_keys: Vec::new(),
         };
         #[cfg(not(feature = "__dnssec"))]
         let config = FileConfig {
             zone_path: PathBuf::from("../../tests/test-data/test_configs/example.com.zone"),
+            allowed_transfer_peers: Vec::new(),
         };
         let handler = FileZoneHandler::try_from_config(
             Name::from_str("example.com.").unwrap(),

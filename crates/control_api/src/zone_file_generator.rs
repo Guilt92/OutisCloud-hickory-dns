@@ -443,6 +443,7 @@ pub fn generate_full(
         ecs_zones,
         dnssec_keys,
         &HashMap::new(),
+        &HashMap::new(),
         records_map,
         geo_rules_map,
         nameservers,
@@ -457,6 +458,7 @@ pub fn generate_full_with_transfer_policies(
     ecs_zones: &HashSet<String>,
     dnssec_keys: &HashMap<String, Vec<(String, String)>>,
     transfer_policies: &HashMap<String, String>,
+    transfer_peers: &HashMap<String, Vec<String>>,
     records_map: HashMap<String, Vec<RecordRow>>,
     geo_rules_map: HashMap<String, Vec<GeoRuleRow>>,
     nameservers: Vec<NameserverRow>,
@@ -599,6 +601,8 @@ pub fn generate_full_with_transfer_policies(
                 .map(String::as_str)
                 .unwrap_or("Deny"),
         );
+        toml_builder
+            .set_last_zone_transfer_peers(transfer_peers.get(zone_id).cloned().unwrap_or_default());
     }
 
     // Build and write TOML configuration (only if it changed, so an
@@ -717,7 +721,7 @@ pub async fn generate_all(
     let base = base_dir.to_string();
 
     let zones_rows = db
-        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed, COALESCE(axfr_policy, 'Deny') AS axfr_policy FROM zones WHERE COALESCE(status, 'active') IN ('active', 'held') ORDER BY domain", &[])
+        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed, COALESCE(axfr_policy, 'Deny') AS axfr_policy, COALESCE(axfr_allowed_peers, '{}'::text[]) AS axfr_allowed_peers FROM zones WHERE COALESCE(status, 'active') IN ('active', 'held') ORDER BY domain", &[])
         .await
         .context("failed to read zones")?;
 
@@ -725,6 +729,7 @@ pub async fn generate_all(
     let mut ecs_zones: HashSet<String> = HashSet::new();
     let mut signed_zones: HashSet<String> = HashSet::new();
     let mut transfer_policies: HashMap<String, String> = HashMap::new();
+    let mut transfer_peers: HashMap<String, Vec<String>> = HashMap::new();
     let mut records_map: HashMap<String, Vec<RecordRow>> = HashMap::new();
     let mut geo_rules_map: HashMap<String, Vec<GeoRuleRow>> = HashMap::new();
 
@@ -746,6 +751,7 @@ pub async fn generate_all(
             ecs_zones.insert(zone_id.clone());
         }
         transfer_policies.insert(zone_id.clone(), z.get("axfr_policy"));
+        transfer_peers.insert(zone_id.clone(), z.get("axfr_allowed_peers"));
         zones_vec.push((zone_id.clone(), domain, enabled));
         records_map.insert(zone_id, Vec::new());
     }
@@ -825,6 +831,7 @@ pub async fn generate_all(
             &ecs_zones,
             &dnssec_keys,
             &transfer_policies,
+            &transfer_peers,
             records_map,
             geo_rules_map,
             nameservers,

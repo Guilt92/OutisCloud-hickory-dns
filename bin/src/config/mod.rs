@@ -246,6 +246,7 @@ where
                     } else {
                         let store = ServerStoreConfig::File(FileConfig {
                             zone_path: file,
+                            allowed_transfer_peers: Vec::new(),
                             #[cfg(feature = "__dnssec")]
                             tsig_keys: Vec::new(),
                         });

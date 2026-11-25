@@ -428,6 +428,7 @@ struct TomlZone {
     zone_type: String,
     zone_path: String,
     axfr_policy: String,
+    axfr_allowed_peers: Vec<String>,
     geodns_enabled: bool,
     ecs: bool,
     geo_rules: Vec<TomlGeoRule>,
@@ -543,6 +544,7 @@ impl TomlConfigBuilder {
             zone_type: "Primary".to_string(),
             zone_path,
             axfr_policy: "Deny".to_string(),
+            axfr_allowed_peers: Vec::new(),
             geodns_enabled,
             ecs: false,
             geo_rules: rules,
@@ -575,6 +577,21 @@ impl TomlConfigBuilder {
                 "allowsigned" | "allow_signed" | "allow-signed" => "AllowSigned".to_string(),
                 _ => "Deny".to_string(),
             };
+        }
+    }
+
+    /// Set exact source addresses allowed to request AXFR for the last zone.
+    /// Invalid values are discarded so malformed persisted state never opens
+    /// an unintended peer range.
+    pub fn set_last_zone_transfer_peers(&mut self, peers: Vec<String>) {
+        if let Some(zone) = self.zones.last_mut() {
+            zone.axfr_allowed_peers = peers
+                .into_iter()
+                .filter_map(|peer| peer.parse::<std::net::IpAddr>().ok())
+                .map(|peer| peer.to_string())
+                .collect();
+            zone.axfr_allowed_peers.sort();
+            zone.axfr_allowed_peers.dedup();
         }
     }
 
@@ -668,9 +685,20 @@ impl TomlConfigBuilder {
             result.push_str("[[zones.stores]]\n");
             result.push_str("type = \"file\"\n");
             result.push_str(&format!(
-                "zone_path = \"{}\"\n\n",
+                "zone_path = \"{}\"\n",
                 toml_escape(&zone.zone_path)
             ));
+            if !zone.axfr_allowed_peers.is_empty() {
+                result.push_str("allowed_transfer_peers = [");
+                for (index, peer) in zone.axfr_allowed_peers.iter().enumerate() {
+                    if index > 0 {
+                        result.push_str(", ");
+                    }
+                    result.push_str(&format!("\"{}\"", toml_escape(peer)));
+                }
+                result.push_str("]\n");
+            }
+            result.push('\n');
         }
 
         Ok(result)
@@ -868,6 +896,11 @@ mod tests {
             .add_zone("one.example".into(), "/z/one".into(), false, vec![])
             .unwrap();
         builder.set_last_zone_axfr_policy("AllowAll");
+        builder.set_last_zone_transfer_peers(vec![
+            "192.0.2.7".into(),
+            "2001:db8::7".into(),
+            "not-an-ip".into(),
+        ]);
         builder
             .add_zone("two.example".into(), "/z/two".into(), false, vec![])
             .unwrap();
@@ -875,6 +908,9 @@ mod tests {
         let output = builder.build().unwrap();
         assert!(output.contains(
             "zone = \"one.example\"\nzone_type = \"Primary\"\naxfr_policy = \"AllowAll\""
+        ));
+        assert!(output.contains(
+            "zone_path = \"/z/one\"\nallowed_transfer_peers = [\"192.0.2.7\", \"2001:db8::7\"]"
         ));
         assert!(
             output.contains(

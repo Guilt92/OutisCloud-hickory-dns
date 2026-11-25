@@ -8053,12 +8053,17 @@ async fn zone_transfer_policy_endpoint_and_validation() {
         put,
         &format!("/api/v1/zones/{zid}/transfer-policy"),
         Some(&t),
-        j(serde_json::json!({"policy":"AllowAll"}))
+        j(serde_json::json!({"policy":"AllowAll", "allowed_peers":["127.0.0.1"]}))
     );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["policy"], "AllowAll");
     let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
     assert!(named.contains("zone = \"transfer-policy.example\"\nzone_type = \"Primary\"\naxfr_policy = \"AllowAll\""), "policy must reach the running-server config: {named}");
+    assert!(
+        named.contains("allowed_transfer_peers = [\"127.0.0.1\"]"),
+        "peer ACL must reach the file-store config: {named}"
+    );
+    assert_eq!(body["allowed_peers"][0], "127.0.0.1");
     let stored: String = env
         .state
         .db
@@ -8076,7 +8081,7 @@ async fn zone_transfer_policy_endpoint_and_validation() {
         put,
         &format!("/api/v1/zones/{zid}/transfer-policy"),
         Some(&t),
-        j(serde_json::json!({"policy":"Deny"}))
+        j(serde_json::json!({"policy":"Deny", "allowed_peers":[]}))
     );
     assert_eq!(st, 200, "{raw}");
     assert_eq!(body["policy"], "Deny");
@@ -8087,6 +8092,15 @@ async fn zone_transfer_policy_endpoint_and_validation() {
         ),
         "deny policy must be republished: {named}"
     );
+
+    let (st, _, _) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zid}/transfer-policy"),
+        Some(&t),
+        j(serde_json::json!({"policy":"Deny", "allowed_peers":["not-an-ip"]}))
+    );
+    assert_eq!(st, 400);
 
     // A publication read failure must restore the persisted policy and leave
     // the already published Deny configuration untouched.
@@ -8114,6 +8128,17 @@ async fn zone_transfer_policy_endpoint_and_validation() {
         .unwrap()
         .get(0);
     assert_eq!(restored, "Deny");
+    let restored_peers: Vec<String> = env
+        .state
+        .db
+        .query_one(
+            "SELECT axfr_allowed_peers FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(restored_peers.is_empty());
     let preserved = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
     assert!(
         preserved.contains("axfr_policy = \"Deny\""),

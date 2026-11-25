@@ -13,6 +13,7 @@ use test_support::subscribe;
 fn file(zone_path: &Path, _module: &str, _test_name: &str) -> FileZoneHandler {
     let config = FileConfig {
         zone_path: zone_path.to_owned(),
+        allowed_transfer_peers: Vec::new(),
         #[cfg(feature = "__dnssec")]
         tsig_keys: Vec::new(),
     };
@@ -38,6 +39,7 @@ fn test_all_lines_are_loaded() {
     subscribe();
     let config = FileConfig {
         zone_path: PathBuf::from("../tests/test-data/test_configs/default/nonewline.zone"),
+        allowed_transfer_peers: Vec::new(),
         #[cfg(feature = "__dnssec")]
         tsig_keys: Vec::new(),
     };
@@ -64,6 +66,7 @@ fn test_implicit_in_class() {
     subscribe();
     let config = FileConfig {
         zone_path: PathBuf::from("../tests/test-data/test_configs/default/implicitclass.zone"),
+        allowed_transfer_peers: Vec::new(),
         #[cfg(feature = "__dnssec")]
         tsig_keys: Vec::new(),
     };
@@ -85,6 +88,7 @@ async fn test_ttl_wildcard() {
     subscribe();
     let config = FileConfig {
         zone_path: PathBuf::from("../tests/test-data/test_configs/default/test.local.zone"),
+        allowed_transfer_peers: Vec::new(),
         #[cfg(feature = "__dnssec")]
         tsig_keys: Vec::new(),
     };

@@ -1041,6 +1041,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
             description TEXT NOT NULL DEFAULT '',
             tags JSONB NOT NULL DEFAULT '[]'::jsonb,
             axfr_policy TEXT NOT NULL DEFAULT 'Deny',
+            axfr_allowed_peers TEXT[] NOT NULL DEFAULT '{}',
             geodns_enabled BOOLEAN DEFAULT true,
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now(),
@@ -1332,6 +1333,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS axfr_policy TEXT NOT NULL DEFAULT 'Deny';
+         ALTER TABLE zones ADD COLUMN IF NOT EXISTS axfr_allowed_peers TEXT[] NOT NULL DEFAULT '{}';
          ALTER TABLE records ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT '';
          ALTER TABLE records ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
          ALTER TABLE zones ADD COLUMN IF NOT EXISTS verify_token TEXT;
@@ -7289,6 +7291,8 @@ async fn set_zone_lifecycle(
 #[derive(Deserialize)]
 struct TransferPolicyReq {
     policy: String,
+    #[serde(default)]
+    allowed_peers: Option<Vec<String>>,
 }
 
 async fn set_zone_transfer_policy(
@@ -7314,15 +7318,42 @@ async fn set_zone_transfer_policy(
             "error": "policy must be Deny or AllowAll; signed transfers require TSIG key custody"
         })),
     };
+    let allowed_peers = match body.allowed_peers.as_ref() {
+        None => None,
+        Some(peers) if peers.len() <= 64 => {
+            let mut normalized = Vec::with_capacity(peers.len());
+            for peer in peers {
+                match peer.trim().parse::<std::net::IpAddr>() {
+                    Ok(address) => normalized.push(address.to_string()),
+                    Err(_) => {
+                        return HttpResponse::BadRequest().json(serde_json::json!({
+                            "error": format!("invalid transfer peer IP address: {}", peer)
+                        }));
+                    }
+                }
+            }
+            normalized.sort();
+            normalized.dedup();
+            Some(normalized)
+        }
+        Some(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "at most 64 transfer peer IP addresses may be configured"
+            }));
+        }
+    };
     let previous = match data
         .db
         .query_opt(
-            "SELECT COALESCE(axfr_policy, 'Deny') FROM zones WHERE CAST(id AS varchar) = $1",
+            "SELECT COALESCE(axfr_policy, 'Deny'), COALESCE(axfr_allowed_peers, '{}'::text[]) FROM zones WHERE CAST(id AS varchar) = $1",
             &[&zone_id],
         )
         .await
     {
-        Ok(Some(row)) => row.get::<_, String>(0),
+        Ok(Some(row)) => (
+            row.get::<_, String>(0),
+            row.get::<_, Vec<String>>(1),
+        ),
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({"error":"zone not found"}));
         }
@@ -7335,8 +7366,8 @@ async fn set_zone_transfer_policy(
     if let Err(e) = data
         .db
         .execute(
-            "UPDATE zones SET axfr_policy = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
-            &[&canonical, &zone_id],
+            "UPDATE zones SET axfr_policy = $1, axfr_allowed_peers = COALESCE($2, axfr_allowed_peers), updated_at = now() WHERE CAST(id AS varchar) = $3",
+            &[&canonical, &allowed_peers, &zone_id],
         )
         .await
     {
@@ -7346,8 +7377,8 @@ async fn set_zone_transfer_policy(
     }
     if let Err(e) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await {
         let rollback = data.db.execute(
-            "UPDATE zones SET axfr_policy = $1, updated_at = now() WHERE CAST(id AS varchar) = $2",
-            &[&previous, &zone_id],
+            "UPDATE zones SET axfr_policy = $1, axfr_allowed_peers = $2, updated_at = now() WHERE CAST(id AS varchar) = $3",
+            &[&previous.0, &previous.1, &zone_id],
         ).await;
         if let Err(rollback_error) = rollback {
             log::error!(
@@ -7368,10 +7399,10 @@ async fn set_zone_transfer_policy(
         "zone",
         Some(zone_id.clone()),
         &req,
-        serde_json::json!({"zone": access.domain, "policy": canonical}),
+        serde_json::json!({"zone": access.domain, "policy": canonical, "allowed_peers": allowed_peers.as_ref().unwrap_or(&previous.1)}),
     )
     .await;
-    HttpResponse::Ok().json(serde_json::json!({"policy": canonical}))
+    HttpResponse::Ok().json(serde_json::json!({"policy": canonical, "allowed_peers": allowed_peers.unwrap_or(previous.1)}))
 }
 
 #[derive(OpenApi)]

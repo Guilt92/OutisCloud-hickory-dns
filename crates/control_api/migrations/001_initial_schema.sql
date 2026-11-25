@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS zones (
     description TEXT NOT NULL DEFAULT '',
     tags JSONB NOT NULL DEFAULT '[]'::jsonb,
     axfr_policy TEXT NOT NULL DEFAULT 'Deny',
+    axfr_allowed_peers TEXT[] NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE(domain)
