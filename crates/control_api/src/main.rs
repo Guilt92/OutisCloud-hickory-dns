@@ -330,6 +330,8 @@ async fn audit(
 /// Result of an access check on a zone.
 struct ZoneAccess {
     domain: String,
+    /// Tenant that owns the zone; used for fair transaction admission.
+    tenant_id: Option<String>,
     /// "admin", "owner", "editor" or "viewer"
     role: String,
     /// Lifecycle state from `zones.status` ("active", "held", "suspended", ...).
@@ -365,7 +367,7 @@ async fn zone_access_at(
             "SELECT z.domain, COALESCE(CAST(z.owner AS varchar), ''), \
                     (SELECT m.role FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2), \
                     (SELECT tm.role FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $2), \
-                    COALESCE(z.status, 'active') \
+                    COALESCE(z.status, 'active'), CAST(z.tenant_id AS varchar) \
              FROM zones z WHERE CAST(z.id AS varchar) = $1",
             &[&zone_id, &tok.claims.sub],
         )
@@ -377,6 +379,7 @@ async fn zone_access_at(
             let member: Option<String> = r.try_get(2).unwrap_or(None);
             let tenant_member: Option<String> = r.try_get(3).unwrap_or(None);
             let status: String = r.try_get(4).unwrap_or_else(|_| "active".to_string());
+            let tenant_id: Option<String> = r.try_get(5).unwrap_or(None);
             let rank = |x: &str| match x {
                 "owner" => 3,
                 "editor" => 2,
@@ -417,6 +420,7 @@ async fn zone_access_at(
                 }
                 Ok(ZoneAccess {
                     domain,
+                    tenant_id,
                     role: role.to_string(),
                     status,
                 })
@@ -432,6 +436,17 @@ async fn zone_access_at(
             Err(HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "database error"})))
         }
+    }
+}
+
+async fn begin_zone_transaction(
+    db: &Pool,
+    access: &ZoneAccess,
+) -> Result<db_pool::TxConn, tokio_postgres::Error> {
+    if let Some(tenant_id) = access.tenant_id.as_deref() {
+        db.begin_for(tenant_id).await
+    } else {
+        db.begin().await
     }
 }
 
@@ -5314,7 +5329,7 @@ async fn create_record(
     // Reserve quota and insert in one transaction: concurrent writers for the
     // same tenant serialise on the tenant row instead of both passing the
     // pre-insert count.
-    let tx = match db.begin().await {
+    let tx = match begin_zone_transaction(db, &access).await {
         Ok(t) => t,
         Err(e) => {
             warn!("create_record transaction: {}", full_error_string(&e));
@@ -5946,7 +5961,7 @@ async fn update_zone(
     // kept so a failed publication can restore the exact last-known-good state
     // instead of leaving the database and the served files out of sync.
     let zone_type = body.zone_type.as_ref().map(|z| z.to_ascii_lowercase());
-    let tx = match db.begin().await {
+    let tx = match begin_zone_transaction(db, &access).await {
         Ok(t) => t,
         Err(e) => {
             warn!("update_zone transaction: {}", full_error_string(&e));
@@ -6031,7 +6046,7 @@ async fn update_zone(
         // Compensate: put the previous row values and SOA names back, then
         // republish them. Only report a clean failure when that swap succeeded.
         let mut restored = false;
-        match db.begin().await {
+        match begin_zone_transaction(db, &access).await {
             Ok(rtx) => {
                 let rc = rtx.client();
                 let mut ok = rc.batch_execute("BEGIN").await.is_ok();
@@ -6303,7 +6318,7 @@ async fn import_zone(
     let prios: Vec<i32> = fresh.iter().map(|r| r.priority).collect();
     // Reserve quota and insert all rows in one transaction so concurrent
     // imports/record writes cannot overshoot the tenant limit.
-    let tx = match db.begin().await {
+    let tx = match begin_zone_transaction(db, &access).await {
         Ok(t) => t,
         Err(e) => {
             warn!("import_zone transaction: {}", full_error_string(&e));
@@ -6411,7 +6426,7 @@ async fn delete_zone(
     // Two-phase delete: hide the zone from publication first, publish the
     // replacement configuration, and only then remove its rows. If publication
     // fails the zone is restored to exactly the state it had before.
-    let tx = match data.db.begin().await {
+    let tx = match begin_zone_transaction(&data.db, &access).await {
         Ok(t) => t,
         Err(e) => {
             warn!("delete_zone transaction: {}", full_error_string(&e));
@@ -6883,7 +6898,7 @@ async fn clone_zone(
     } else {
         None
     };
-    let tx = match data.db.begin().await {
+    let tx = match begin_zone_transaction(&data.db, &access).await {
         Ok(t) => t,
         Err(e) => {
             warn!("clone transaction: {}", full_error_string(&e));
