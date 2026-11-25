@@ -14,3 +14,7 @@ tempfile = "3"
 [[bin]]
 name = "migrate-dnssec-keys"
 path = "src/bin/migrate.rs"
+
+[[bin]]
+name = "dnssec-key-backup"
+path = "src/bin/dnssec-key-backup.rs"
