@@ -56,12 +56,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install independent DNS client
+        run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: DNS binary tests
         run: cargo test -p hickory-dns --lib
       - name: Health/readiness integration
         run: cargo test -p hickory-dns --test integration test_health_and_ready_endpoints
+      - name: Signed AXFR interoperability
+        run: cargo test -p hickory-dns --test integration signed_axfr_stream_verifies_with_independent_dig_client
       - name: Server tests
         run: cargo test -p hickory-server --features sqlite --lib
       - name: GeoDNS tests

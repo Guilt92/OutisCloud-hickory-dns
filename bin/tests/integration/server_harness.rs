@@ -2,9 +2,10 @@
 
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     io::{BufRead, BufReader},
     net::SocketAddr,
+    path::PathBuf,
     process::{Child, ChildStdout, Command, Stdio},
     str::FromStr,
     time::*,
@@ -93,6 +94,7 @@ pub struct TestServer {
     pub ports: SocketPorts,
     child: Child,
     stdout: BufReader<ChildStdout>,
+    _temp_dir: Option<tempfile::TempDir>,
 }
 
 impl TestServer {
@@ -102,6 +104,34 @@ impl TestServer {
         let server_path = env::var("TDNS_WORKSPACE_ROOT").unwrap_or_else(|_| "..".to_owned());
         println!("using server src path: {server_path}");
 
+        Self::start_from_paths(
+            PathBuf::from(format!("{server_path}/tests/test-data/test_configs/{toml}")),
+            PathBuf::from(format!("{server_path}/tests/test-data/test_configs")),
+            None,
+        )
+    }
+
+    /// Start an isolated server with fixtures written to a temporary directory.
+    /// The directory remains alive until the child server is dropped.
+    pub fn start_temporary(config: &str, files: &[(&str, &str)]) -> Self {
+        let temp_dir = tempfile::tempdir().expect("create temporary DNS config directory");
+        for (name, contents) in files {
+            let path = temp_dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create temporary fixture parent");
+            }
+            fs::write(path, contents).expect("write temporary DNS fixture");
+        }
+        let config_path = temp_dir.path().join("named.toml");
+        fs::write(&config_path, config).expect("write temporary named config");
+        Self::start_from_paths(config_path, temp_dir.path().to_path_buf(), Some(temp_dir))
+    }
+
+    fn start_from_paths(
+        config_path: PathBuf,
+        zone_dir: PathBuf,
+        temp_dir: Option<tempfile::TempDir>,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_hickory-dns"));
         command
         .stdout(Stdio::piped())
@@ -110,12 +140,8 @@ impl TestServer {
             "hickory_dns=debug,hickory_client=debug,hickory_proto=debug,hickory_resolver=debug,hickory_server=debug",
         )
         .arg("-d")
-        .arg(format!(
-            "--config={server_path}/tests/test-data/test_configs/{toml}"
-        ))
-        .arg(format!(
-            "--zonedir={server_path}/tests/test-data/test_configs"
-        ))
+        .arg(format!("--config={}", config_path.display()))
+        .arg(format!("--zonedir={}", zone_dir.display()))
         .arg(format!("--port={}", 0));
         #[cfg(feature = "__tls")]
         command.arg(format!("--tls-port={}", 0));
@@ -189,6 +215,7 @@ impl TestServer {
             ports,
             child: named,
             stdout,
+            _temp_dir: temp_dir,
         }
     }
 }

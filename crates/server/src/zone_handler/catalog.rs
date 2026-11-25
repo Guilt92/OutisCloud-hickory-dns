@@ -955,7 +955,14 @@ async fn zone_transfer(
         let mut previous_mac: Option<Vec<u8>> = None;
 
         let mut last_info = None;
-        for (index, chunk) in records.chunks(AXFR_CHUNK_RECORDS).enumerate() {
+        // Even an empty transfer response (for example REFUSED for an
+        // unauthenticated AXFR) must send one DNS message. Iterating the empty
+        // `chunks()` result used to leave the TCP client waiting until timeout.
+        let chunk_count = ((records.len() + AXFR_CHUNK_RECORDS - 1) / AXFR_CHUNK_RECORDS).max(1);
+        for index in 0..chunk_count {
+            let start = index * AXFR_CHUNK_RECORDS;
+            let end = (start + AXFR_CHUNK_RECORDS).min(records.len());
+            let chunk = &records[start..end];
             #[cfg_attr(not(feature = "__dnssec"), expect(unused_mut))]
             let mut message_response =
                 MessageResponseBuilder::new(request.raw_queries(), response_edns).build(

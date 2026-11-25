@@ -53,6 +53,8 @@ pub struct TSigResponseContext {
     time: u64,
     #[cfg(feature = "__dnssec")]
     kind: TsigResponseKind,
+    #[cfg(feature = "__dnssec")]
+    first_response: bool,
 }
 
 #[cfg(feature = "__dnssec")]
@@ -74,6 +76,7 @@ impl TSigResponseContext {
                 request_mac,
                 error,
             },
+            first_response: true,
         }
     }
 
@@ -83,6 +86,7 @@ impl TSigResponseContext {
             request_id,
             time,
             kind: TsigResponseKind::BadSignature { signer },
+            first_response: true,
         }
     }
 
@@ -92,6 +96,7 @@ impl TSigResponseContext {
             request_id,
             time,
             kind: TsigResponseKind::UnknownKey { key_name },
+            first_response: true,
         }
     }
 
@@ -100,6 +105,7 @@ impl TSigResponseContext {
     #[cfg(feature = "__dnssec")]
     pub fn with_previous_mac(&self, previous_mac: Vec<u8>) -> Self {
         let mut cloned = self.clone();
+        cloned.first_response = false;
         if let TsigResponseKind::Signed { request_mac, .. } = &mut cloned.kind {
             *request_mac = previous_mac;
         }
@@ -126,8 +132,12 @@ impl TSigResponseContext {
                     stub_tsig.set_error(err);
                 }
 
-                let tbs_tsig_encoded =
-                    signer.encode_response_tbs(&request_mac, response, &stub_tsig)?;
+                let tbs_tsig_encoded = signer.encode_response_tbs(
+                    &request_mac,
+                    response,
+                    &stub_tsig,
+                    self.first_response,
+                )?;
                 let resp_tsig = stub_tsig.set_mac(
                     signer
                         .sign(&tbs_tsig_encoded)
@@ -347,7 +357,8 @@ impl TSigner {
     /// The TSIG MAC of the query, the raw unsigned response bytes, and a stub TSIG
     /// record are combined to produce the overall to-be-signed response.
     ///
-    /// `previous_mac` contains the TSIG MAC of the query the reply is in response to.
+    /// `previous_mac` contains the TSIG MAC of the query for the first response,
+    /// or the preceding signed response for a chained transfer message.
     /// `encoded_response` is the to-be-signed bytes of the constructed response.
     /// `resp_id` is the ID of the response to use for the TSIG RR stub.
     /// `now` is the timestamp to use for the TSIG RR stub.
@@ -357,6 +368,7 @@ impl TSigner {
         previous_mac: &[u8],
         encoded_response: &[u8],
         stub_tsig: &TSIG,
+        first_response: bool,
     ) -> Result<Vec<u8>, ProtoError> {
         // the TBS buffer is sized based on the previous MAC, the overhead of its u16 len
         // prefix, the size of the encoded response, and a rough approximation of the
@@ -370,7 +382,16 @@ impl TSigner {
         encoder.emit_u16(previous_mac.len() as u16)?;
         encoder.emit_vec(previous_mac)?;
         encoder.emit_vec(encoded_response)?;
-        stub_tsig.emit_tsig_for_mac(&mut encoder, self.signer_name())?;
+        if first_response {
+            stub_tsig.emit_tsig_for_mac(&mut encoder, self.signer_name())?;
+        } else {
+            // RFC 8945 section 5.3.2 signs only the time signed and fudge
+            // fields on chained response messages. The full TSIG variables
+            // are included with the first response only.
+            encoder.emit_u16((stub_tsig.time() >> 32) as u16)?;
+            encoder.emit_u32(stub_tsig.time() as u32)?;
+            encoder.emit_u16(stub_tsig.fudge())?;
+        }
 
         Ok(tbs_buf)
     }

@@ -7,6 +7,7 @@
 
 use std::io::Write;
 use std::net::*;
+use std::process::Command;
 use std::str::FromStr;
 
 use crate::server_harness::{TestServer, query_a, query_a_refused};
@@ -20,6 +21,97 @@ use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::RData;
 use hickory_proto::rr::{DNSClass, Name, RecordType};
 use test_support::subscribe;
+
+#[tokio::test]
+#[cfg(all(feature = "__dnssec", feature = "sqlite"))]
+async fn signed_axfr_stream_verifies_with_independent_dig_client() {
+    let secret = "test_secret_key_for_metrics_tests";
+    let secret_b64 = "dGVzdF9zZWNyZXRfa2V5X2Zvcl9tZXRyaWNzX3Rlc3Rz";
+    let mut zone = String::from(
+        "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 2026112501 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n",
+    );
+    for i in 0..80 {
+        zone.push_str(&format!("host{i} 300 IN A 192.0.2.{}\n", i % 250 + 1));
+    }
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+axfr_policy = "AllowSigned"
+
+[zones.stores]
+type = "sqlite"
+zone_path = "example.test.zone"
+journal_path = "example.test.jrnl"
+allow_update = true
+
+[[zones.stores.tsig_keys]]
+name = "transfer.example.test."
+key_file = "transfer.key"
+algorithm = "hmac-sha256"
+"#;
+    let server = TestServer::start_temporary(
+        config,
+        &[("example.test.zone", &zone), ("transfer.key", secret)],
+    );
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+
+    let unsigned = Command::new("dig")
+        .args([
+            "+tcp",
+            "@127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "example.test",
+            "AXFR",
+            "+time=3",
+            "+tries=1",
+        ])
+        .output()
+        .expect("dig is required for independent AXFR interoperability testing");
+    let unsigned_output = String::from_utf8_lossy(&unsigned.stdout);
+    assert!(
+        unsigned_output.contains("Transfer failed"),
+        "{unsigned_output}"
+    );
+
+    let signed = Command::new("dig")
+        .args([
+            "+tcp",
+            "@127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "-y",
+            &format!("hmac-sha256:transfer.example.test.:{secret_b64}"),
+            "example.test",
+            "AXFR",
+            "+time=3",
+            "+tries=1",
+        ])
+        .output()
+        .expect("run signed AXFR with dig");
+    let signed_output = String::from_utf8_lossy(&signed.stdout);
+    assert!(
+        signed.status.success(),
+        "{}\n{}",
+        signed_output,
+        String::from_utf8_lossy(&signed.stderr)
+    );
+    assert!(
+        !signed_output.contains("Couldn't verify signature"),
+        "{signed_output}"
+    );
+    assert!(
+        signed_output.contains("host79.example.test."),
+        "{signed_output}"
+    );
+    assert!(
+        signed_output.contains("XFR size: 84 records"),
+        "{signed_output}"
+    );
+}
 
 #[tokio::test]
 async fn test_example_toml_startup() {
