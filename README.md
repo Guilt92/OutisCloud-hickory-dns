@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE-APACHE)
 
-> **Status:** This repository is an OutisCloud fork of Hickory DNS with a multi-tenant DNS control plane and React console. It is **not production-ready**. Current implementation evidence, roadmap status, and production-readiness gaps are in [`TASK_STATUS.md`](TASK_STATUS.md); the canonical roadmap is Appendix A of that file.
+> **Status:** This repository is an OutisCloud fork of Hickory DNS with a multi-tenant DNS control plane and React console. It is **not production-ready**. The single task and implementation ledger, including evidence and production-readiness gaps, is [`task.md`](task.md).
 
 ## Project layout
 
