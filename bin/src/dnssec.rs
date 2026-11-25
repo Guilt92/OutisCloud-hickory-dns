@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 
-use rustls_pki_types::PrivateKeyDer;
 use rustls_pki_types::pem::PemObject;
 use serde::Deserialize;
 use time::Duration;
@@ -138,8 +137,6 @@ pub fn key_from_file(path: &Path, algorithm: Algorithm) -> Result<Box<dyn Signin
 
     use tracing::info;
 
-    use hickory_proto::dnssec::crypto::signing_key_from_der;
-
     info!("reading key: {path:?}");
     let mut file =
         File::open(path).map_err(|e| format!("error opening private key file: {path:?}: {e}"))?;
@@ -148,10 +145,24 @@ pub fn key_from_file(path: &Path, algorithm: Algorithm) -> Result<Box<dyn Signin
     file.read_to_end(&mut buf)
         .map_err(|e| format!("could not read key from: {path:?}: {e}"))?;
 
-    let key = match trim_ascii_start(&buf).starts_with(b"-----BEGIN ") {
-        true => PrivateKeyDer::from_pem_slice(&buf)
+    let buf = hickory_key_store::decrypt_configured(&buf)
+        .map_err(|e| format!("could not decrypt DNSSEC key from {}: {e}", path.display()))?;
+
+    signing_key_from_bytes(&buf, algorithm, path)
+}
+
+fn signing_key_from_bytes(
+    buf: &[u8],
+    algorithm: Algorithm,
+    path: &Path,
+) -> Result<Box<dyn SigningKey>, String> {
+    use hickory_proto::dnssec::crypto::signing_key_from_der;
+    use rustls_pki_types::PrivateKeyDer;
+
+    let key = match trim_ascii_start(buf).starts_with(b"-----BEGIN ") {
+        true => PrivateKeyDer::from_pem_slice(buf)
             .map_err(|e| format!("could not read pem from {}: {e}", path.display()))?,
-        false => PrivateKeyDer::try_from(&*buf)
+        false => PrivateKeyDer::try_from(buf)
             .map_err(|e| format!("could not read der from {}: {e}", path.display()))?,
     };
 
@@ -196,5 +207,19 @@ mod tests {
             Algorithm::RSASHA256,
         )
         .expect("failed to read key");
+    }
+
+    #[test]
+    fn encrypted_key_envelope_loads_as_signing_key() {
+        let pem = std::fs::read("tests/test-data/rsa-2048-pkcs8.pem").unwrap();
+        let wrapping_key = [0x5au8; 32];
+        let envelope = hickory_key_store::encrypt_with_key(&pem, &wrapping_key).unwrap();
+        let decrypted = hickory_key_store::decrypt_with_key(&envelope, &wrapping_key).unwrap();
+        signing_key_from_bytes(
+            &decrypted,
+            Algorithm::RSASHA256,
+            Path::new("encrypted-test"),
+        )
+        .expect("decrypted envelope should contain a supported DNSSEC private key");
     }
 }

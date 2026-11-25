@@ -138,6 +138,23 @@ impl TestServer {
         files: &[(&str, &str)],
         child_env: &[(&str, &str)],
     ) -> Self {
+        Self::start_temporary_inner(config, files, child_env, false)
+    }
+
+    /// Starts a temporary server whose zone directory can be atomically
+    /// replaced by a dropped-privilege child process. Permissions are set
+    /// before startup so both the zone watcher and transfer writer can access
+    /// the fixture directory.
+    pub fn start_temporary_with_zone_writes(config: &str, files: &[(&str, &str)]) -> Self {
+        Self::start_temporary_inner(config, files, &[], true)
+    }
+
+    fn start_temporary_inner(
+        config: &str,
+        files: &[(&str, &str)],
+        child_env: &[(&str, &str)],
+        allow_zone_writes: bool,
+    ) -> Self {
         let temp_dir = tempfile::tempdir().expect("create temporary DNS config directory");
         for (name, contents) in files {
             let path = temp_dir.path().join(name);
@@ -148,6 +165,14 @@ impl TestServer {
         }
         let config_path = temp_dir.path().join("named.toml");
         fs::write(&config_path, config).expect("write temporary named config");
+        #[cfg(unix)]
+        if allow_zone_writes {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o777))
+                .expect("allow isolated child to update its test zone files before startup");
+        }
+        #[cfg(not(unix))]
+        let _ = allow_zone_writes;
         Self::start_from_paths(
             config_path,
             temp_dir.path().to_path_buf(),

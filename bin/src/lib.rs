@@ -42,7 +42,7 @@ use tokio::time::sleep;
     feature = "__h3"
 ))]
 use tracing::warn;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use futures_util::StreamExt;
 #[cfg(feature = "__dnssec")]
@@ -381,6 +381,7 @@ impl DnsServer {
         let exit_flag = SyncArc::new(AtomicBool::new(false));
 
         let (notify_refresh_tx, mut notify_refresh_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let mut catalog = Catalog::new();
         catalog.set_notify_refresh_tx(notify_refresh_tx);
         let mut zone_fingerprints = HashMap::new();
@@ -400,6 +401,71 @@ impl DnsServer {
             let zone_name = zone
                 .zone()
                 .map_err(|err| format!("failed to read zone name from {config_path:?}: {err}"))?;
+
+            // A secondary must never become authoritative with an empty or
+            // stale configured file when its primary can be reached. Fetch a
+            // complete, validated AXFR before loading the initial catalog.
+            if matches!(&zone.zone_type_config, ZoneTypeConfig::Secondary(_)) {
+                let has_valid_last_known_good = match &zone.zone_type_config {
+                    ZoneTypeConfig::Secondary(server_config) => server_config
+                        .stores
+                        .iter()
+                        .find_map(|store| match store {
+                            ServerStoreConfig::File(file) => Some(file.zone_path.clone()),
+                            _ => None,
+                        })
+                        .map(|file| zone_dir.join(file))
+                        .and_then(|path| fs::read_to_string(path).ok())
+                        .and_then(|contents| {
+                            ZoneParser::new(contents, None, Some(zone_name.clone()))
+                                .parse()
+                                .ok()
+                        })
+                        .is_some_and(|(_, records)| {
+                            records
+                                .iter()
+                                .any(|(_, rrset)| rrset.record_type() == RecordType::SOA)
+                        }),
+                    _ => false,
+                };
+                let masters = zone.masters().to_vec();
+                if masters.is_empty() {
+                    return Err(format!(
+                        "secondary zone {zone_name} has no configured primary"
+                    ));
+                }
+                let mut refreshed = false;
+                let mut errors = Vec::new();
+                for master in masters {
+                    match refresh_secondary_from_notify(
+                        zone_name.clone().into(),
+                        master.address,
+                        &config_path,
+                        &zone_dir,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            refreshed = true;
+                            break;
+                        }
+                        Err(error) => errors.push(error),
+                    }
+                }
+                if !refreshed && !has_valid_last_known_good {
+                    return Err(format!(
+                        "secondary zone {zone_name} has no initial transfer; {}",
+                        errors.join("; ")
+                    ));
+                }
+                if !refreshed {
+                    warn!(
+                        %zone_name,
+                        errors = %errors.join("; "),
+                        "secondary initial AXFR failed; serving validated last-known-good zone"
+                    );
+                }
+            }
 
             #[cfg(feature = "metrics")]
             config_metrics.increment_zone_metrics(&zone);
@@ -451,9 +517,10 @@ impl DnsServer {
         handler.set_zone_fingerprints(zone_fingerprints);
         let refresh_config_path = config_path.to_path_buf();
         let refresh_zone_dir = zone_dir.clone();
+        let reload_after_secondary_transfer = reload_tx.clone();
         tokio::spawn(async move {
             while let Some((zone, source)) = notify_refresh_rx.recv().await {
-                if let Err(error) = refresh_secondary_from_notify(
+                match refresh_secondary_from_notify(
                     zone,
                     source,
                     &refresh_config_path,
@@ -461,7 +528,14 @@ impl DnsServer {
                 )
                 .await
                 {
-                    error!(%error, "secondary zone refresh after NOTIFY failed");
+                    Ok(()) => {
+                        // File notifications are best-effort on some mounted
+                        // filesystems. Explicitly reload the catalog after an
+                        // installed transfer so serving state converges even
+                        // when the watcher misses an atomic rename.
+                        let _ = reload_after_secondary_transfer.send(());
+                    }
+                    Err(error) => error!(%error, "secondary zone refresh after NOTIFY failed"),
                 }
             }
         });
@@ -588,7 +662,6 @@ impl DnsServer {
 
         // Watch config / zone files / GeoIP database and hot-reload the zones
         // in place. A changed listener configuration still restarts the process.
-        let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         // DNSSEC signatures are produced when a zone is loaded and are valid for 52
         // weeks. Reloading every RESIGN_INTERVAL_HOURS (default 168 = weekly, 0 = off)
         // keeps the validity window sliding so a quiet zone never serves expired

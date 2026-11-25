@@ -750,10 +750,10 @@ file = "secondary.zone"
 address = "{master}"
 "#
     );
-    let secondary =
-        TestServer::start_temporary(&secondary_config, &[("secondary.zone", secondary_zone)]);
-    #[cfg(unix)]
-    secondary.allow_child_zone_file_replacement();
+    let secondary = TestServer::start_temporary_with_zone_writes(
+        &secondary_config,
+        &[("secondary.zone", secondary_zone)],
+    );
     let secondary_port = secondary
         .ports
         .get_v4(Protocol::Udp)
@@ -774,9 +774,52 @@ address = "{master}"
         .query(name.clone(), DNSClass::IN, RecordType::A)
         .await
         .unwrap();
-    assert!(before.answers().iter().any(|record| {
-        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 11))
-    }));
+    assert!(
+        before.answers().iter().any(|record| {
+            matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 22))
+        }),
+        "secondary must complete its first AXFR before serving queries"
+    );
+
+    let changed_primary = primary_zone
+        .replace(" 2 3600", " 3 3600")
+        .replace("192.0.2.22", "192.0.2.33");
+    primary.write_temporary_file("primary.zone", &changed_primary);
+    let primary_udp = primary
+        .ports
+        .get_v4(Protocol::Udp)
+        .expect("primary UDP listener");
+    let primary_stream = UdpClientStream::builder(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, primary_udp)),
+        TokioRuntimeProvider::new(),
+    )
+    .build();
+    let (mut primary_client, background) =
+        Client::<TokioRuntimeProvider>::from_sender(primary_stream);
+    tokio::spawn(background);
+    let primary_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = primary_client
+            .query(
+                Name::from_str("secondary.test.").unwrap(),
+                DNSClass::IN,
+                RecordType::SOA,
+            )
+            .await
+            .unwrap();
+        if response
+            .answers()
+            .iter()
+            .any(|record| matches!(record.data(), RData::SOA(soa) if soa.serial() == 3))
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < primary_deadline,
+            "primary did not reload serial 3"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     let (connect, sender) = TcpClientStream::new(
         SocketAddr::from((Ipv4Addr::LOCALHOST, secondary_tcp_port)),
@@ -805,7 +848,7 @@ address = "{master}"
             .await
             .unwrap();
         if response.answers().iter().any(|record| {
-        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 22))
+        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 33))
         }) {
             break;
         }
@@ -819,9 +862,12 @@ address = "{master}"
 
     // A failed transfer is retried, but a fresh secondary must continue
     // serving its last-known-good file throughout the failure.
+    let denied_zone = primary_zone
+        .replace(" 2 3600", " 4 3600")
+        .replace("192.0.2.22", "192.0.2.44");
     let denied_primary_config = primary_config.replace("AllowAll", "Deny");
     let denied_primary =
-        TestServer::start_temporary(&denied_primary_config, &[("primary.zone", primary_zone)]);
+        TestServer::start_temporary(&denied_primary_config, &[("primary.zone", &denied_zone)]);
     let denied_port = denied_primary
         .ports
         .get_v4(Protocol::Tcp)
@@ -837,7 +883,7 @@ file = "secondary.zone"
 address = "127.0.0.1:{denied_port}"
 "#
     );
-    let failed_secondary = TestServer::start_temporary(
+    let failed_secondary = TestServer::start_temporary_with_zone_writes(
         &failed_secondary_config,
         &[("secondary.zone", secondary_zone)],
     );

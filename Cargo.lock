@@ -653,6 +653,7 @@ dependencies = [
  "futures-util",
  "geodns",
  "governor",
+ "hickory-key-store",
  "hickory-proto",
  "hickory-resolver",
  "hickory-server",
@@ -1331,6 +1332,7 @@ dependencies = [
  "futures-util",
  "geodns",
  "hex",
+ "hickory-key-store",
  "hickory-net",
  "hickory-proto",
  "hickory-resolver",
@@ -1390,6 +1392,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webpki-roots",
+]
+
+[[package]]
+name = "hickory-key-store"
+version = "0.26.0-alpha.1"
+dependencies = [
+ "data-encoding",
+ "ring",
+ "tempfile",
 ]
 
 [[package]]

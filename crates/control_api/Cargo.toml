@@ -53,6 +53,7 @@ rustls-pki-types = "1"
 hickory-server = { version = "0.26.0-alpha.1", path = "../server", default-features = false }
 hickory-resolver = { version = "0.26.0-alpha.1", path = "../resolver", optional = true }
 geodns = { version = "0.1.0", path = "../geodns" }
+hickory-key-store = { path = "../key-store" }
 
 [dev-dependencies]
 actix-http = "3"

@@ -97,6 +97,7 @@ notify = "6"
 
 # GeoDNS support dependencies
 geodns = { version = "0.1.0", path = "../crates/geodns" }
+hickory-key-store = { path = "../crates/key-store" }
 uuid = { version = "1", features = ["v4"] }
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }

@@ -163,32 +163,39 @@ pub fn key_dir(zone_dir: &str) -> std::path::PathBuf {
     std::path::Path::new(zone_dir).join("dnssec-keys")
 }
 
-fn key_mode() -> u32 {
-    std::env::var("DNSSEC_KEY_MODE")
-        .ok()
-        .and_then(|m| u32::from_str_radix(m.trim_start_matches("0o"), 8).ok())
-        .unwrap_or(0o640)
-}
-
 /// Write the private key atomically with restrictive permissions.
 pub fn write_key_file(path: &std::path::Path, pem: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o750));
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let tmp = path.with_extension("pem.tmp");
-    let _ = std::fs::remove_file(&tmp);
+    let stored = hickory_key_store::encrypt_configured(pem.as_bytes())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let tmp = path.with_file_name(tmp_name);
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(key_mode())
+        .mode(0o600)
         .open(&tmp)?;
-    f.write_all(pem.as_bytes())?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(key_mode()))?;
+    if let Err(error) = f.write_all(&stored).and_then(|_| f.sync_all()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    drop(f);
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    if let Some(dir) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(dir) {
+            dir.sync_all()?;
+        }
+    }
     Ok(())
 }
 
