@@ -82,6 +82,8 @@ jobs:
         run: cargo test -p hickory-dns --test integration protocol_admission_fanout_keeps_service_available
       - name: DoH3 client and binary listener interoperability
         run: cargo test -p hickory-dns --test integration --features 'h3-ring https-ring' doh3_client_queries_local_authoritative_server
+      - name: TLS and HTTP/2 admission pressure
+        run: cargo test -p hickory-dns --test integration --features https-ring https_h2_fanout_is_bounded_and_service_recovers
       - name: Server tests
         run: cargo test -p hickory-server --features sqlite --lib
       - name: GeoDNS tests
