@@ -268,8 +268,8 @@ impl Catalog {
     /// * `request` - an update message
     /// * `response_edns` an optional `Edns` value for the response message
     /// * `response_handle` - sink for the response message to be sent
-    /// Incremental transfer: answer with the new SOA, journal deltas and the
-    /// closing SOA. Unsigned only; TSIG-signed IXFR is explicitly refused.
+    /// Handles IXFR only when the client's serial is current. Stale serials
+    /// return NOTIMP until the recovery journal stores RFC 1995 delta framing.
     pub async fn ixfr<R: ResponseHandler>(
         &self,
         request: &Request,

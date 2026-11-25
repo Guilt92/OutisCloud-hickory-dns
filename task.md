@@ -1959,7 +1959,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `91132b968`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, `1ea00762e`, and `91132b968` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
+Current branch is `main`; remote is `origin`; upstream `origin/main` is verified at `8c233e2ff`. Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, `1ea00762e`, `91132b968`, and `8c233e2ff` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
@@ -2020,3 +2020,7 @@ Files changed: `crates/server/src/zone_handler/catalog.rs`, `bin/tests/integrati
 ### CORE-003 NOTIFY receiver test update — 2026-11-25
 
 Added a wire-level test using Hickory's `ClientHandle::notify`: a configured local zone returns NOERROR and a name outside configured zones returns NOTAUTH. An initial assertion used `missing.example.test`, which correctly matched the parent zone; the fixture was corrected to `missing.other.test` and the test passes. Executed `cargo test -p hickory-dns --test integration notify_acknowledges_local_zone_and_rejects_unknown_zone -- --nocapture`: passed 1/1. CI runs the test. This does not claim peer delivery or secondary refresh; CORE-003 stays partial. Files: `bin/tests/integration/named_tests.rs`, `.github/workflows/ci.yml`, `task.md`.
+
+### Latest validation sweep — 2026-11-25
+
+Executed the four current DNS integration checks in one fail-fast shell chain: signed AXFR via `dig`, current/stale IXFR behavior via `dig` plus TSIG `nsupdate`, NOTIFY NOERROR/NOTAUTH behavior, and readiness loss/recovery on invalid/valid zone reload. All four tests passed (1/1 each). `cargo clippy -p control_api --all-targets` and `cargo clippy -p hickory-dns --test integration` both exited successfully; they report existing lint warnings across the workspace, and no warning was suppressed. `cargo fmt --all -- --check` and `git diff --check` pass. The germ DNS/HTTP containers were not replaced or modified during this sweep.
