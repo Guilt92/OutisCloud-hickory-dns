@@ -241,7 +241,18 @@ pub(crate) async fn snapshot_zone_with_retention(
     retention: i64,
 ) {
     let res = async {
-        let domain: String = db.query_one("SELECT domain FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id]).await?.get(0);
+        let zone = db.query_one(
+            "SELECT domain, zone_type, COALESCE(geodns_enabled, true), COALESCE(ecs_enabled, false), description, tags, axfr_policy \
+             FROM zones WHERE CAST(id AS varchar) = $1", &[&zone_id]).await?;
+        let domain: String = zone.get(0);
+        let settings = serde_json::json!({
+            "zone_type": zone.get::<_, String>(1),
+            "geodns_enabled": zone.get::<_, bool>(2),
+            "ecs_enabled": zone.get::<_, bool>(3),
+            "description": zone.get::<_, String>(4),
+            "tags": zone.get::<_, serde_json::Value>(5),
+            "axfr_policy": zone.get::<_, String>(6),
+        });
         let rows = db.query(
             "SELECT name, record_type, value, ttl, priority FROM records WHERE CAST(zone_id AS varchar) = $1 ORDER BY name, record_type, value",
             &[&zone_id]).await?;
@@ -251,12 +262,12 @@ pub(crate) async fn snapshot_zone_with_retention(
         })).collect();
         let json = serde_json::Value::Array(recs).to_string();
         let same = db.query_opt(
-            "SELECT 1 FROM (SELECT records::text AS r, domain FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 ORDER BY created_at DESC LIMIT 1) l \
-             WHERE l.r = ($2::text::jsonb)::text AND l.domain = $3", &[&zone_id, &json, &domain]).await?;
+            "SELECT 1 FROM (SELECT records::text AS r, domain, settings::text AS s FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 ORDER BY created_at DESC LIMIT 1) l \
+             WHERE l.r = ($2::text::jsonb)::text AND l.domain = $3 AND l.s = ($4::text::jsonb)::text", &[&zone_id, &json, &domain, &settings.to_string()]).await?;
         if same.is_none() {
             db.execute(
-                "INSERT INTO zone_revisions (id, zone_id, domain, records, reason, user_id) VALUES ($1::text::uuid, $2::text::uuid, $3, $4::text::jsonb, $5, $6::text::uuid)",
-                &[&Uuid::new_v4().to_string(), &zone_id, &domain, &json, &reason, &user]).await?;
+                "INSERT INTO zone_revisions (id, zone_id, domain, records, settings, reason, user_id) VALUES ($1::text::uuid, $2::text::uuid, $3, $4::text::jsonb, $5::text::jsonb, $6, $7::text::uuid)",
+                &[&Uuid::new_v4().to_string(), &zone_id, &domain, &json, &settings.to_string(), &reason, &user]).await?;
             db.execute(
                 "DELETE FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 AND id NOT IN \
                  (SELECT id FROM zone_revisions WHERE CAST(zone_id AS varchar) = $1 ORDER BY created_at DESC LIMIT $2)",
@@ -313,17 +324,30 @@ pub async fn diff_revision(
         return response;
     }
 
-    let stored = match data
+    let (stored, prior_settings) = match data
         .db
         .query_opt(
-            "SELECT records FROM zone_revisions \
+            "SELECT records, settings, domain FROM zone_revisions \
          WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2",
             &[&revision_id, &zone_id],
         )
         .await
     {
         Ok(Some(row)) => match row.get::<_, serde_json::Value>(0).as_array().cloned() {
-            Some(records) => records,
+            Some(records) => {
+                let mut settings = row.get::<_, serde_json::Value>(1);
+                let has_settings = settings
+                    .as_object()
+                    .is_some_and(|object| !object.is_empty());
+                if has_settings {
+                    if let Some(object) = settings.as_object_mut() {
+                        object.insert("domain".to_string(), row.get::<_, String>(2).into());
+                    }
+                    (records, Some(settings))
+                } else {
+                    (records, None)
+                }
+            }
             None => {
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({"error":"invalid revision"}));
@@ -368,6 +392,36 @@ pub async fn diff_revision(
             })
         })
         .collect();
+
+    let zone = match data.db.query_opt(
+        "SELECT domain, zone_type, COALESCE(geodns_enabled, true), COALESCE(ecs_enabled, false), description, tags, axfr_policy \
+         FROM zones WHERE CAST(id AS varchar) = $1",
+        &[&zone_id],
+    ).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error":"zone not found"})),
+        Err(e) => {
+            warn!("diff_revision zone settings: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"}));
+        }
+    };
+    let current_settings = serde_json::json!({
+        "domain": zone.get::<_, String>(0),
+        "zone_type": zone.get::<_, String>(1),
+        "geodns_enabled": zone.get::<_, bool>(2),
+        "ecs_enabled": zone.get::<_, bool>(3),
+        "description": zone.get::<_, String>(4),
+        "tags": zone.get::<_, serde_json::Value>(5),
+        "axfr_policy": zone.get::<_, String>(6),
+    });
+    let settings_changed = prior_settings
+        .filter(|prior| *prior != current_settings)
+        .map(|prior| {
+            serde_json::json!({
+                "from": prior,
+                "to": current_settings,
+            })
+        });
 
     let key = |r: &serde_json::Value| -> String {
         format!(
@@ -415,6 +469,7 @@ pub async fn diff_revision(
         "added": added,
         "removed": removed,
         "changed": changed,
+        "settings_changed": settings_changed,
     }))
 }
 
@@ -432,11 +487,12 @@ pub async fn restore_revision(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let row = match data.db.query_opt("SELECT records::text FROM zone_revisions WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2", &[&rev, &zone_id]).await {
+    let row = match data.db.query_opt("SELECT records::text, settings FROM zone_revisions WHERE CAST(id AS varchar) = $1 AND CAST(zone_id AS varchar) = $2", &[&rev, &zone_id]).await {
         Ok(Some(r)) => r, Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error": "revision not found"})),
         Err(e) => { warn!("restore: {}", full_error_string(&e)); return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"})) }
     };
     let text: String = row.get(0);
+    let settings: serde_json::Value = row.get(1);
     let recs: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap_or_default();
     let rows: Vec<RecordRow> = recs
         .iter()
@@ -514,6 +570,24 @@ pub async fn restore_revision(
                  SELECT u.id::uuid, $1::text::uuid, u.n, u.t, u.v, u.ttl, u.p \
                  FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int4[], $7::int4[]) AS u(id, n, t, v, ttl, p)",
                 &[&zone_id, &ids, &names, &types, &values, &ttls, &prios]).await.map_err(RestoreSwapError::Db)?;
+            // Revisions from before settings snapshots contain `{}` and retain
+            // the current configuration. New snapshots restore the publishable
+            // zone policy in the same transaction as the RRset replacement.
+            if settings.as_object().is_some_and(|s| !s.is_empty()) {
+                let zone_type = settings.get("zone_type").and_then(serde_json::Value::as_str);
+                let geodns = settings.get("geodns_enabled").and_then(serde_json::Value::as_bool);
+                let ecs = settings.get("ecs_enabled").and_then(serde_json::Value::as_bool);
+                let description = settings.get("description").and_then(serde_json::Value::as_str);
+                let tags = settings.get("tags").map(serde_json::Value::to_string);
+                let axfr_policy = settings.get("axfr_policy").and_then(serde_json::Value::as_str);
+                c.execute(
+                    "UPDATE zones SET zone_type = COALESCE($1, zone_type), geodns_enabled = COALESCE($2, geodns_enabled), \
+                     ecs_enabled = COALESCE($3, ecs_enabled), description = COALESCE($4, description), \
+                     tags = COALESCE($5::text::jsonb, tags), axfr_policy = COALESCE($6, axfr_policy), updated_at = now() \
+                     WHERE CAST(id AS varchar) = $7",
+                    &[&zone_type, &geodns, &ecs, &description, &tags, &axfr_policy, &zone_id],
+                ).await.map_err(RestoreSwapError::Db)?;
+            }
             c.batch_execute("COMMIT").await.map_err(RestoreSwapError::Db)?;
             Ok(())
         }.await;

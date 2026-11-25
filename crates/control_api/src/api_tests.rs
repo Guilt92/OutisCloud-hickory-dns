@@ -7367,6 +7367,73 @@ async fn revision_retention_prunes_old_snapshots() {
 }
 
 #[actix_web::test]
+async fn revision_restore_restores_zone_publication_settings() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let token = env.token(&env.admin, "admin");
+    let zone_id = make_zone(&env, &app, &token, "settings-history.example").await;
+    let (_, revisions, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zone_id}/revisions"),
+        Some(&token),
+        None
+    );
+    assert!(!revisions.as_array().unwrap().is_empty(), "{raw}");
+    let original = revisions[0]["id"].as_str().unwrap().to_owned();
+
+    let (status, _, raw) = call!(
+        app,
+        put,
+        &format!("/api/v1/zones/{zone_id}"),
+        Some(&token),
+        j(serde_json::json!({
+            "ecs_enabled": true,
+            "geodns_enabled": false,
+            "zone_type": "primary"
+        }))
+    );
+    assert_eq!(status, 200, "{raw}");
+    let (status, diff, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/zones/{zone_id}/revisions/{original}/diff"),
+        Some(&token),
+        None
+    );
+    assert_eq!(status, 200, "{raw}");
+    assert_eq!(diff["settings_changed"]["from"]["ecs_enabled"], false);
+    assert_eq!(diff["settings_changed"]["to"]["ecs_enabled"], true);
+    let (status, _, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/revisions/{original}/restore"),
+        Some(&token),
+        None
+    );
+    assert_eq!(status, 200, "{raw}");
+
+    let settings = env
+        .state
+        .db
+        .query_one(
+            "SELECT ecs_enabled, geodns_enabled FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+        .unwrap();
+    assert!(
+        !settings.get::<_, bool>(0),
+        "ECS must return to the snapshotted value"
+    );
+    assert!(
+        settings.get::<_, bool>(1),
+        "GeoDNS must return to the snapshotted value"
+    );
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn zone_and_record_metadata_roundtrip() {
     let Some(env) = setup().await else { return };
     let app = app!(env);

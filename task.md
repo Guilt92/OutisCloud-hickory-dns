@@ -1754,7 +1754,7 @@ Validation performed for this status update:
 |---|---|---|---|
 | 0 | PARTIALLY COMPLETED | COMPLETED: 7, PARTIALLY COMPLETED: 1 | ARCH-007 remains open pending service-owner credential rotation and hosted full-history scan result; independent Phase 0 work is complete. |
 | 1 | COMPLETED | COMPLETED: 12, PARTIALLY COMPLETED: 0 | All Phase 1 tasks meet their listed acceptance criteria. The live uid0.ir conformance check confirms parent delegation and authoritative responses; it also reports no NS address diversity and an unsigned delegation, which are recorded operational observations rather than CORE-008 implementation failures. |
-| 2 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 7, NOT STARTED: 2 | Bulk import, RRset batch mutation and full lifecycle/export work remain open. |
+| 2 | PARTIALLY COMPLETED | COMPLETED: 8, PARTIALLY COMPLETED: 2, NOT STARTED: 0 | ZONE-003 built-in templates and ZONE-007 caller-visible snapshot-failure handling remain open. |
 | 3 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 3, BLOCKED: 5 | Key custody, backup/restore, NSEC3/parent coordination and multi-signer remain blocked. |
 | 4 | PARTIALLY COMPLETED | COMPLETED: 2, PARTIALLY COMPLETED: 1, BLOCKED: 9 | Secondary/transfer/replication model blocked by schema, key custody and infrastructure decisions. |
 | 5 | PARTIALLY COMPLETED | COMPLETED: 1, PARTIALLY COMPLETED: 4, BLOCKED: 5 | Health monitors, pools/regions, licensed City data and traffic policy activation remain blocked. |
@@ -1796,7 +1796,7 @@ Validation performed for this status update:
 | 2 | ZONE-004 | P2 | COMPLETED | Description/tags API, server-side `?tag=` filter with `X-Total-Count`, UI tag filter, and integration test. |
 | 2 | ZONE-005 | P0 | COMPLETED | TXT and NS-delegation verification (`method=txt|ns`), rate limits/retries, fail-safe pending state, and `verified_via` evidence. |
 | 2 | ZONE-006 | P1 | COMPLETED | active/held/suspended/archived lifecycle with hold reason/until, archived write blocking, serving effects, audit and integration tests. |
-| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Revision diff endpoint/UI exist. `ZONE_REVISION_RETENTION` now bounds pruning (1–1000, default 50), snapshot failures increment `outis_zone_snapshot_failures_total`, and isolated PostgreSQL retention/diff tests pass. Full zone-setting snapshots, rollback coverage and caller-visible snapshot failure behavior remain. |
+| 2 | ZONE-007 | P1 | PARTIALLY COMPLETED | Revision snapshots now include zone type, GeoDNS/ECS policy, description, tags, and AXFR policy; diff reports setting changes; restore applies settings and records in one DB transaction. Migration 008 and runtime DDL agree. PostgreSQL restore/diff, record rollback, retention and schema-drift tests pass on germ. Remaining: mutation responses do not yet report a snapshot-write failure to the caller; domain rename restoration and UI presentation of settings diffs need coverage. |
 | 2 | REC-001 | P2 | COMPLETED | Comment/tags columns, tenant-safe metadata API, list payload, and record editor dialog with integration-test coverage. |
 | 2 | REC-002 | P0 | COMPLETED | Publish-failure rollback API tests pass. |
 | 2 | REC-003 | P1 | COMPLETED | `PUT /api/v1/zones/{id}/rrsets` applies an all-or-nothing RRset batch with validation, audit and rollback. |
@@ -1935,7 +1935,7 @@ This section supersedes conflicting rows in §0.14. It was produced by direct so
 
 ## 21. Single-File Execution Ledger — 2026-11-25
 
-This ledger is the only current task and implementation report. Historical status matrices above are preserved, but their counts are superseded here. Phase 0 and Phase 1 are not complete, so Phase 2 implementation has not begun in this execution.
+This ledger is the only current task and implementation report. Historical status matrices above are preserved, but their counts are superseded here. Phase 1 is verified complete. Phase 0 remains gated by ARCH-007 service-owner credential rotation and hosted scan verification. ZONE-007 also received incremental revision-snapshot work during this execution; Phase 2 is not considered complete.
 
 ### Current roadmap totals
 
@@ -2031,7 +2031,7 @@ The isolated test server starts with `DNS_MAX_TCP_CONNECTIONS=8` and `DNS_MAX_IN
 
 ### Phase 1 completion worklist
 
-Use the task-level status table in §19 as the canonical list of Phase 1 IDs and dependencies. Current germ test-server smoke covers ordinary authoritative serving and refusal policy. Signed AXFR server interoperability, Hickory AXFR client against BIND 9.20, file-store TSIG policy, local DoH3 exchange, TLS/HTTP2 admission under load, and per-zone reload under sustained queries are verified. Secondary refresh and inbound NOTIFY TSIG, external DNSSEC/delegation conformance, and advanced record type round trips remain open. Do not begin Phase 2 until every Phase 0 and Phase 1 acceptance item is verified.
+Use the task-level status table in §19 as the canonical list of Phase 1 IDs and dependencies. Phase 1's current germ and isolated-environment verification is recorded in the task rows and evidence entries above. Phase 0 remains gated by ARCH-007; do not call the phase complete until coordinated credential rotation, cleanup, and full-history scan evidence are available.
 
 ### CORE-001 implementation update — 2026-11-25
 
@@ -2098,3 +2098,13 @@ Executed `cargo test -p hickory-dns --test integration --features https-ring --n
 **Status: COMPLETED.** Added reload counters for rebuilt and reused zone handlers. A two-zone isolated-server integration test runs a bounded query worker over both zones while replacing one zone file, confirms the new answer becomes visible and all query responses remain successful, then checks the counters report one rebuilt zone and at least one reused zone. The test-server harness previously left child stdout undrained after startup; the sustained-query test found this could block the DNS process on its output pipe. The harness now continuously drains output into a bounded 256-line buffer and prints the captured tail during cleanup.
 
 Executed `cargo test -p hickory-dns --test integration --no-run` (pass); because this workstation's UID had exhausted its Linux inotify instance quota, executed the built integration binary in a disposable Debian 13 container under a separate UID: `docker run --rm --user 0 -v "$PWD:$PWD" -w "$PWD" debian:trixie-slim "$PWD/target/debug/deps/integration-3ccbdefe3f5f86a8" named_metrics_tests::single_zone_reload_reuses_unchanged_catalog_during_query_load --exact` (pass, 1/1, 0.48 s) and the same invocation with `named_metrics_tests::readiness_tracks_failed_zone_reload_and_recovery` (pass, 1/1, 0.68 s). `cargo fmt --all -- --check` and `git diff --check` pass. CI now runs the load test. Commit `36b2c6f7c` was pushed to `origin/main`; remote HEAD matches. This validates the isolated binary, not a deployment of this revision onto germ's running containers.
+
+### ZONE-007 revision settings and rollback update — 2026-11-25
+
+`zone_revisions` now stores publishable zone settings (`zone_type`, GeoDNS/ECS flags, description, tags and AXFR policy) beside the domain and records. Revision diffs return `settings_changed`; restores apply record and settings changes in the same database transaction. Existing revisions with an empty settings object continue to restore records without altering current settings. Added migration `008_zone_revision_settings.sql` and matching idempotent runtime DDL. Added PostgreSQL integration coverage for settings diff and restoration.
+
+Files: `crates/control_api/migrations/008_zone_revision_settings.sql`, `crates/control_api/src/main.rs`, `crates/control_api/src/ext.rs`, `crates/control_api/src/api_tests.rs`.
+
+On `germ` (`fastcreate-472995`), used a disposable PostgreSQL 15 container with tmpfs and SSH local forwarding; existing project containers stayed healthy. `TEST_DATABASE_URL=... cargo test -p control_api --bin control_api api_tests::revision_restore_restores_zone_publication_settings -- --exact --nocapture` passed 1/1, including diff values and restore behavior. `... cargo test ... api_tests::revision_ -- --nocapture` passed 3/3 (diff, retention, setting restore); `... cargo test ... api_tests::zone_history_and_rollback -- --exact --nocapture` passed 1/1; and `... cargo test ... api_tests::migration_files_and_runtime_ddl_have_no_schema_drift -- --exact --nocapture` passed 1/1. The first schema-drift attempt caught that migration 008 did not create the revision table on a from-empty database; migration 008 was corrected to create the complete table and index before adding the settings column, and the rerun passed. `cargo fmt --all` and `cargo check -p control_api --tests` passed. The disposable container and SSH tunnel were removed; `docker ps` confirmed only the four pre-existing healthy project services remained.
+
+ZONE-007 remains PARTIALLY COMPLETED: snapshot failures are logged and counted by `outis_zone_snapshot_failures_total` but are not returned to the mutation caller; restoring a renamed domain and UI rendering of the setting diff still need coverage. No change was deployed to the running germ application containers.
