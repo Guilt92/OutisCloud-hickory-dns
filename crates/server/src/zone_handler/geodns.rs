@@ -88,29 +88,30 @@ impl GeoZoneHandler {
         // Rule `record_name`s are stored relative to the zone (`www`, `@`);
         // resolve them against the zone apex before comparing with the
         // fully-qualified query name.
-        if let Some(target) = self.engine.evaluate_in_zone_checked(
+        let targets = self.engine.evaluate_in_zone_checked_all(
             client_ip,
             &name_str,
             type_str,
             &origin_str,
             exists,
-        ) {
-            // Only IP targets are supported; anything else falls through to the zone data.
-            if let Ok(addr) = target.parse::<IpAddr>() {
-                // The target's address family must match the question: an
-                // IPv4 target can only answer A and an IPv6 target only AAAA.
-                let rdata = match (addr, rtype) {
-                    (IpAddr::V4(v4), RecordType::A) => RData::A(v4.into()),
-                    (IpAddr::V6(v6), RecordType::AAAA) => RData::AAAA(v6.into()),
-                    _ => return LookupControlFlow::Skip,
-                };
-                let mut rrset = RecordSet::with_ttl(Name::from(name.clone()), rtype, 300);
-                rrset.add_rdata(rdata);
-                let arc = Arc::new(rrset);
-                let lookup =
-                    crate::zone_handler::auth_lookup::LookupRecords::new(lookup_options, arc);
-                return LookupControlFlow::Break(Ok(AuthLookup::from(lookup)));
+        );
+        let rdata: Vec<RData> = targets
+            .iter()
+            .filter_map(|target| match target.parse::<IpAddr>().ok()? {
+                IpAddr::V4(v4) if rtype == RecordType::A => Some(RData::A(v4.into())),
+                IpAddr::V6(v6) if rtype == RecordType::AAAA => Some(RData::AAAA(v6.into())),
+                _ => None,
+            })
+            .collect();
+        if let Some(first) = rdata.first().cloned() {
+            let mut rrset = RecordSet::with_ttl(Name::from(name.clone()), rtype, 300);
+            rrset.add_rdata(first);
+            for record in rdata.into_iter().skip(1) {
+                rrset.add_rdata(record);
             }
+            let arc = Arc::new(rrset);
+            let lookup = crate::zone_handler::auth_lookup::LookupRecords::new(lookup_options, arc);
+            return LookupControlFlow::Break(Ok(AuthLookup::from(lookup)));
         }
         LookupControlFlow::Skip
     }
@@ -233,6 +234,7 @@ mod tests {
             match_type: kind.into(),
             match_value: value.into(),
             target: target.into(),
+            weight: 1,
             priority: 0,
             enabled: true,
             record_name: name.map(str::to_string),
@@ -313,6 +315,36 @@ mod tests {
                 "5.6.7.8".parse::<std::net::Ipv4Addr>().unwrap().into()
             )]
         );
+    }
+
+    #[test]
+    fn equal_policy_rules_return_all_weighted_addresses_in_deterministic_order() {
+        let first = rule("default", "", "192.0.2.1", None, None);
+        let mut second = rule("default", "", "192.0.2.2", None, None);
+        second.id = "second".into();
+        second.weight = 4;
+        let mut expected = None;
+        for _ in 0..3 {
+            let answer = answer_rdata(lookup_with(
+                None,
+                vec![first.clone(), second.clone()],
+                "10.0.0.1",
+                "www.example.com.",
+                RecordType::A,
+            ));
+            assert_eq!(answer.len(), 2);
+            assert!(answer.contains(&RData::A(
+                "192.0.2.1".parse::<std::net::Ipv4Addr>().unwrap().into()
+            )));
+            assert!(answer.contains(&RData::A(
+                "192.0.2.2".parse::<std::net::Ipv4Addr>().unwrap().into()
+            )));
+            if let Some(expected) = &expected {
+                assert_eq!(&answer, expected);
+            } else {
+                expected = Some(answer);
+            }
+        }
     }
 
     #[test]

@@ -188,8 +188,10 @@ pub struct GeoRule {
     /// region: ISO 3166-2 (`US-CA`); ignored for "default".
     pub match_value: String,
     pub target: String, // IP address to return
-    pub priority: i32,  // higher values take precedence
-    pub enabled: bool,  // rule disabled if false
+    /// Relative selection weight among rules with the same match and priority.
+    pub weight: u32,
+    pub priority: i32, // higher values take precedence
+    pub enabled: bool, // rule disabled if false
     // optional record-level matching; if both are None the rule applies to whole zone
     pub record_name: Option<String>,
     pub record_type: Option<String>,
@@ -299,6 +301,8 @@ impl GeoRuleEngine {
         query_type: Option<&str>,
     ) -> Option<String> {
         self.evaluate_inner(client_ip, query_name, query_type, None, false)
+            .into_iter()
+            .next()
     }
 
     /// Like [`evaluate`](Self::evaluate) but relative / apex (`@`) rule names are
@@ -317,6 +321,8 @@ impl GeoRuleEngine {
             Some(origin),
             false,
         )
+        .into_iter()
+        .next()
     }
 
     /// Like [`evaluate_in_zone`](Self::evaluate_in_zone), but when the queried
@@ -338,6 +344,27 @@ impl GeoRuleEngine {
             Some(origin),
             !name_exists,
         )
+        .into_iter()
+        .next()
+    }
+
+    /// Return the weighted deterministic target ordering for a zone query.
+    /// Multiple returned addresses are emitted as one A/AAAA RRset.
+    pub fn evaluate_in_zone_checked_all(
+        &self,
+        client_ip: IpAddr,
+        query_name: &str,
+        query_type: &str,
+        origin: &str,
+        name_exists: bool,
+    ) -> Vec<String> {
+        self.evaluate_inner(
+            client_ip,
+            Some(query_name),
+            Some(query_type),
+            Some(origin),
+            !name_exists,
+        )
     }
 
     fn evaluate_inner(
@@ -347,7 +374,7 @@ impl GeoRuleEngine {
         query_type: Option<&str>,
         origin: Option<&str>,
         scoped_only: bool,
-    ) -> Option<String> {
+    ) -> Vec<String> {
         let client_ip = normalize_ip(client_ip);
         // Look the client up lazily and only once per evaluation.
         let country = self.db.as_ref().and_then(|db| db.country(client_ip));
@@ -375,6 +402,18 @@ impl GeoRuleEngine {
             if let (Some(qt), Some(rt)) = (query_type, rule.record_type.as_deref()) {
                 if !rt.trim().is_empty() && !rt.eq_ignore_ascii_case(qt) {
                     return false;
+                }
+            }
+            if let Some(qt) = query_type {
+                if matches!(qt.to_ascii_uppercase().as_str(), "A" | "AAAA") {
+                    let target_is_correct_family = match rule.target.parse::<IpAddr>() {
+                        Ok(IpAddr::V4(_)) => qt.eq_ignore_ascii_case("A"),
+                        Ok(IpAddr::V6(_)) => qt.eq_ignore_ascii_case("AAAA"),
+                        Err(_) => false,
+                    };
+                    if !target_is_correct_family {
+                        return false;
+                    }
                 }
             }
             let want = rule.match_value.trim();
@@ -413,10 +452,42 @@ impl GeoRuleEngine {
         };
 
         // rules are kept sorted in priority order
-        self.rules
-            .iter()
-            .find(|r| matches(r))
-            .map(|r| r.target.clone())
+        let matching: Vec<&GeoRule> = self.rules.iter().filter(|rule| matches(rule)).collect();
+        let Some(best) = matching.first() else {
+            return Vec::new();
+        };
+        let best_priority = best.priority;
+        let best_match_type = best.match_type.clone();
+        let best_match_value = best.match_value.clone();
+        let best_record_name = best.record_name.clone();
+        let best_record_type = best.record_type.clone();
+        let key = format!("{}:{}", best_match_type, best_match_value);
+        let candidates: Vec<policy::Target> = matching
+            .into_iter()
+            .take_while(|rule| {
+                rule.priority == best_priority
+                    && rule.match_type == best_match_type
+                    && rule.match_value == best_match_value
+                    && rule.record_name == best_record_name
+                    && rule.record_type == best_record_type
+            })
+            .map(|rule| policy::Target {
+                name: rule.id.clone(),
+                address: rule.target.clone(),
+                weight: rule.weight,
+                healthy: true,
+            })
+            .collect();
+        policy::select_order(
+            &candidates,
+            &policy::SelectionContext {
+                client_key: &client_ip.to_string(),
+                rule_key: &key,
+                record_name: query_name.unwrap_or("*"),
+                record_type: query_type.unwrap_or("*"),
+                failure_mode: policy::FailureMode::FailClosed,
+            },
+        )
     }
 
     /// Get all rules
@@ -455,6 +526,7 @@ mod tests {
             match_type: mtype.to_string(),
             match_value: mval.to_string(),
             target: target.to_string(),
+            weight: 1,
             priority,
             enabled,
             record_name: None,
@@ -470,6 +542,92 @@ mod tests {
         let mut e = GeoRuleEngine::new(Some(real_db()));
         e.set_rules(rules);
         e
+    }
+
+    #[test]
+    fn equivalent_rules_return_all_weighted_targets_deterministically() {
+        let first = rule("one", "default", "", "192.0.2.1", 5, true);
+        let mut second = rule("two", "default", "", "192.0.2.2", 5, true);
+        second.weight = 4;
+        let engine = engine(vec![first.clone(), second.clone()]);
+        let mut selected_first = std::collections::HashMap::new();
+        for host in 1u32..=10_000 {
+            let client = IpAddr::from([198, 18, (host >> 8) as u8, host as u8]);
+            let ordered = engine.evaluate_in_zone_checked_all(
+                client,
+                "www.example.test.",
+                "A",
+                "example.test.",
+                true,
+            );
+            assert_eq!(ordered.len(), 2);
+            assert_eq!(
+                ordered,
+                engine.evaluate_in_zone_checked_all(
+                    client,
+                    "www.example.test.",
+                    "A",
+                    "example.test.",
+                    true,
+                )
+            );
+            *selected_first.entry(ordered[0].clone()).or_insert(0usize) += 1;
+        }
+        let first_share = selected_first["192.0.2.1"] as f64 / 10_000.0;
+        let second_share = selected_first["192.0.2.2"] as f64 / 10_000.0;
+        assert!(
+            (0.17..=0.23).contains(&first_share),
+            "weight 1 target share was {first_share:.3}, counts {selected_first:?}"
+        );
+        assert!(
+            (0.77..=0.83).contains(&second_share),
+            "weight 4 target share was {second_share:.3}, counts {selected_first:?}"
+        );
+        assert_eq!(
+            engine.evaluate_in_zone_checked_all(
+                IpAddr::from([192, 0, 2, 1]),
+                "www.example.test.",
+                "A",
+                "example.test.",
+                true,
+            ),
+            engine.evaluate_in_zone_checked_all(
+                IpAddr::from([192, 0, 2, 1]),
+                "www.example.test.",
+                "A",
+                "example.test.",
+                true,
+            )
+        );
+    }
+
+    #[test]
+    fn address_family_is_filtered_before_weighted_target_selection() {
+        let rules = vec![
+            rule("v4", "default", "", "192.0.2.1", 5, true),
+            rule("v6", "default", "", "2001:db8::1", 5, true),
+        ];
+        let engine = engine(rules);
+        assert_eq!(
+            engine.evaluate_in_zone_checked_all(
+                ip("192.0.2.4"),
+                "www.example.test.",
+                "A",
+                "example.test.",
+                true,
+            ),
+            vec!["192.0.2.1"]
+        );
+        assert_eq!(
+            engine.evaluate_in_zone_checked_all(
+                ip("192.0.2.4"),
+                "www.example.test.",
+                "AAAA",
+                "example.test.",
+                true,
+            ),
+            vec!["2001:db8::1"]
+        );
     }
 
     #[test]

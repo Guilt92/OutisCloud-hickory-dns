@@ -1165,6 +1165,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
             match_type TEXT NOT NULL,
             match_value TEXT NOT NULL,
             target TEXT NOT NULL,
+            weight INT NOT NULL DEFAULT 1,
             priority INT DEFAULT 0,
             enabled BOOLEAN DEFAULT true,
             record_name TEXT,
@@ -1179,6 +1180,15 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
         return Err(e);
     }
     info!("Georules table ready");
+    if let Err(e) = client
+        .batch_execute(
+            "ALTER TABLE georules ADD COLUMN IF NOT EXISTS weight INT NOT NULL DEFAULT 1;",
+        )
+        .await
+    {
+        warn!("failed to add weight column to georules: {}", e);
+        return Err(e);
+    }
     // ensure existing installations have new columns
     if let Err(e) = client
         .batch_execute("ALTER TABLE georules ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;")
@@ -4177,6 +4187,8 @@ struct CreateGeoRuleReq {
     match_value: String,
     target: String,
     #[serde(default)]
+    weight: Option<i32>,
+    #[serde(default)]
     priority: Option<i32>,
     #[serde(default)]
     enabled: Option<bool>,
@@ -4222,14 +4234,20 @@ async fn create_georule(
     ) {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
     }
+    let weight = body.weight.unwrap_or(1);
+    if !(0..=1_000_000).contains(&weight) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "weight must be between 0 and 1000000"
+        }));
+    }
 
     let id = Uuid::new_v4();
     let id_str = id.to_string();
     let res = db.execute(
-        "INSERT INTO georules (id, zone_id, match_type, match_value, target, priority, enabled, record_name, record_type) \
-         VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7, $8, $9)",
+        "INSERT INTO georules (id, zone_id, match_type, match_value, target, weight, priority, enabled, record_name, record_type) \
+         VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7, $8, $9, $10)",
         &[&id_str, &zone_str, &body.match_type, &body.match_value.trim(), &body.target.trim(),
-          &body.priority.unwrap_or(0), &body.enabled.unwrap_or(true), &body.record_name, &body.record_type]
+          &weight, &body.priority.unwrap_or(0), &body.enabled.unwrap_or(true), &body.record_name, &body.record_type]
     ).await;
     match res {
         Ok(_) => {
@@ -4291,7 +4309,7 @@ async fn list_georules(
         }
     };
     let list_sql = format!(
-        "SELECT CAST(g.id AS varchar), CAST(g.zone_id AS varchar), g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type \
+        "SELECT CAST(g.id AS varchar), CAST(g.zone_id AS varchar), g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type, g.weight \
          {base} ORDER BY z.domain, g.priority DESC, g.match_type, g.match_value, g.id LIMIT $4::bigint OFFSET $5::bigint"
     );
     let rows = data
@@ -4329,6 +4347,7 @@ async fn list_georules(
                 "enabled": r.try_get::<_, bool>(6).unwrap_or(true),
                 "record_name": r.try_get::<_, Option<String>>(7).unwrap_or(None),
                 "record_type": r.try_get::<_, Option<String>>(8).unwrap_or(None),
+                "weight": r.try_get::<_, i32>(9).unwrap_or(1),
             })
         })
         .collect();
@@ -4342,6 +4361,7 @@ struct UpdateGeoRuleReq {
     match_type: Option<String>,
     match_value: Option<String>,
     target: Option<String>,
+    weight: Option<i32>,
     priority: Option<i32>,
     enabled: Option<bool>,
     record_name: Option<String>,
@@ -4355,7 +4375,7 @@ async fn georule_access(
     tok: &TokenData<Claims>,
 ) -> Result<(String, ZoneAccess, tokio_postgres::Row), HttpResponse> {
     let row = db.query_opt(
-        "SELECT CAST(zone_id AS varchar), match_type, match_value, target FROM georules WHERE CAST(id AS varchar) = $1",
+        "SELECT CAST(zone_id AS varchar), match_type, match_value, target, weight FROM georules WHERE CAST(id AS varchar) = $1",
         &[&rule_id],
     ).await;
     let row = match row {
@@ -4398,6 +4418,7 @@ async fn update_georule(
     if body.match_type.is_none()
         && body.match_value.is_none()
         && body.target.is_none()
+        && body.weight.is_none()
         && body.priority.is_none()
         && body.enabled.is_none()
         && body.record_name.is_none()
@@ -4424,15 +4445,23 @@ async fn update_georule(
     ) {
         return HttpResponse::BadRequest().json(serde_json::json!({"error": e}));
     }
+    let eff_weight = body
+        .weight
+        .unwrap_or_else(|| current.try_get(4).unwrap_or(1));
+    if !(0..=1_000_000).contains(&eff_weight) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "weight must be between 0 and 1000000"
+        }));
+    }
 
     // Single statement with typed parameters (priority is INT, enabled BOOLEAN).
     match db.execute(
         "UPDATE georules SET match_type = COALESCE($1, match_type), match_value = COALESCE($2, match_value), \
-         target = COALESCE($3, target), priority = COALESCE($4, priority), enabled = COALESCE($5, enabled), \
-         record_name = COALESCE($6, record_name), record_type = COALESCE($7, record_type), updated_at = now() \
-         WHERE CAST(id AS varchar) = $8",
+         target = COALESCE($3, target), weight = COALESCE($4, weight), priority = COALESCE($5, priority), enabled = COALESCE($6, enabled), \
+         record_name = COALESCE($7, record_name), record_type = COALESCE($8, record_type), updated_at = now() \
+         WHERE CAST(id AS varchar) = $9",
         &[&body.match_type, &body.match_value.as_ref().map(|v| v.trim().to_string()), &body.target.as_ref().map(|v| v.trim().to_string()),
-          &body.priority, &body.enabled, &body.record_name, &body.record_type, &rule_id]
+          &body.weight, &body.priority, &body.enabled, &body.record_name, &body.record_type, &rule_id]
     ).await {
         Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "rule not found"})),
         Ok(_) => {
@@ -5167,7 +5196,7 @@ async fn resolve_by_geo(
     // Fetch georules for this zone from DB
     let rows = match db
         .query(
-            "SELECT CAST(id AS varchar), match_type, match_value, target, priority, enabled, record_name, record_type FROM georules WHERE CAST(zone_id AS varchar) = $1",
+            "SELECT CAST(id AS varchar), match_type, match_value, target, priority, enabled, record_name, record_type, weight FROM georules WHERE CAST(zone_id AS varchar) = $1",
             &[&body.zone_id],
         )
         .await
@@ -5186,6 +5215,7 @@ async fn resolve_by_geo(
             match_type: r.try_get::<_, String>(1).unwrap_or_default(),
             match_value: r.try_get::<_, String>(2).unwrap_or_default(),
             target: r.try_get::<_, String>(3).unwrap_or_default(),
+            weight: r.try_get::<_, i32>(8).unwrap_or(1).max(0) as u32,
             priority: r.try_get::<_, i32>(4).unwrap_or(0),
             enabled: r.try_get::<_, bool>(5).unwrap_or(true),
             record_name: r.try_get::<_, Option<String>>(6).unwrap_or(None),

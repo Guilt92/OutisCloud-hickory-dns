@@ -1537,7 +1537,7 @@ async fn georule_update_and_input_validation() {
         "/api/v1/georules",
         Some(&t),
         j(
-            serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"192.0.2.77","priority":5})
+            serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"192.0.2.77","priority":5,"weight":7})
         )
     );
     assert_eq!(st, 201, "{raw}");
@@ -1549,7 +1549,7 @@ async fn georule_update_and_input_validation() {
         put,
         &format!("/api/v1/georules/{gid}"),
         Some(&t),
-        j(serde_json::json!({"priority": 9, "enabled": false}))
+        j(serde_json::json!({"priority": 9, "enabled": false, "weight": 3}))
     );
     assert_eq!(st, 200, "{raw}");
     let (_, list, _) = call!(app, get, "/api/v1/georules", Some(&t), None);
@@ -1557,6 +1557,12 @@ async fn georule_update_and_input_validation() {
     assert_eq!(
         (r["priority"].as_i64(), r["enabled"].as_bool()),
         (Some(9), Some(false))
+    );
+    assert_eq!(r["weight"].as_i64(), Some(3));
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(
+        named.contains("weight = 3"),
+        "weight must be published: {named}"
     );
 
     // injection attempts and nonsense are refused, nothing reaches named.toml
@@ -1566,6 +1572,7 @@ async fn georule_update_and_input_validation() {
         serde_json::json!({"zone_id": zid,"match_type":"galaxy","match_value":"US","target":"192.0.2.1"}),
         serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"USA1","target":"192.0.2.1"}),
         serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"www.example.com"}),
+        serde_json::json!({"zone_id": zid,"match_type":"country","match_value":"US","target":"192.0.2.1","weight":1000001}),
         serde_json::json!({"zone_id": "not-a-uuid","match_type":"country","match_value":"US","target":"192.0.2.1"}),
     ] {
         let (st, _, raw) = call!(app, post, "/api/v1/georules", Some(&t), j(body.clone()));

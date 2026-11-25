@@ -75,6 +75,8 @@ pub(crate) struct GeoRuleConfig {
     pub match_type: String,
     pub match_value: String,
     pub target: String,
+    #[serde(default = "default_geo_weight")]
+    pub weight: u32,
     #[serde(default)]
     pub priority: i32,
     #[serde(default)]
@@ -83,6 +85,10 @@ pub(crate) struct GeoRuleConfig {
     pub record_name: Option<String>,
     #[serde(default)]
     pub record_type: Option<String>,
+}
+
+fn default_geo_weight() -> u32 {
+    1
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -326,6 +332,7 @@ impl ZoneConfig {
                         match_type: r.match_type.clone(),
                         match_value: r.match_value.clone(),
                         target: r.target.clone(),
+                        weight: r.weight,
                         priority: r.priority,
                         enabled: r.enabled,
                         record_name: r.record_name.clone(),

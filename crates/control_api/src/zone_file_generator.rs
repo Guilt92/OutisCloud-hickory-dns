@@ -74,6 +74,7 @@ pub struct GeoRuleRow {
     pub match_type: String,
     pub match_value: String,
     pub target: String,
+    pub weight: u32,
     pub priority: i32,
     pub enabled: bool,
     pub record_name: Option<String>,
@@ -572,6 +573,7 @@ pub fn generate_full_with_transfer_policies(
                                 rule.match_type.clone(),
                                 rule.match_value.clone(),
                                 rule.target.clone(),
+                                rule.weight,
                                 rule.priority,
                                 rule.enabled,
                                 rule.record_name.clone(),
@@ -753,7 +755,8 @@ pub async fn generate_all(
         transfer_policies.insert(zone_id.clone(), z.get("axfr_policy"));
         transfer_peers.insert(zone_id.clone(), z.get("axfr_allowed_peers"));
         zones_vec.push((zone_id.clone(), domain, enabled));
-        records_map.insert(zone_id, Vec::new());
+        records_map.insert(zone_id.clone(), Vec::new());
+        geo_rules_map.insert(zone_id, Vec::new());
     }
 
     let record_rows = db
@@ -778,7 +781,7 @@ pub async fn generate_all(
 
     let geo_rows = db
         .query(
-            "SELECT CAST(g.zone_id AS varchar) AS zone_id, g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type              FROM georules g JOIN zones z ON z.id = g.zone_id              WHERE COALESCE(z.status, 'active') IN ('active', 'held')              ORDER BY g.zone_id, g.priority DESC, g.match_type, g.match_value, g.target, g.id",
+            "SELECT CAST(g.zone_id AS varchar) AS zone_id, g.match_type, g.match_value, g.target, g.priority, g.enabled, g.record_name, g.record_type, g.weight              FROM georules g JOIN zones z ON z.id = g.zone_id              WHERE COALESCE(z.status, 'active') IN ('active', 'held')              ORDER BY g.zone_id, g.priority DESC, g.match_type, g.match_value, g.target, g.id",
             &[],
         )
         .await
@@ -794,6 +797,7 @@ pub async fn generate_all(
                 enabled: g.try_get("enabled").unwrap_or(true),
                 record_name: g.try_get("record_name").unwrap_or(None),
                 record_type: g.try_get("record_type").unwrap_or(None),
+                weight: g.try_get::<_, i32>("weight").unwrap_or(1).max(0) as u32,
             });
         }
     }
@@ -921,6 +925,7 @@ mod tests {
                 match_type: "country".into(),
                 match_value: "US".into(),
                 target: "1.1.1.1".into(),
+                weight: 7,
                 priority: 1,
                 enabled: true,
                 record_name: None,
@@ -937,6 +942,7 @@ mod tests {
         let named_path = dir.path().join("named.toml");
         let named_txt = fs::read_to_string(&named_path).unwrap();
         assert!(named_txt.contains("geodns"));
+        assert!(named_txt.contains("weight = 7"));
         assert!(named_txt.contains("match_type"));
         assert!(named_txt.contains("US"));
     }

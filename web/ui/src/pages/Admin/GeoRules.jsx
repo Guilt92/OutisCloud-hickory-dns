@@ -15,6 +15,7 @@ export default function GeoRules(){
   const [matchValue, setMatchValue] = React.useState('US')
   const [target, setTarget] = React.useState('192.0.2.1')
   const [priority, setPriority] = React.useState(0)
+  const [weight, setWeight] = React.useState(1)
   const [enabled, setEnabled] = React.useState(true)
   const [recordName, setRecordName] = React.useState('')
   const [recordType, setRecordType] = React.useState('')
@@ -46,16 +47,16 @@ export default function GeoRules(){
       if (editingRule) {
         await api.put(`/api/v1/georules/${editingRule.id}`, {
           zone_id: zone, match_type: matchType, match_value: matchValue, target,
-          priority, enabled, record_name: recordName || null, record_type: recordType || null
+          weight, priority, enabled, record_name: recordName || null, record_type: recordType || null
         });
       } else {
         await api.post('/api/v1/georules', { 
           zone_id: zone, match_type: matchType, match_value: matchValue, target,
-          priority, enabled, record_name: recordName || null, record_type: recordType || null
+          weight, priority, enabled, record_name: recordName || null, record_type: recordType || null
         });
       }
       // reset form
-      setZone(''); setPriority(0); setEnabled(true); setRecordName(''); setRecordType('');
+      setZone(''); setPriority(0); setWeight(1); setEnabled(true); setRecordName(''); setRecordType('');
       setEditingRule(null);
       load()
     } catch (e) { notify?.error('Error saving rule') }
@@ -75,6 +76,7 @@ export default function GeoRules(){
     setMatchType(r.match_type);
     setMatchValue(r.match_value);
     setTarget(r.target);
+    setWeight(r.weight ?? 1);
     setPriority(r.priority || 0);
     setEnabled(r.enabled);
     setRecordName(r.record_name || '');
@@ -161,6 +163,10 @@ export default function GeoRules(){
               <label className="form-label">Priority</label>
               <input type="number" min="0" aria-label="Priority" className="input" value={priority} onChange={e=>setPriority(parseInt(e.target.value)||0)} />
             </div>
+            <div>
+              <label className="form-label">Target weight</label>
+              <input type="number" min="0" max="1000000" aria-label="Target weight" className="input" value={weight} onChange={e=>setWeight(Math.min(1000000, Math.max(0, parseInt(e.target.value)||0)))} />
+            </div>
             <div className="flex items-end pb-0.5">
               <label className="flex items-center gap-2 text-sm text-ink/80 cursor-pointer select-none">
                 <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)} className="w-4 h-4 rounded border-line" />
@@ -245,7 +251,7 @@ export default function GeoRules(){
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
-          <p className="text-xs text-muted">Rules are evaluated in priority order (highest first); the first match wins.</p>
+          <p className="text-xs text-muted">Higher priority groups win; equivalent matches return targets in deterministic weighted order.</p>
         </div>
         {filteredRules.length === 0 ? (
           <div className="p-12 text-center">
@@ -262,6 +268,7 @@ export default function GeoRules(){
                   <th>Value</th>
                   <th>Target</th>
                   <th>Pri</th>
+                  <th>Weight</th>
                   <th>Enabled</th>
                   <th>Record</th>
                   <th className="text-right">Actions</th>
@@ -287,6 +294,7 @@ export default function GeoRules(){
                     </td>
                     <td className="font-mono text-muted">{r.target}</td>
                     <td className="text-muted">{r.priority}</td>
+                    <td className="text-muted">{r.weight ?? 1}</td>
                     <td>
                       <input type="checkbox" aria-label={`Rule ${r.match_value} enabled`} checked={r.enabled} onChange={()=>toggleEnabled(r)} className="w-4 h-4 rounded border-line" />
                     </td>

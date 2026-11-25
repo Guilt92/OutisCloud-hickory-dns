@@ -441,6 +441,7 @@ struct TomlGeoRule {
     match_type: String,
     match_value: String,
     target: String,
+    weight: u32,
     priority: i32,
     enabled: bool,
     record_name: Option<String>,
@@ -516,6 +517,7 @@ impl TomlConfigBuilder {
             String,
             String,
             String,
+            u32,
             i32,
             bool,
             Option<String>,
@@ -525,11 +527,21 @@ impl TomlConfigBuilder {
         let rules = geo_rules
             .into_iter()
             .map(
-                |(match_type, match_value, target, priority, enabled, record_name, record_type)| {
+                |(
+                    match_type,
+                    match_value,
+                    target,
+                    weight,
+                    priority,
+                    enabled,
+                    record_name,
+                    record_type,
+                )| {
                     TomlGeoRule {
                         match_type,
                         match_value,
                         target,
+                        weight,
                         priority,
                         enabled,
                         record_name,
@@ -657,6 +669,7 @@ impl TomlConfigBuilder {
                         toml_escape(&rule.match_value)
                     ));
                     result.push_str(&format!("target = \"{}\", ", toml_escape(&rule.target)));
+                    result.push_str(&format!("weight = {}, ", rule.weight));
                     result.push_str(&format!("priority = {}, ", rule.priority));
                     result.push_str(&format!("enabled = {}, ", rule.enabled));
                     if let Some(rn) = &rule.record_name {
@@ -1209,6 +1222,7 @@ mod roundtrip_tests {
                 "country".into(),
                 "US\"\n[[zones]]\nzone=\"pwn\"".into(),
                 "1.1.1.1".into(),
+                1,
                 0,
                 true,
                 None,

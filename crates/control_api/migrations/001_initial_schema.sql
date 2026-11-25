@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS georules (
     match_type TEXT NOT NULL,
     match_value TEXT NOT NULL,
     target TEXT NOT NULL,
+    weight INT NOT NULL DEFAULT 1,
     priority INT DEFAULT 0,
     enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT now(),
