@@ -1959,7 +1959,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`; upstream `origin/main` now contains `fa6e5a8cd` (verified by the successful push). Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, `1ea00762e`, `91132b968`, `8c233e2ff`, `d3d96581b`, `be06824d9`, and `fa6e5a8cd` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
+Current branch is `main`; remote is `origin`; upstream `origin/main` now contains `eb6261838` (verified by the successful push). Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, `1ea00762e`, `91132b968`, `8c233e2ff`, `d3d96581b`, `be06824d9`, `fa6e5a8cd`, `4ca0c02d8`, and `eb6261838` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
