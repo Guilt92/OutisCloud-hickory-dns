@@ -4566,6 +4566,78 @@ async fn dnssec_rollover_publication_failure_queues_retry_and_preserves_retired_
     );
     let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
     assert_eq!(named.matches("key_path").count(), 1);
+
+    let active_file: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT key_file FROM dnssec_keys WHERE CAST(zone_id AS varchar) = $1 AND status = 'active'",
+            &[&zone_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let active_path = env.dir.path().join("dnssec-keys").join(&active_file);
+    let bad_record_id = Uuid::new_v4().to_string();
+    env.state
+        .db
+        .execute(
+            "INSERT INTO records(id, zone_id, name, record_type, value, ttl) \
+             VALUES($1::text::uuid, $2::text::uuid, 'broken-disable', 'A', 'not-an-ip', 300)",
+            &[&bad_record_id, &zone_id],
+        )
+        .await
+        .unwrap();
+    let (status, disabled, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/zones/{zone_id}/dnssec/disable"),
+        Some(&token),
+        j(serde_json::json!({"confirm_ds_removed": true}))
+    );
+    assert_eq!(status, 200, "{raw}");
+    assert!(disabled["publish_warning"].is_string(), "{disabled}");
+    assert!(
+        active_path.is_file(),
+        "failed DNSSEC disable publication must retain referenced key files"
+    );
+    let pending: i64 = env
+        .state
+        .db
+        .query_one(
+            "SELECT count(*) FROM publication_outbox WHERE zone_domain = 'rollover-retry.test' AND status = 'pending'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(pending, 1);
+    env.state
+        .db
+        .execute(
+            "DELETE FROM records WHERE CAST(id AS varchar) = $1",
+            &[&bad_record_id],
+        )
+        .await
+        .unwrap();
+    assert!(
+        publication_retry_once(&env.state.dns_manager, &env.state.db)
+            .await
+            .unwrap()
+    );
+    let named = std::fs::read_to_string(env.dir.path().join("named.toml")).unwrap();
+    assert!(!named.contains("key_path"));
+    let enabled: bool = env
+        .state
+        .db
+        .query_one(
+            "SELECT dnssec_enabled FROM zones WHERE CAST(id AS varchar) = $1",
+            &[&zone_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(!enabled);
     env.cleanup().await;
 }
 
