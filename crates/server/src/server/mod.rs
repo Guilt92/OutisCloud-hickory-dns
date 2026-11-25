@@ -420,22 +420,31 @@ impl<T: RequestHandler> Server<T> {
     /// This will run until all background tasks complete. If one or more tasks return an error,
     /// one will be chosen as the returned error for this future.
     pub async fn block_until_done(&mut self) -> Result<(), NetError> {
-        if self.join_set.is_empty() {
-            warn!("block_until_done called with no pending tasks");
-            return Ok(());
-        }
-
-        let mut out = Ok(());
-        while let Some(join_result) = self.join_set.join_next().await {
-            match join_result {
-                Ok(Ok(())) => continue,
-                Ok(Err(e)) => out = Err(e),
-                Err(e) => return Err(NetError::from(format!("internal error in spawn: {e}"))),
-            }
-        }
-
-        out
+        join_server_tasks(&mut self.join_set).await
     }
+}
+
+async fn join_server_tasks(join_set: &mut JoinSet<Result<(), NetError>>) -> Result<(), NetError> {
+    if join_set.is_empty() {
+        warn!("block_until_done called with no pending tasks");
+        return Ok(());
+    }
+
+    while let Some(join_result) = join_set.join_next().await {
+        let error = match join_result {
+            Ok(Ok(())) => continue,
+            Ok(Err(error)) => error,
+            Err(error) => NetError::from(format!("internal error in spawn: {error}")),
+        };
+        // A listener that has stopped serving must not leave the process in a
+        // half-alive state while its other sockets wait forever. Abort and
+        // drain sibling listeners so the caller can fail readiness and exit.
+        join_set.abort_all();
+        while join_set.join_next().await.is_some() {}
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 async fn handle_udp(
@@ -1422,5 +1431,26 @@ mod admission_tests {
         assert!(cx.try_admit_h2().is_none());
         drop(h2);
         assert!(cx.try_admit_h2().is_some());
+    }
+}
+
+#[cfg(test)]
+mod listener_failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn listener_failure_aborts_and_drains_other_server_tasks() {
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async {
+            tokio::task::yield_now().await;
+            Err(NetError::from("listener failed"))
+        });
+        tasks.spawn(async { std::future::pending::<Result<(), NetError>>().await });
+
+        let result = tokio::time::timeout(Duration::from_secs(1), join_server_tasks(&mut tasks))
+            .await
+            .expect("a failed listener must not wait for healthy siblings");
+        assert!(result.is_err());
+        assert!(tasks.is_empty(), "all sibling listener tasks are drained");
     }
 }
