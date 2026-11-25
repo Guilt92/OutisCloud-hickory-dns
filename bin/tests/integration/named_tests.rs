@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::server_harness::{TestServer, query_a, query_a_refused};
+use crate::server_harness::{TestServer, query_a, query_a_refused, query_message};
 use hickory_net::client::{Client, ClientHandle};
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_net::tcp::TcpClientStream;
@@ -584,6 +584,53 @@ async fn protocol_admission_fanout_keeps_service_available() {
     tokio::time::timeout(Duration::from_secs(3), query_a(&mut client))
         .await
         .expect("DNS service did not recover after admission pressure");
+}
+
+#[tokio::test]
+async fn axfr_for_external_zone_is_refused_without_upstream_contact() {
+    subscribe();
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind fake upstream");
+    upstream
+        .set_nonblocking(true)
+        .expect("set fake upstream nonblocking");
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "example.test"
+zone_type = "External"
+[zones.stores]
+type = "forward"
+[[zones.stores.name_servers]]
+ip = "127.0.0.1"
+trust_negative_responses = false
+connections = [{{ port = {upstream_port}, protocol = {{ type = "tcp" }} }}]
+[zones.stores.options]
+timeout = 1
+"#
+    );
+    let server = TestServer::start_temporary(&config, &[]);
+    let dns_port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+
+    let provider = TokioRuntimeProvider::new();
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, dns_port));
+    let (stream_future, sender) = TcpClientStream::new(addr, None, None, provider);
+    let stream = stream_future.await.expect("connect to test DNS server");
+    let (mut client, background) = Client::<TokioRuntimeProvider>::new(stream, sender);
+    tokio::spawn(background);
+    let response = query_message(
+        &mut client,
+        Name::from_str("example.test.").unwrap(),
+        RecordType::AXFR,
+    )
+    .await
+    .expect("AXFR query must receive a DNS response");
+    assert_eq!(response.response_code(), ResponseCode::Refused);
+    assert!(
+        matches!(upstream.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "AXFR must be refused locally without contacting the forwarder"
+    );
 }
 
 #[tokio::test]

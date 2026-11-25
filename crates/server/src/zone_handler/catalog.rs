@@ -679,15 +679,31 @@ impl Catalog {
         #[cfg(feature = "metrics")]
         let started = std::time::Instant::now();
         let info = if query_type == RecordType::AXFR {
-            zone_transfer(
-                request_info,
-                handlers,
-                request,
-                response_edns,
-                now,
-                response_handle.clone(),
-            )
-            .await
+            if handlers
+                .iter()
+                .any(|handler| handler.zone_type() == ZoneType::External)
+            {
+                // AXFR is an authoritative zone-transfer operation. Never
+                // forward it to a recursive/forwarding upstream, where it
+                // could leak transfer probes or expose upstream zone data.
+                send_error_response(
+                    request,
+                    ResponseCode::Refused,
+                    response_edns,
+                    response_handle.clone(),
+                )
+                .await
+            } else {
+                zone_transfer(
+                    request_info,
+                    handlers,
+                    request,
+                    response_edns,
+                    now,
+                    response_handle.clone(),
+                )
+                .await
+            }
         } else {
             lookup(
                 request_info,
