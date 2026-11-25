@@ -1004,6 +1004,40 @@ enabled = {}
     }
 }
 
+#[cfg(all(test, feature = "serde", feature = "toml", feature = "__dnssec"))]
+mod trust_anchor_policy {
+    use super::super::{DnssecPolicy, DnssecPolicyConfig, RecursiveConfig};
+
+    #[test]
+    fn recursive_config_defaults_to_builtin_root_validation() {
+        let config = toml::from_str::<RecursiveConfig>(r#"roots = "root.zone""#)
+            .expect("default recursive config parses");
+        assert!(matches!(
+            config.dnssec_policy,
+            DnssecPolicyConfig::ValidateWithStaticKey { path: None, .. }
+        ));
+
+        let policy = DnssecPolicy::from_config(&config.dnssec_policy)
+            .expect("built-in root trust anchor is available");
+        assert!(matches!(policy, DnssecPolicy::ValidateWithStaticKey(_)));
+    }
+
+    #[test]
+    fn configured_missing_trust_anchor_fails_closed() {
+        let config = toml::from_str::<RecursiveConfig>(
+            r#"roots = "root.zone"
+[dnssec_policy.ValidateWithStaticKey]
+path = "missing-test-trust-anchor.key""#,
+        )
+        .expect("recursive config parses before loading files");
+        let result = DnssecPolicy::from_config(&config.dnssec_policy);
+        assert!(
+            result.is_err(),
+            "missing custom trust anchor must fail closed"
+        );
+    }
+}
+
 const ROOT_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 1, 1));
 const TLD_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 2, 1));
 const LEAF_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 3, 1));

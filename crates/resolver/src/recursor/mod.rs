@@ -740,11 +740,10 @@ pub struct DnssecConfig {
 
 /// DNSSEC policy configuration
 #[cfg(feature = "serde")]
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub enum DnssecPolicyConfig {
     /// security unaware; DNSSEC records will not be requested nor processed
-    #[default]
     SecurityUnaware,
 
     /// DNSSEC validation is disabled; DNSSEC records will be requested and processed
@@ -767,6 +766,26 @@ pub enum DnssecPolicyConfig {
         /// set to control the size of the DNSSEC validation cache.  Set to none to use the default
         validation_cache_size: Option<usize>,
     },
+}
+
+#[cfg(feature = "serde")]
+impl Default for DnssecPolicyConfig {
+    fn default() -> Self {
+        #[cfg(feature = "__dnssec")]
+        {
+            // Configured recursive service must validate by default. `None`
+            // selects the built-in root trust anchor in `ValidatingRecursor`.
+            Self::ValidateWithStaticKey {
+                path: None,
+                nsec3_soft_iteration_limit: None,
+                nsec3_hard_iteration_limit: None,
+                validation_cache_size: None,
+            }
+        }
+
+        #[cfg(not(feature = "__dnssec"))]
+        Self::SecurityUnaware
+    }
 }
 
 /// Bailiwick/sub zone checking.

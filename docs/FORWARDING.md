@@ -6,12 +6,12 @@ OutisCloud is an **authoritative DNS hosting platform first**. Forwarding and re
 
 - **Authoritative only (default/recommended).** The server answers only for zones in its catalog. AXFR/IXFR/NOTIFY follow the transfer policy and are never used for recursion.
 - **Forwarding zone.** A configured zone forwards queries to explicit upstream resolvers. The resolver cache defaults to 512 responses (previously 32) and is configurable per resolver config.
-- **Experimental recursor.** Available behind the `recursor` feature and not covered by authoritative SLAs.
+- **Experimental recursor.** Available behind the `recursor` feature and not covered by authoritative SLAs. When built with DNSSEC support, a configured recursor validates with the built-in root trust anchor by default. A custom static trust-anchor file can be configured; an unreadable or invalid file prevents the recursor zone from loading. Disabling validation must be an explicit configuration choice. Builds without DNSSEC support cannot validate responses.
 
 ## Explicit non-goals
 
 - No open recursive resolver by default.
-- No trust-anchor management UI.
+- No trust-anchor management UI; trust-anchor files are operator-managed configuration.
 - No recursive cache shared with authoritative zone state.
 - No use of forwarding to mask missing authoritative zones.
 
