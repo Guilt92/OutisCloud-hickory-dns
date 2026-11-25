@@ -1959,7 +1959,7 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Delivery state
 
-Current branch is `main`; remote is `origin`; upstream `origin/main` now contains `eb6261838` (verified by the successful push). Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, `1ea00762e`, `91132b968`, `8c233e2ff`, `d3d96581b`, `be06824d9`, `fa6e5a8cd`, `4ca0c02d8`, and `eb6261838` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
+Current branch is `main`; remote is `origin`; upstream `origin/main` now contains `0df0bf0ae` (verified by the successful push). Commits `b8ad0f418`, `13fb2de3c`, `6270a728e`, `fcb51ef62`, `5b85126d5`, `23b936243`, `bc34c2dd8`, `ff25bcc1d`, `1ea00762e`, `91132b968`, `8c233e2ff`, `d3d96581b`, `be06824d9`, `fa6e5a8cd`, `4ca0c02d8`, `eb6261838`, `534fece37`, and `0df0bf0ae` were pushed. Remaining dirty and untracked files (`.env`, `env/api.env`, `env/db.env`, `deploy/dns/named.toml`, `web/ui/src/pages/Admin/AuditLogs.jsx`, `WORK_PROGRESS.md`, the audit markdown, and `deploy/dns/.orphaned/`) are preserved user changes and were not staged. The user deletions of `FINAL_IMPLEMENTATION_REPORT.md` and `TASK_STATUS.md` are preserved. No runtime databases, DNS state, or secrets were staged.
 
 ### Phase 0 completion worklist
 
@@ -1999,7 +1999,7 @@ Files: `crates/control_api/src/db_pool.rs`, `crates/control_api/src/main.rs`, `c
 
 ### CORE-005 TCP fanout validation update — 2026-11-25
 
-Added `TestServer::start_with_env` and a regression/load test that starts the isolated DNS server with `DNS_MAX_TCP_CONNECTIONS=8`, opens 96 concurrent idle TCP sockets, confirms at least 32 excess connections are closed, then sends a valid authoritative UDP query to prove the service remains responsive. This exercises the actual accept loop and semaphore instead of only unit-testing the permit primitive. Executed `cargo test -p hickory-dns --test integration tcp_connection_limit_rejects_fanout_and_keeps_service_available -- --nocapture`: passed 1/1 in 0.81 s. Files: `bin/tests/integration/server_harness.rs`, `bin/tests/integration/named_tests.rs`. CORE-005 remains partial until UDP saturation, TLS, and HTTP/2 high-fanout/port-exhaustion evidence is added.
+Added `TestServer::start_with_env` and a regression/load test that starts the isolated DNS server with `DNS_MAX_TCP_CONNECTIONS=8`, opens 96 concurrent idle TCP sockets, confirms at least 32 excess connections are closed, then sends a valid authoritative UDP query to prove the service remains responsive. This exercises the actual accept loop and semaphore instead of only unit-testing the permit primitive. Executed `cargo test -p hickory-dns --test integration tcp_connection_limit_rejects_fanout_and_keeps_service_available -- --nocapture`: passed 1/1 in 0.81 s. CI runs this check. Files: `.github/workflows/ci.yml`, `bin/tests/integration/server_harness.rs`, `bin/tests/integration/named_tests.rs`. Commit `0df0bf0ae` is pushed. CORE-005 remains partial until UDP saturation, TLS, and HTTP/2 high-fanout/port-exhaustion evidence is added.
 
 ### Phase 1 completion worklist
 
