@@ -352,26 +352,31 @@ impl Pool {
                 Ok(value) => match client.batch_execute("COMMIT").await {
                     Ok(()) => return Ok(value),
                     Err(error) if retryable_transaction_error(&error) && attempt + 1 < attempts => {
-                        let _ = client.batch_execute("ROLLBACK").await;
+                        rollback(&client).await;
                         sleep(transaction_retry_delay(attempt)).await;
                     }
                     Err(error) => {
-                        let _ = client.batch_execute("ROLLBACK").await;
+                        rollback(&client).await;
                         return Err(error);
                     }
                 },
                 Err(error) if retryable_transaction_error(&error) && attempt + 1 < attempts => {
-                    let _ = client.batch_execute("ROLLBACK").await;
+                    rollback(&client).await;
                     sleep(transaction_retry_delay(attempt)).await;
                 }
                 Err(error) => {
-                    let _ = client.batch_execute("ROLLBACK").await;
+                    rollback(&client).await;
                     return Err(error);
                 }
             }
         }
         unreachable!("bounded transaction loop always returns")
     }
+}
+
+async fn rollback(client: &Client) {
+    let failed = client.batch_execute("ROLLBACK").await.is_err();
+    super::metrics::record_transaction_rollback(failed);
 }
 
 fn retryable_transaction_error(error: &tokio_postgres::Error) -> bool {

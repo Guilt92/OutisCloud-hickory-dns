@@ -2003,38 +2003,32 @@ async fn replace_password_and_revoke_sessions(
     user_id: &str,
     new_hash: &str,
 ) -> Result<bool, tokio_postgres::Error> {
-    let tx = db.begin().await?;
-    let c = tx.client();
-    if let Err(e) = c.batch_execute("BEGIN").await {
-        return Err(e);
-    }
-    let updated = match c.execute(
-        "UPDATE users SET password_hash = $1, token_version = token_version + 1, updated_at = now() \
-         WHERE CAST(id AS varchar) = $2",
-        &[&new_hash, &user_id],
-    ).await {
-        Ok(n) => n,
-        Err(e) => {
-            rollback_transaction(c).await;
-            return Err(e);
+    let user_id = user_id.to_owned();
+    let new_hash = new_hash.to_owned();
+    db.run_transaction(3, move |client| {
+        let user_id = user_id.clone();
+        let new_hash = new_hash.clone();
+        async move {
+            let updated = client
+                .execute(
+                    "UPDATE users SET password_hash = $1, token_version = token_version + 1, updated_at = now() \
+                     WHERE CAST(id AS varchar) = $2",
+                    &[&new_hash, &user_id],
+                )
+                .await?;
+            if updated == 0 {
+                return Ok(false);
+            }
+            client
+                .execute(
+                    "DELETE FROM token_blacklist WHERE CAST(user_id AS varchar) = $1 AND token_type = 'refresh'",
+                    &[&user_id],
+                )
+                .await?;
+            Ok(true)
         }
-    };
-    if updated == 0 {
-        rollback_transaction(c).await;
-        return Ok(false);
-    }
-    if let Err(e) = c.execute(
-        "DELETE FROM token_blacklist WHERE CAST(user_id AS varchar) = $1 AND token_type = 'refresh'",
-        &[&user_id],
-    ).await {
-        rollback_transaction(c).await;
-        return Err(e);
-    }
-    if let Err(e) = c.batch_execute("COMMIT").await {
-        return Err(e);
-    }
-    drop(tx);
-    Ok(true)
+    })
+    .await
 }
 
 /// Change password for the currently authenticated user
