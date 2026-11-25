@@ -516,9 +516,15 @@ async fn test_server_continues_on_bad_data_tcp() {
 }
 
 #[tokio::test]
-async fn tcp_connection_limit_rejects_fanout_and_keeps_service_available() {
+async fn protocol_admission_fanout_keeps_service_available() {
     subscribe();
-    let server = TestServer::start_with_env("example.toml", &[("DNS_MAX_TCP_CONNECTIONS", "8")]);
+    let server = TestServer::start_with_env(
+        "example.toml",
+        &[
+            ("DNS_MAX_TCP_CONNECTIONS", "8"),
+            ("DNS_MAX_INFLIGHT_UDP", "8"),
+        ],
+    );
     let tcp_addr = SocketAddr::from((
         Ipv4Addr::LOCALHOST,
         server.ports.get_v4(Protocol::Tcp).expect("no TCP port"),
@@ -552,15 +558,32 @@ async fn tcp_connection_limit_rejects_fanout_and_keeps_service_available() {
         "expected excess connections to be rejected, got {closed_before_request} closed"
     );
 
-    // The listener remains usable after the burst; a normal UDP query still
-    // gets the authoritative fixture answer.
     let udp_port = server.ports.get_v4(Protocol::Udp).expect("no UDP port");
+    let udp_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, udp_port));
+    let flood = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind UDP flood client");
+    let mut packet = vec![0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    packet.extend_from_slice(&[3, b'w', b'w', b'w', 7]);
+    packet.extend_from_slice(b"example");
+    packet.extend_from_slice(&[3]);
+    packet.extend_from_slice(b"com");
+    packet.extend_from_slice(&[0, 0, 1, 0, 1]);
+    for _ in 0..32 {
+        flood
+            .send_to(&packet, udp_addr)
+            .expect("send bounded UDP load");
+    }
+    drop(flood);
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Both listeners remain usable after the combined burst; a normal UDP
+    // query still gets the authoritative fixture answer within the deadline.
     let provider = TokioRuntimeProvider::new();
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, udp_port));
-    let stream = UdpClientStream::builder(addr, provider).build();
+    let stream = UdpClientStream::builder(udp_addr, provider).build();
     let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
     tokio::spawn(bg);
-    query_a(&mut client).await;
+    tokio::time::timeout(Duration::from_secs(3), query_a(&mut client))
+        .await
+        .expect("DNS service did not recover after admission pressure");
 }
 
 #[tokio::test]
