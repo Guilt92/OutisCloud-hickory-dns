@@ -1777,10 +1777,10 @@ Validation performed for this status update:
 | 0 | ARCH-006 | P0 | COMPLETED | ADR-0002 accepted; scope decision documented. |
 | 0 | ARCH-007 | P0 | BLOCKED | Tracked live-looking secrets require owner-provided values and coordinated rotation/untracking. |
 | 0 | ARCH-008 | P0 | COMPLETED | ADR-0003 accepted; topology/SLO/RPO/RTO targets documented. |
-| 1 | CORE-001 | P1 | NEEDS VERIFICATION | Implemented: TCP-only and chunked AXFR with TSIG MAC chaining implemented. Remaining: signed interop unvalidated. Verification gap: Signed AXFR multi-message interoperability against an independent implementation was not run. |
-| 1 | CORE-002 | P1 | NEEDS VERIFICATION | Implemented: Journal transactions, delta query and IXFR path exist. Remaining: SQLite end-to-end IXFR test pending. Verification gap: SQLite-backed end-to-end IXFR exchange was not run. |
+| 1 | CORE-001 | P1 | PARTIALLY COMPLETED | Implemented: TCP-only, bounded multi-message AXFR; independent `dig` verifies an 80-record TSIG-signed transfer and unsigned requests are refused promptly. Remaining: AXFR client and BIND/Knot server interop plus file-store TSIG policy. |
+| 1 | CORE-002 | P1 | COMPLETED | IXFR has an explicit safe compatibility boundary: current-serial requests return one SOA; stale-serial requests return NOTIMP until journal entries contain RFC 1995 old/new SOA boundaries. Isolated SQLite integration uses `nsupdate` to advance the serial and independent `dig` to verify current-serial success and stale-history refusal. |
 | 1 | CORE-003 | P1 | PARTIALLY COMPLETED | Implemented: NOTIFY ACK and bounded sender retry exist. Remaining: no peer config or secondary refresh. |
-| 1 | CORE-004 | P0 | COMPLETED | DNS /health and /ready integration test passes. |
+| 1 | CORE-004 | P0 | PARTIALLY COMPLETED | DNS `/health` and `/ready` start-up test passes; failed zone reload now returns 503 while preserving last-known-good data, then returns 200 after a valid reload. Listener/key active probes and cluster transition validation remain. |
 | 1 | CORE-005 | P1 | NEEDS VERIFICATION | Implemented: Admission semaphores and unit test exist. Remaining: no high-fanout load proof. Verification gap: High-fanout load/backpressure proof and port-exhaustion check were not run. |
 | 1 | CORE-006 | P1 | COMPLETED | PII redaction unit test passes. |
 | 1 | CORE-007 | P2 | COMPLETED | Forwarder cache default is configurable and 512; docs/FORWARDING.md states the product boundary. Cache miss/hit/expiry and caching-client tests pass in the 79/79 resolver library suite (3 ignored). |
@@ -1938,14 +1938,14 @@ This ledger is the only current task and implementation report. Historical statu
 
 ### Current roadmap totals
 
-133 tasks total. COMPLETED 35 (26.3%), PARTIALLY COMPLETED 53, NEEDS VERIFICATION 8, BLOCKED 36, NOT STARTED 1. ARCH-002 moved from PARTIALLY COMPLETED to COMPLETED after database and filesystem failure tests. Counts exclude prose-only feature-matrix rows and count each roadmap task ID once.
+133 tasks total. COMPLETED 35 (26.3%), PARTIALLY COMPLETED 55, NEEDS VERIFICATION 6, BLOCKED 36, NOT STARTED 1. Counts exclude prose-only feature-matrix rows and count each roadmap task ID once. CORE-002 now meets its documented safe-refusal alternative; CORE-001 and CORE-004 statuses were corrected to reflect remaining client/interoperability and readiness probes.
 
 ### Phase 0 and Phase 1 execution state
 
 | Phase | Gate | Outstanding acceptance work |
 |---|---|---|
 | 0 | OPEN | ARCH-002 completed and verified. ARCH-003 still needs per-tenant admission, serialization retry policy and rollback metrics; ARCH-007 requires replacement of tracked secret material after coordinated credential issuance. Continue independent Phase 1 work while these exact items remain open. |
-| 1 | OPEN | CORE-001 signed AXFR interoperability; CORE-002 SQLite IXFR exchange; CORE-003 peer configuration and secondary refresh; CORE-004 full readiness conditions; CORE-005 backpressure/load evidence; CORE-008 external conformance and dual stack on germ; CORE-009 trust-anchor policy; CORE-010 real DoH3 client exchange; CORE-011 advanced record type API/UI round trip; CORE-013 reload-under-write-load proof. See task rows in §19 for per-task dependencies and exact evidence. |
+| 1 | OPEN | CORE-001 AXFR client and BIND/Knot interoperability; CORE-003 peer configuration and secondary refresh; CORE-004 listener/key readiness checks; CORE-005 backpressure/load evidence; CORE-008 external conformance and dual stack on germ; CORE-009 trust-anchor policy; CORE-010 real DoH3 client exchange; CORE-011 advanced record type API/UI round trip; CORE-013 reload-under-write-load proof. CORE-002 is completed by the explicit safe-refusal decision described below; full IXFR deltas remain outside supported product behavior. See task rows in §19 for per-task dependencies and exact evidence. |
 
 ### Latest implementation and validation evidence
 
@@ -2005,3 +2005,9 @@ Commit `5b85126d5` was pushed to `origin/main`; remote SHA matches local `HEAD`.
 **Status: PARTIALLY COMPLETED.** DNS `/ready` now turns unavailable after a zone reload/configuration failure and returns to ready after a successful reload; the server continues serving the last-known-good catalog during the failed reload. Added writable isolated fixture support to the integration harness and a regression test that starts ready, writes a malformed zone, waits for HTTP 503, restores valid zone data, then verifies HTTP 200 recovery.
 
 Files changed: `bin/src/lib.rs`, `bin/tests/integration/server_harness.rs`, `bin/tests/integration/named_metrics_tests.rs`, `.github/workflows/ci.yml`. Executed `cargo test -p hickory-dns --test integration readiness_tracks_failed_zone_reload_and_recovery -- --nocapture`: passed 1/1. CI now runs both initial readiness and failed-reload recovery tests. Remaining: readiness does not yet actively probe every DNS listener or signing-key availability; cluster-level compose/Helm transition validation and publication-age semantics still need verification.
+
+### CORE-002 implementation update — 2026-11-25
+
+**Status: COMPLETED by the roadmap's explicit-rejection alternative.** Testing exposed that the existing recovery journal does not encode RFC 1995 old/new SOA boundaries: a stale IXFR request could otherwise receive an incomplete delta. The server now returns NOTIMP for stale serials and never publishes those unframed journal records as an IXFR answer. A request at the current SOA serial receives exactly one current SOA, per RFC 1995. Full IXFR delta replication remains unsupported; clients must use AXFR until the journal is redesigned.
+
+Files changed: `crates/server/src/zone_handler/catalog.rs`, `bin/tests/integration/named_tests.rs`, `.github/workflows/ci.yml`. `cargo test -p hickory-dns --test integration ixfr_current_serial_succeeds_and_stale_serial_is_refused_safely -- --nocapture` passed 1/1 on an isolated temporary SQLite server. `dig` verified the one-SOA current-serial response; a TSIG-authenticated `nsupdate` advanced the zone serial; the stale IXFR request then returned promptly as `Transfer failed` and server logs recorded response code NOTIMP, with no incomplete records returned. This preserves honest protocol behavior instead of silently claiming IXFR replication.

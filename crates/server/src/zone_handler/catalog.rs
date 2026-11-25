@@ -337,24 +337,36 @@ impl Catalog {
                         .await;
                 }
             };
-            let deltas = match handler.ixfr_deltas(old_soa.serial()).await {
-                Some(Ok(deltas)) => deltas,
-                Some(Err(_)) => {
-                    return send_error_response(
-                        request,
-                        ResponseCode::ServFail,
-                        response_edns,
-                        response_handle,
-                    )
-                    .await;
-                }
-                None => continue,
-            };
+            let current_serial = transfer
+                .start_soa
+                .iter()
+                .find_map(|record| match record.data() {
+                    RData::SOA(soa) => Some(soa.serial()),
+                    _ => None,
+                });
+            if current_serial != Some(old_soa.serial()) {
+                // The current journal records updates for crash recovery but
+                // do not preserve RFC 1995 old/new SOA delimiters. Never send
+                // those unframed records as an IXFR delta; report that the
+                // client must use AXFR until a versioned journal is available.
+                warn!(
+                    requested_serial = old_soa.serial(),
+                    current_serial = ?current_serial,
+                    "IXFR history is unavailable; refusing rather than sending an incomplete delta"
+                );
+                return send_error_response(
+                    request,
+                    ResponseCode::NotImp,
+                    response_edns,
+                    response_handle,
+                )
+                .await;
+            }
 
-            let mut records = Vec::with_capacity(deltas.len() + 2);
-            records.extend(transfer.start_soa.iter());
-            records.extend(deltas.iter());
-            records.extend(transfer.end_soa.iter());
+            // RFC 1995: when the client's serial is current, return only the
+            // current SOA. The server intentionally rejects stale serials
+            // above until its recovery journal can provide framed deltas.
+            let records = transfer.start_soa.iter().collect::<Vec<_>>();
 
             let header = Header::response_from_request(request.header());
             let mut last_info = None;

@@ -7,7 +7,7 @@
 
 use std::io::Write;
 use std::net::*;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 
 use crate::server_harness::{TestServer, query_a, query_a_refused};
@@ -110,6 +110,98 @@ algorithm = "hmac-sha256"
     assert!(
         signed_output.contains("XFR size: 84 records"),
         "{signed_output}"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "sqlite")]
+async fn ixfr_current_serial_succeeds_and_stale_serial_is_refused_safely() {
+    let zone = "$ORIGIN example.test.\n@ 3600 IN SOA ns1.example.test. hostmaster.example.test. 2026112501 3600 600 604800 300\n@ 3600 IN NS ns1.example.test.\nns1 3600 IN A 192.0.2.1\n";
+    let secret = "test_secret_key_for_metrics_tests";
+    let secret_b64 = "dGVzdF9zZWNyZXRfa2V5X2Zvcl9tZXRyaWNzX3Rlc3Rz";
+    let config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+
+[[zones]]
+zone = "example.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+
+[zones.stores]
+type = "sqlite"
+zone_path = "example.test.zone"
+journal_path = "example.test.jrnl"
+allow_update = true
+
+[[zones.stores.tsig_keys]]
+name = "transfer.example.test."
+key_file = "transfer.key"
+algorithm = "hmac-sha256"
+"#;
+    let server = TestServer::start_temporary(
+        config,
+        &[("example.test.zone", zone), ("transfer.key", secret)],
+    );
+    let port = server.ports.get_v4(Protocol::Tcp).expect("TCP listener");
+    let query_ixfr = |serial: &str| {
+        Command::new("dig")
+            .args([
+                "+tcp",
+                "@127.0.0.1",
+                "-p",
+                &port.to_string(),
+                "example.test",
+                &format!("IXFR={serial}"),
+                "+time=3",
+                "+tries=1",
+            ])
+            .output()
+            .expect("dig is required for independent IXFR interoperability testing")
+    };
+    let current = query_ixfr("2026112501");
+    let current_output = String::from_utf8_lossy(&current.stdout);
+    assert!(current.status.success(), "{current_output}");
+    assert!(current_output.contains("2026112501"), "{current_output}");
+    assert!(
+        current_output.contains("XFR size: 1 record"),
+        "{current_output}"
+    );
+
+    let update = format!(
+        "server 127.0.0.1 {port}\nzone example.test.\nupdate add newhost.example.test. 300 A 192.0.2.2\nsend\n"
+    );
+    let mut nsupdate = Command::new("nsupdate")
+        .args([
+            "-v",
+            "-y",
+            &format!("hmac-sha256:transfer.example.test.:{secret_b64}"),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("nsupdate is required for IXFR history test");
+    nsupdate
+        .stdin
+        .take()
+        .expect("nsupdate stdin")
+        .write_all(update.as_bytes())
+        .expect("send authenticated update");
+    let update = nsupdate.wait_with_output().expect("wait for nsupdate");
+    assert!(
+        update.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&update.stdout),
+        String::from_utf8_lossy(&update.stderr)
+    );
+
+    let stale = query_ixfr("2026112501");
+    let stale_output = String::from_utf8_lossy(&stale.stdout);
+    assert!(stale_output.contains("Transfer failed"), "{stale_output}");
+    assert!(!stale_output.contains("timed out"), "{stale_output}");
+    assert!(
+        !stale_output.contains("newhost.example.test."),
+        "{stale_output}"
     );
 }
 
