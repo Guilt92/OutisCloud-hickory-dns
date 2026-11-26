@@ -451,7 +451,7 @@ impl DnsServer {
                     )
                     .await
                     {
-                        Ok(()) => {
+                        Ok(_) => {
                             refreshed = true;
                             break;
                         }
@@ -560,13 +560,14 @@ impl DnsServer {
                 )
                 .await
                 {
-                    Ok(()) => {
+                    Ok(true) => {
                         // File notifications are best-effort on some mounted
                         // filesystems. Explicitly reload the catalog after an
                         // installed transfer so serving state converges even
                         // when the watcher misses an atomic rename.
                         let _ = reload_after_secondary_transfer.send(());
                     }
+                    Ok(false) => {}
                     Err(error) => error!(%error, "secondary zone refresh after NOTIFY failed"),
                 }
             }
@@ -1085,7 +1086,7 @@ async fn refresh_secondary_from_notify(
     source: SocketAddr,
     config_path: &Path,
     zone_dir: &Path,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let config = Config::read_config(config_path)
         .map_err(|error| format!("could not read active config: {error}"))?;
     let zone = config
@@ -1098,7 +1099,7 @@ async fn refresh_secondary_from_notify(
         })
         .ok_or_else(|| format!("NOTIFY zone {requested_zone} is not configured"))?;
     let ZoneTypeConfig::Secondary(server_config) = &zone.zone_type_config else {
-        return Ok(());
+        return Ok(false);
     };
     let master = zone
         .masters()
@@ -1125,9 +1126,9 @@ async fn refresh_secondary_from_notify(
     for attempt in 0..3 {
         match fetch_zone_axfr(&master, requested_zone.clone().into(), zone_dir).await {
             Ok(records) => match atomically_install_axfr(&requested_zone, &destination, &records) {
-                Ok(()) => {
-                    info!(%requested_zone, %source, "secondary zone refreshed from configured primary");
-                    return Ok(());
+                Ok(changed) => {
+                    info!(%requested_zone, %source, changed, "secondary AXFR from configured primary validated");
+                    return Ok(changed);
                 }
                 Err(error) => last_error = error,
             },
@@ -1196,17 +1197,19 @@ async fn secondary_refresh_loop(
             )
             .await
             {
-                Ok(()) => {
+                Ok(changed) => {
                     refreshed = true;
+                    if changed {
+                        // The transfer may be valid but carry the current serial.
+                        // Only reload the serving catalog when the file changed.
+                        let _ = reload_tx.send(());
+                    }
                     break;
                 }
                 Err(error) => errors.push(error),
             }
         }
         if refreshed {
-            if reload_tx.send(()).is_err() {
-                return;
-            }
             let origin: Name = zone.clone().into();
             (refresh, retry) = secondary_soa_timers(&origin, &file);
             delay = refresh;
@@ -1275,7 +1278,7 @@ fn atomically_install_axfr(
     zone: &Name,
     destination: &Path,
     records: &[Record],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if records.len() < 2 {
         return Err(String::from("AXFR did not contain SOA transfer boundaries"));
     }
@@ -1342,7 +1345,7 @@ fn atomically_install_axfr(
         let serial = first_soa.serial();
         let delta = serial.wrapping_sub(old.serial());
         if serial == old.serial() || delta >= (1 << 31) {
-            return Ok(()); // stale/replayed NOTIFY must never roll a secondary backwards
+            return Ok(false); // stale/replayed NOTIFY must never roll a secondary backwards
         }
     }
 
@@ -1374,7 +1377,7 @@ fn atomically_install_axfr(
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
-    result
+    result.map(|()| true)
 }
 
 #[cfg(feature = "__dnssec")]
@@ -1832,5 +1835,41 @@ mod reload_fingerprint_tests {
         let second = zone_fingerprint(&path).expect("fingerprint");
         assert_ne!(first, second);
         assert_eq!(zone_fingerprint(&dir.path().join("missing.zone")), None);
+    }
+
+    fn transfer_records(serial: u32, address: &str) -> Vec<Record> {
+        let zone = Name::from_ascii("example.test.").unwrap();
+        let text = format!(
+            "$ORIGIN example.test.\n$TTL 60\n@ IN SOA ns.example.test. hostmaster.example.test. {serial} 1 1 10 1\n@ IN NS ns.example.test.\nns IN A 192.0.2.1\nwww IN A {address}\n"
+        );
+        let (_, sets) = ZoneParser::new(text, None, Some(zone)).parse().unwrap();
+        let mut records: Vec<Record> = sets
+            .into_iter()
+            .flat_map(|(_, set)| set.into_iter())
+            .collect();
+        let soa_index = records
+            .iter()
+            .position(|record| record.data().record_type() == RecordType::SOA)
+            .unwrap();
+        let soa = records.remove(soa_index);
+        records.insert(0, soa.clone());
+        records.push(soa);
+        records
+    }
+
+    #[test]
+    fn unchanged_or_stale_axfr_is_successful_without_replacing_last_known_good_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let zone = Name::from_ascii("example.test.").unwrap();
+        let path = dir.path().join("example.zone");
+
+        assert!(atomically_install_axfr(&zone, &path, &transfer_records(2, "192.0.2.2")).unwrap());
+        let last_known_good = fs::read(&path).unwrap();
+
+        assert!(
+            !atomically_install_axfr(&zone, &path, &transfer_records(2, "192.0.2.99")).unwrap()
+        );
+        assert!(!atomically_install_axfr(&zone, &path, &transfer_records(1, "192.0.2.1")).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), last_known_good);
     }
 }
