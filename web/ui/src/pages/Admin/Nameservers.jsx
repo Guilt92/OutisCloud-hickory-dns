@@ -1,8 +1,9 @@
 import React from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
+import Modal from '../../components/Modal'
 import api from '../../api/client'
 import Notifications from '../../components/Notifications'
-import { Globe, Plus, Trash2, RefreshCw, X, Check, Network, Edit3 } from 'lucide-react'
+import { Globe, Plus, Trash2, RefreshCw, Check, Network, Edit3 } from 'lucide-react'
 import { EmptyState, PageHeader, useConfirm } from '../../components/ui'
 import { validators } from '../../hooks/useFormValidation'
 
@@ -40,13 +41,6 @@ export default function Nameservers(){
     if(token) api.setToken(token)
     load()
   }, [load])
-
-  React.useEffect(() => {
-    if (!showModal) return undefined
-    const onKey = (e) => { if (e.key === 'Escape') setShowModal(false) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [showModal])
 
   const openCreate = () => {
     setForm({
@@ -224,32 +218,7 @@ export default function Nameservers(){
         )}
       </motion.div>
 
-      <AnimatePresence>
-        {showModal && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setShowModal(false)}
-          >
-            <motion.div 
-              role="dialog" aria-modal="true" aria-label={editingNs ? 'Edit nameserver' : 'Add nameserver'}
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="card shadow-pop w-full max-w-lg"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between p-6 border-b border-line">
-                <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-ink">
-                  {editingNs ? 'Edit nameserver' : 'Add nameserver'}
-                </h3>
-                <button onClick={() => setShowModal(false)} aria-label="Close dialog" className="btn-icon">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={editingNs ? 'Edit nameserver' : 'Add nameserver'}>
               <div className="p-6 space-y-4">
                 <div>
                   <label htmlFor="nameserver-hostname" className="form-label">Hostname <span className="text-danger-500">*</span></label>
@@ -310,10 +279,7 @@ export default function Nameservers(){
                   <span>{editingNs ? 'Update nameserver' : 'Create nameserver'}</span>
                 </button>
               </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </Modal>
     </div>
   )
 }
