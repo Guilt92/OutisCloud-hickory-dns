@@ -2964,7 +2964,11 @@ async fn auth_middleware(
     Ok(next.call(req).await?.map_into_boxed_body())
 }
 
-async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+async fn list_servers(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
     // Server addresses are infrastructure details: administrators only.
     match auth_from_header(&req, &data.jwt_secret) {
         None => {
@@ -2980,10 +2984,20 @@ async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Respo
         Some(_) => {}
     }
 
-    // Query servers
+    let (limit, offset, qtext) = page.parts();
+    let total = match data.db.query_one(
+        "SELECT count(*) FROM servers WHERE $1::text IS NULL OR name ILIKE '%' || $1 || '%' OR address ILIKE '%' || $1 || '%' OR COALESCE(region, '') ILIKE '%' || $1 || '%'",
+        &[&qtext],
+    ).await {
+        Ok(row) => row.get::<_, i64>(0),
+        Err(e) => {
+            warn!("list_servers count error: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error","details":"Failed to fetch servers"}));
+        }
+    };
     match data.db.query(
-        "SELECT CAST(id AS varchar), name, address, port, COALESCE(region, ''), enabled, dnssec, enable_logging, max_cache_ttl, min_cache_ttl FROM servers ORDER BY name",
-        &[]
+        "SELECT CAST(id AS varchar), name, address, port, COALESCE(region, ''), enabled, dnssec, enable_logging, max_cache_ttl, min_cache_ttl FROM servers WHERE $1::text IS NULL OR name ILIKE '%' || $1 || '%' OR address ILIKE '%' || $1 || '%' OR COALESCE(region, '') ILIKE '%' || $1 || '%' ORDER BY name, id LIMIT $2::bigint OFFSET $3::bigint",
+        &[&qtext, &limit, &offset]
     ).await {
         Ok(rows) => {
             let mut servers: Vec<ServerInfo> = rows.into_iter().map(|r| ServerInfo {
@@ -3007,7 +3021,7 @@ async fn list_servers(data: web::Data<AppState>, req: HttpRequest) -> impl Respo
             for (sv, pr) in servers.iter_mut().zip(probes) {
                 sv.status = match pr.await { Ok(Some(st)) => Some(st.to_string()), Ok(None) => Some("disabled".to_string()), Err(_) => None };
             }
-            HttpResponse::Ok().json(servers)
+            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(servers)
         }
         Err(e) => {
             warn!("list_servers database error: {}", e);
@@ -3261,7 +3275,11 @@ struct CreateNameserverReq {
     enabled: Option<bool>,
 }
 
-async fn list_nameservers(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+async fn list_nameservers(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
     let Some(tok) = auth_from_header(&req, &data.jwt_secret) else {
         return HttpResponse::Unauthorized().json(serde_json::json!({
             "error": "unauthorized",
@@ -3270,9 +3288,20 @@ async fn list_nameservers(data: web::Data<AppState>, req: HttpRequest) -> impl R
     };
     // Customers need the public nameservers to delegate their domains, but not disabled/internal entries.
     let only_enabled = tok.claims.role != "admin";
+    let (limit, offset, qtext) = page.parts();
+    let total = match data.db.query_one(
+        "SELECT count(*) FROM nameservers WHERE (enabled OR NOT $1) AND ($2::text IS NULL OR hostname ILIKE '%' || $2 || '%' OR ip_address ILIKE '%' || $2 || '%')",
+        &[&only_enabled, &qtext],
+    ).await {
+        Ok(row) => row.get::<_, i64>(0),
+        Err(e) => {
+            warn!("list_nameservers count error: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error","details":"Failed to fetch nameservers"}));
+        }
+    };
     match data.db.query(
-        "SELECT CAST(id AS varchar), hostname, ip_address, glue_ip, sort_order, enabled FROM nameservers WHERE (enabled OR NOT $1) ORDER BY sort_order, hostname",
-        &[&only_enabled]
+        "SELECT CAST(id AS varchar), hostname, ip_address, glue_ip, sort_order, enabled FROM nameservers WHERE (enabled OR NOT $1) AND ($2::text IS NULL OR hostname ILIKE '%' || $2 || '%' OR ip_address ILIKE '%' || $2 || '%') ORDER BY sort_order, hostname, id LIMIT $3::bigint OFFSET $4::bigint",
+        &[&only_enabled, &qtext, &limit, &offset]
     ).await {
         Ok(rows) => {
             let nameservers: Vec<NameserverInfo> = rows.into_iter().map(|r| NameserverInfo {
@@ -3283,7 +3312,7 @@ async fn list_nameservers(data: web::Data<AppState>, req: HttpRequest) -> impl R
                 sort_order: r.try_get(4).unwrap_or(0),
                 enabled: r.try_get(5).unwrap_or(true),
             }).collect();
-            HttpResponse::Ok().json(nameservers)
+            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(nameservers)
         }
         Err(e) => {
             warn!("list_nameservers database error: {}", e);
@@ -3860,7 +3889,11 @@ async fn delete_agent(
     }
 }
 
-async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+async fn list_agents(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
     // Authenticate and verify admin role
     let tok = match auth_from_header(&req, &data.jwt_secret) {
         Some(t) => t,
@@ -3879,7 +3912,18 @@ async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Respon
         }));
     }
 
-    // Query agents (with synchronisation state)
+    let (limit, offset, qtext) = page.parts();
+    let total = match data.db.query_one(
+        "SELECT count(*) FROM agents WHERE $1::text IS NULL OR name ILIKE '%' || $1 || '%' OR addr ILIKE '%' || $1 || '%'",
+        &[&qtext],
+    ).await {
+        Ok(row) => row.get::<_, i64>(0),
+        Err(e) => {
+            warn!("list_agents count error: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    // Query only one page (with synchronisation state).
     let desired: i64 = match data
         .db
         .query_one("SELECT version FROM publish_state WHERE id = 1", &[])
@@ -3892,13 +3936,27 @@ async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Respon
                 .json(serde_json::json!({"error": "database error"}));
         }
     };
+    let behind: i64 = match data
+        .db
+        .query_one(
+            "SELECT count(*) FROM agents WHERE COALESCE(enabled, true) AND applied_version < $1",
+            &[&desired],
+        )
+        .await
+    {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_agents sync count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database_error"}));
+        }
+    };
     match data.db.query(
         "SELECT CAST(id AS varchar), name, addr, EXTRACT(EPOCH FROM last_heartbeat)::float8 as epoch, COALESCE(enabled, true), applied_version, \
-                EXTRACT(EPOCH FROM last_ack_at)::float8, last_error, sync_requested, last_seen_ip FROM agents ORDER BY name",
-        &[]
+                EXTRACT(EPOCH FROM last_ack_at)::float8, last_error, sync_requested, last_seen_ip FROM agents WHERE $1::text IS NULL OR name ILIKE '%' || $1 || '%' OR addr ILIKE '%' || $1 || '%' ORDER BY name, id LIMIT $2::bigint OFFSET $3::bigint",
+        &[&qtext, &limit, &offset]
     ).await {
         Ok(rows) => {
-            let mut behind = 0i64;
             let agents: Vec<_> = rows.into_iter().map(|r| {
                 let id: String = r.try_get(0).unwrap_or_default();
                 let name: String = r.try_get(1).unwrap_or_default();
@@ -3911,7 +3969,6 @@ async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Respon
                 let age = chrono::Utc::now().signed_duration_since(last_dt).num_seconds();
                 let online = enabled && age < 120;
                 let in_sync = applied >= desired;
-                if enabled && !in_sync { behind += 1; }
                 serde_json::json!({
                     "id": id, "name": name, "addr": addr, "last_heartbeat": last_dt.to_rfc3339(), "online": online, "enabled": enabled,
                     "applied_version": applied, "desired_version": desired, "in_sync": in_sync,
@@ -3922,7 +3979,7 @@ async fn list_agents(data: web::Data<AppState>, req: HttpRequest) -> impl Respon
                 })
             }).collect();
             metrics::record_sync(desired, behind, data.db.healthy());
-            HttpResponse::Ok().json(agents)
+            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(agents)
         }
         Err(e) => {
             warn!("list_agents database error: {}", e);
@@ -3942,6 +3999,7 @@ struct AgentZonesReq {
 
 async fn list_agent_zones(
     path: web::Path<String>,
+    page: web::Query<ext::PageQuery>,
     data: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
@@ -3971,17 +4029,28 @@ async fn list_agent_zones(
                 .json(serde_json::json!({"error": "database error"}));
         }
     }
+    let (limit, offset, qtext) = page.parts();
+    let total = match data.db.query_one(
+        "SELECT count(*) FROM agent_zones az JOIN zones z ON z.id = az.zone_id WHERE CAST(az.agent_id AS varchar) = $1 AND ($2::text IS NULL OR z.domain ILIKE '%' || $2 || '%')",
+        &[&agent_id, &qtext],
+    ).await {
+        Ok(row) => row.get::<_, i64>(0),
+        Err(e) => {
+            warn!("list_agent_zones count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
     match data.db.query(
         "SELECT CAST(z.id AS varchar), z.domain FROM agent_zones az JOIN zones z ON z.id = az.zone_id \
-         WHERE CAST(az.agent_id AS varchar) = $1 ORDER BY z.domain",
-        &[&agent_id],
+         WHERE CAST(az.agent_id AS varchar) = $1 AND ($2::text IS NULL OR z.domain ILIKE '%' || $2 || '%') ORDER BY z.domain, z.id LIMIT $3::bigint OFFSET $4::bigint",
+        &[&agent_id, &qtext, &limit, &offset],
     ).await {
         Ok(rows) => {
             let zones: Vec<_> = rows.into_iter().map(|r| serde_json::json!({
                 "id": r.try_get::<_, String>(0).unwrap_or_default(),
                 "domain": r.try_get::<_, String>(1).unwrap_or_default(),
             })).collect();
-            HttpResponse::Ok().json(serde_json::json!({"agent_id": agent_id, "zones": zones}))
+            HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(serde_json::json!({"agent_id": agent_id, "zones": zones}))
         }
         Err(e) => {
             warn!("list_agent_zones: {}", full_error_string(&e));

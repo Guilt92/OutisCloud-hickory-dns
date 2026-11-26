@@ -5312,8 +5312,42 @@ async fn nameservers_and_server_status_authorization() {
             && !hosts.contains(&"ns-off.example".to_string()),
         "customers see enabled nameservers only: {hosts:?}"
     );
+    let paged = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/nameservers?limit=1&offset=0&q=ns-on")
+            .insert_header(("Authorization", format!("Bearer {tc}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(paged.status(), 200);
+    assert_eq!(paged.headers().get("X-Total-Count").unwrap(), "1");
+    let paged_body: serde_json::Value = test::read_body_json(paged).await;
+    assert_eq!(paged_body.as_array().unwrap().len(), 1);
+    let empty_page = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/nameservers?limit=1&offset=100")
+            .insert_header(("Authorization", format!("Bearer {tc}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(empty_page.headers().get("X-Total-Count").unwrap(), "1");
+    let empty_body: serde_json::Value = test::read_body_json(empty_page).await;
+    assert_eq!(empty_body.as_array().unwrap().len(), 0);
     let (_, b, _) = call!(app, get, "/api/v1/nameservers", Some(&ta), None);
     assert_eq!(b.as_array().unwrap().len(), 2, "admins see all");
+    let admin_page = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/nameservers?limit=1")
+            .insert_header(("Authorization", format!("Bearer {ta}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(admin_page.headers().get("X-Total-Count").unwrap(), "2");
+    let admin_body: serde_json::Value = test::read_body_json(admin_page).await;
+    assert_eq!(admin_body.as_array().unwrap().len(), 1);
     // writes stay admin-only
     let (st, _, _) = call!(
         app,
@@ -5428,6 +5462,19 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
     let az = make_zone(&env, &app, &ta, "alice-one.example").await;
     let _cz = make_zone(&env, &app, &tc, "carol-one.example").await;
 
+    let tenant_page = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/tenants?limit=1&offset=1")
+            .insert_header(("Authorization", format!("Bearer {tadmin}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(tenant_page.status(), 200);
+    assert_eq!(tenant_page.headers().get("X-Total-Count").unwrap(), "2");
+    let tenant_page_body: serde_json::Value = test::read_body_json(tenant_page).await;
+    assert_eq!(tenant_page_body.as_array().unwrap().len(), 1);
+
     // each customer lives in their own tenant and only sees it
     let (_, at, _) = call!(app, get, "/api/v1/tenants", Some(&ta), None);
     let (_, ct, _) = call!(app, get, "/api/v1/tenants", Some(&tc), None);
@@ -5437,6 +5484,18 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
     let ctid = ct[0]["id"].as_str().unwrap().to_string();
     assert_ne!(atid, ctid);
     assert_eq!(at[0]["zones"], 1);
+    let member_page = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/api/v1/tenants/{atid}/members?limit=1&q=alice"))
+            .insert_header(("Authorization", format!("Bearer {ta}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(member_page.status(), 200);
+    assert_eq!(member_page.headers().get("X-Total-Count").unwrap(), "1");
+    let member_page_body: serde_json::Value = test::read_body_json(member_page).await;
+    assert_eq!(member_page_body.as_array().unwrap().len(), 1);
     // cross-tenant access is refused everywhere
     for (m, uri) in [("members", format!("/api/v1/tenants/{}/members", ctid))] {
         let _ = m;

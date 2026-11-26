@@ -362,7 +362,11 @@ async fn tenant_role(
     Ok(row.map(|r| r.get(0)))
 }
 
-pub async fn list_tenants(data: web::Data<AppState>, req: HttpRequest) -> impl Responder {
+pub async fn list_tenants(
+    page: web::Query<ext::PageQuery>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
     let tok = match auth_from_header(&req, &data.jwt_secret) {
         Some(t) => t,
         None => return unauthorized(),
@@ -372,6 +376,15 @@ pub async fn list_tenants(data: web::Data<AppState>, req: HttpRequest) -> impl R
         // make sure a customer who never created a zone still sees (and has) their tenant
         let _ = tenant_for_user(&data.db, &tok.claims.sub, None, false).await;
     }
+    let (limit, offset, qtext) = page.parts();
+    let count = data.db.query_one(
+        "SELECT count(*) FROM tenants t LEFT JOIN tenant_members m ON m.tenant_id = t.id AND CAST(m.user_id AS varchar) = $2 WHERE ($1 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR t.name ILIKE '%' || $3 || '%')",
+        &[&is_admin, &tok.claims.sub, &qtext],
+    ).await;
+    let total: i64 = match count {
+        Ok(row) => row.get(0),
+        Err(e) => return db_error("list_tenants_count", &e),
+    };
     let rows = data.db.query(
         "SELECT CAST(t.id AS varchar), t.name, t.max_zones, t.max_records, t.created_at::text, \
                 (SELECT count(*) FROM zones z WHERE z.tenant_id = t.id), \
@@ -379,9 +392,9 @@ pub async fn list_tenants(data: web::Data<AppState>, req: HttpRequest) -> impl R
                 (SELECT count(*) FROM tenant_members x WHERE x.tenant_id = t.id), \
                 COALESCE(m.role, CASE WHEN $1 THEN 'admin' ELSE '' END) \
          FROM tenants t LEFT JOIN tenant_members m ON m.tenant_id = t.id AND CAST(m.user_id AS varchar) = $2 \
-         WHERE $1 OR m.user_id IS NOT NULL ORDER BY t.name", &[&is_admin, &tok.claims.sub]).await;
+         WHERE ($1 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR t.name ILIKE '%' || $3 || '%') ORDER BY t.name, t.id LIMIT $4::bigint OFFSET $5::bigint", &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset]).await;
     match rows {
-        Ok(rows) => HttpResponse::Ok().json(rows.iter().map(|r| serde_json::json!({
+        Ok(rows) => HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(rows.iter().map(|r| serde_json::json!({
             "id": r.get::<_, String>(0), "name": r.get::<_, String>(1), "max_zones": r.get::<_, Option<i32>>(2), "max_records": r.get::<_, Option<i32>>(3),
             "created_at": r.get::<_, String>(4), "zones": r.get::<_, i64>(5), "records": r.get::<_, i64>(6), "members": r.get::<_, i64>(7), "role": r.get::<_, String>(8),
         })).collect::<Vec<_>>()),
@@ -521,6 +534,7 @@ pub async fn delete_tenant(
 
 pub async fn list_tenant_members(
     path: web::Path<String>,
+    page: web::Query<ext::PageQuery>,
     data: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
@@ -536,8 +550,16 @@ pub async fn list_tenant_members(
         }
         Err(r) => return r,
     }
-    match data.db.query("SELECT CAST(u.id AS varchar), u.username, m.role FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 ORDER BY u.username", &[&id]).await {
-        Ok(rows) => HttpResponse::Ok().json(rows.iter().map(|r| serde_json::json!({"user_id": r.get::<_, String>(0), "username": r.get::<_, String>(1), "role": r.get::<_, String>(2)})).collect::<Vec<_>>()),
+    let (limit, offset, qtext) = page.parts();
+    let total: i64 = match data.db.query_one(
+        "SELECT count(*) FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%')",
+        &[&id, &qtext],
+    ).await {
+        Ok(row) => row.get(0),
+        Err(e) => return db_error("list_tenant_members_count", &e),
+    };
+    match data.db.query("SELECT CAST(u.id AS varchar), u.username, m.role FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%') ORDER BY u.username, u.id LIMIT $3::bigint OFFSET $4::bigint", &[&id, &qtext, &limit, &offset]).await {
+        Ok(rows) => HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(rows.iter().map(|r| serde_json::json!({"user_id": r.get::<_, String>(0), "username": r.get::<_, String>(1), "role": r.get::<_, String>(2)})).collect::<Vec<_>>()),
         Err(e) => db_error("list_tenant_members", &e),
     }
 }
