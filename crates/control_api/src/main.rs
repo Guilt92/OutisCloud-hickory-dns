@@ -7440,7 +7440,17 @@ async fn set_zone_transfer_policy(
 struct ApiDoc;
 
 async fn openapi_spec() -> impl Responder {
-    HttpResponse::Ok().json(ApiDoc::openapi())
+    let mut document = serde_json::to_value(ApiDoc::openapi()).unwrap_or_else(|_| {
+        serde_json::json!({"openapi":"3.0.3","info":{"title":"OutisCloud Control API","version":"1.0.0"}})
+    });
+    let generated_paths: serde_json::Value =
+        serde_json::from_str(include_str!("../openapi-paths.json"))
+            .expect("generated OpenAPI route catalog must be valid JSON");
+    document["paths"] = generated_paths;
+    document["components"]["securitySchemes"]["BearerAuth"] = serde_json::json!({
+        "type": "http", "scheme": "bearer", "bearerFormat": "JWT"
+    });
+    HttpResponse::Ok().json(document)
 }
 
 fn configure_routes(cfg: &mut web::ServiceConfig) {

@@ -30,6 +30,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -48,6 +50,17 @@ jobs:
           npm run build
       - name: Frontend route contract
         run: node web/ui/tests/route-contract.cjs
+      - name: OpenAPI route catalog drift
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 scripts/openapi_contract.py --check
+          if git cat-file -e "$BASE_REF:crates/control_api/openapi-paths.json" 2>/dev/null; then
+            git show "$BASE_REF:crates/control_api/openapi-paths.json" > "$RUNNER_TEMP/openapi-baseline.json"
+            python3 scripts/openapi_contract.py --check-breaking "$RUNNER_TEMP/openapi-baseline.json"
+          else
+            echo "No prior OpenAPI catalog exists at the base revision"
+          fi
       - name: Docs consistency
         run: python3 scripts/docs_check.py
 

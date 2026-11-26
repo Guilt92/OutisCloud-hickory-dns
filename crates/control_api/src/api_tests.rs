@@ -8669,6 +8669,18 @@ async fn openapi_spec_is_published() {
             .starts_with("3.")
     );
     assert!(body["components"]["schemas"].is_object());
+    let published_operations: usize = body["paths"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|methods| methods.as_object().map_or(0, serde_json::Map::len))
+        .sum();
+    assert!(published_operations >= 110);
+    assert!(body["paths"]["/api/v1/zones/{id}/dnssec/multi-signer"]["post"].is_object());
+    assert_eq!(
+        body["components"]["securitySchemes"]["BearerAuth"]["scheme"],
+        "bearer"
+    );
     env.cleanup().await;
 }
 

@@ -1,0 +1,6052 @@
+{
+  "/api/v1/admin/publication-outbox/{domain}/retry": {
+    "post": {
+      "operationId": "post_api_v1_admin_publication_outbox_domain_retry",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "domain",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Admin"
+      ]
+    }
+  },
+  "/api/v1/agents": {
+    "get": {
+      "operationId": "get_api_v1_agents",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/heartbeat": {
+    "post": {
+      "operationId": "post_api_v1_agents_heartbeat",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/register": {
+    "post": {
+      "operationId": "post_api_v1_agents_register",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_agents_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_agents_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/{id}/ack": {
+    "post": {
+      "operationId": "post_api_v1_agents_id_ack",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/{id}/bundle": {
+    "get": {
+      "operationId": "get_api_v1_agents_id_bundle",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/{id}/config": {
+    "get": {
+      "operationId": "get_api_v1_agents_id_config",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/{id}/token/rotate": {
+    "post": {
+      "operationId": "post_api_v1_agents_id_token_rotate",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/agents/{id}/zones": {
+    "get": {
+      "operationId": "get_api_v1_agents_id_zones",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_agents_id_zones",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Agents"
+      ]
+    }
+  },
+  "/api/v1/analytics/global": {
+    "get": {
+      "operationId": "get_api_v1_analytics_global",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Analytics"
+      ]
+    }
+  },
+  "/api/v1/analytics/tenant": {
+    "get": {
+      "operationId": "get_api_v1_analytics_tenant",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Analytics"
+      ]
+    }
+  },
+  "/api/v1/audit/logs": {
+    "get": {
+      "operationId": "get_api_v1_audit_logs",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Audit"
+      ]
+    }
+  },
+  "/api/v1/audit/logs/export": {
+    "get": {
+      "operationId": "get_api_v1_audit_logs_export",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Audit"
+      ]
+    }
+  },
+  "/api/v1/audit/logs/{id}": {
+    "get": {
+      "operationId": "get_api_v1_audit_logs_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Audit"
+      ]
+    }
+  },
+  "/api/v1/auth/admin-reset-password": {
+    "post": {
+      "operationId": "post_api_v1_auth_admin_reset_password",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/change-password": {
+    "post": {
+      "operationId": "post_api_v1_auth_change_password",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/login": {
+    "post": {
+      "operationId": "post_api_v1_auth_login",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/logout": {
+    "post": {
+      "operationId": "post_api_v1_auth_logout",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/me": {
+    "get": {
+      "operationId": "get_api_v1_auth_me",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/mfa/disable": {
+    "post": {
+      "operationId": "post_api_v1_auth_mfa_disable",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/mfa/enable": {
+    "post": {
+      "operationId": "post_api_v1_auth_mfa_enable",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/mfa/setup": {
+    "post": {
+      "operationId": "post_api_v1_auth_mfa_setup",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/auth/refresh": {
+    "post": {
+      "operationId": "post_api_v1_auth_refresh",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Auth"
+      ]
+    }
+  },
+  "/api/v1/config/push": {
+    "post": {
+      "operationId": "post_api_v1_config_push",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Config"
+      ]
+    }
+  },
+  "/api/v1/dns/generate": {
+    "post": {
+      "operationId": "post_api_v1_dns_generate",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Dns"
+      ]
+    }
+  },
+  "/api/v1/dns/lookup": {
+    "post": {
+      "operationId": "post_api_v1_dns_lookup",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Dns"
+      ]
+    }
+  },
+  "/api/v1/dns/status": {
+    "get": {
+      "operationId": "get_api_v1_dns_status",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Dns"
+      ]
+    }
+  },
+  "/api/v1/georules": {
+    "get": {
+      "operationId": "get_api_v1_georules",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Georules"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_georules",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Georules"
+      ]
+    }
+  },
+  "/api/v1/georules/resolve": {
+    "post": {
+      "operationId": "post_api_v1_georules_resolve",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Georules"
+      ]
+    }
+  },
+  "/api/v1/georules/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_georules_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Georules"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_georules_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Georules"
+      ]
+    }
+  },
+  "/api/v1/health-checks": {
+    "get": {
+      "operationId": "get_api_v1_health_checks",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Health Checks"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_health_checks",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Health Checks"
+      ]
+    }
+  },
+  "/api/v1/health-checks/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_health_checks_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Health Checks"
+      ]
+    },
+    "get": {
+      "operationId": "get_api_v1_health_checks_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Health Checks"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_health_checks_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Health Checks"
+      ]
+    }
+  },
+  "/api/v1/health-checks/{id}/run": {
+    "post": {
+      "operationId": "post_api_v1_health_checks_id_run",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Health Checks"
+      ]
+    }
+  },
+  "/api/v1/jobs": {
+    "get": {
+      "operationId": "get_api_v1_jobs",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Jobs"
+      ]
+    }
+  },
+  "/api/v1/jobs/{id}": {
+    "get": {
+      "operationId": "get_api_v1_jobs_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Jobs"
+      ]
+    }
+  },
+  "/api/v1/jobs/{id}/cancel": {
+    "post": {
+      "operationId": "post_api_v1_jobs_id_cancel",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Jobs"
+      ]
+    }
+  },
+  "/api/v1/metrics/queries": {
+    "get": {
+      "operationId": "get_api_v1_metrics_queries",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Metrics"
+      ]
+    }
+  },
+  "/api/v1/nameservers": {
+    "get": {
+      "operationId": "get_api_v1_nameservers",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Nameservers"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_nameservers",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Nameservers"
+      ]
+    }
+  },
+  "/api/v1/nameservers/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_nameservers_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Nameservers"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_nameservers_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Nameservers"
+      ]
+    }
+  },
+  "/api/v1/overview": {
+    "get": {
+      "operationId": "get_api_v1_overview",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Overview"
+      ]
+    }
+  },
+  "/api/v1/servers": {
+    "get": {
+      "operationId": "get_api_v1_servers",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Servers"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_servers",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Servers"
+      ]
+    }
+  },
+  "/api/v1/servers/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_servers_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Servers"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_servers_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Servers"
+      ]
+    }
+  },
+  "/api/v1/servers/{id}/status": {
+    "get": {
+      "operationId": "get_api_v1_servers_id_status",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Servers"
+      ]
+    }
+  },
+  "/api/v1/tenants": {
+    "get": {
+      "operationId": "get_api_v1_tenants",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_tenants",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    }
+  },
+  "/api/v1/tenants/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_tenants_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_tenants_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    }
+  },
+  "/api/v1/tenants/{id}/members": {
+    "get": {
+      "operationId": "get_api_v1_tenants_id_members",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_tenants_id_members",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    }
+  },
+  "/api/v1/tenants/{id}/members/{user_id}": {
+    "delete": {
+      "operationId": "delete_api_v1_tenants_id_members_user_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tenants"
+      ]
+    }
+  },
+  "/api/v1/tokens": {
+    "get": {
+      "operationId": "get_api_v1_tokens",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tokens"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_tokens",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tokens"
+      ]
+    }
+  },
+  "/api/v1/tokens/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_tokens_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tokens"
+      ]
+    }
+  },
+  "/api/v1/tokens/{id}/rotate": {
+    "post": {
+      "operationId": "post_api_v1_tokens_id_rotate",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Tokens"
+      ]
+    }
+  },
+  "/api/v1/users": {
+    "get": {
+      "operationId": "get_api_v1_users",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Users"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_users",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Users"
+      ]
+    }
+  },
+  "/api/v1/users/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_users_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Users"
+      ]
+    },
+    "get": {
+      "operationId": "get_api_v1_users_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Users"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_users_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Users"
+      ]
+    }
+  },
+  "/api/v1/users/{id}/password": {
+    "post": {
+      "operationId": "post_api_v1_users_id_password",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Users"
+      ]
+    }
+  },
+  "/api/v1/webhooks": {
+    "get": {
+      "operationId": "get_api_v1_webhooks",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Webhooks"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_webhooks",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Webhooks"
+      ]
+    }
+  },
+  "/api/v1/webhooks/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_webhooks_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Webhooks"
+      ]
+    }
+  },
+  "/api/v1/zone-templates": {
+    "get": {
+      "operationId": "get_api_v1_zone_templates",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zone Templates"
+      ]
+    }
+  },
+  "/api/v1/zones": {
+    "get": {
+      "operationId": "get_api_v1_zones",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_zones",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/bulk-import": {
+    "post": {
+      "operationId": "post_api_v1_zones_bulk_import",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}": {
+    "delete": {
+      "operationId": "delete_api_v1_zones_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    },
+    "get": {
+      "operationId": "get_api_v1_zones_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_zones_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/clone": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_clone",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_dnssec",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/disable": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_dnssec_disable",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/ds-status": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_dnssec_ds_status",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/enable": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_dnssec_enable",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/multi-signer": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_dnssec_multi_signer",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/proof": {
+    "put": {
+      "operationId": "put_api_v1_zones_id_dnssec_proof",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/rollover": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_dnssec_rollover",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/dnssec/rollover/complete": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_dnssec_rollover_complete",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/export": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_export",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/import": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_import",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/import-bind": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_import_bind",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/lifecycle": {
+    "put": {
+      "operationId": "put_api_v1_zones_id_lifecycle",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/members": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_members",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_zones_id_members",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/members/{user_id}": {
+    "delete": {
+      "operationId": "delete_api_v1_zones_id_members_user_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/metadata": {
+    "put": {
+      "operationId": "put_api_v1_zones_id_metadata",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/records": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_records",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    },
+    "post": {
+      "operationId": "post_api_v1_zones_id_records",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/revisions": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_revisions",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/revisions/{rev}/diff": {
+    "get": {
+      "operationId": "get_api_v1_zones_id_revisions_rev_diff",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "rev",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/revisions/{rev}/restore": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_revisions_rev_restore",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "rev",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/rrsets": {
+    "put": {
+      "operationId": "put_api_v1_zones_id_rrsets",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/tenant": {
+    "put": {
+      "operationId": "put_api_v1_zones_id_tenant",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/transfer-policy": {
+    "put": {
+      "operationId": "put_api_v1_zones_id_transfer_policy",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{id}/verify": {
+    "post": {
+      "operationId": "post_api_v1_zones_id_verify",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{zone_id}/records/bulk-delete": {
+    "post": {
+      "operationId": "post_api_v1_zones_zone_id_records_bulk_delete",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "zone_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{zone_id}/records/{record_id}": {
+    "delete": {
+      "operationId": "delete_api_v1_zones_zone_id_records_record_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "zone_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    },
+    "put": {
+      "operationId": "put_api_v1_zones_zone_id_records_record_id",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "zone_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/api/v1/zones/{zone_id}/records/{record_id}/metadata": {
+    "put": {
+      "operationId": "put_api_v1_zones_zone_id_records_record_id_metadata",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "zone_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "security": [
+        {
+          "BearerAuth": []
+        }
+      ],
+      "tags": [
+        "Zones"
+      ]
+    }
+  },
+  "/health": {
+    "get": {
+      "operationId": "get_health",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Health"
+      ]
+    }
+  },
+  "/metrics": {
+    "get": {
+      "operationId": "get_metrics",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Metrics"
+      ]
+    }
+  },
+  "/openapi.json": {
+    "get": {
+      "operationId": "get_openapi_json",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Openapi.Json"
+      ]
+    }
+  },
+  "/ready": {
+    "get": {
+      "operationId": "get_ready",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Ready"
+      ]
+    }
+  },
+  "/test": {
+    "get": {
+      "operationId": "get_test",
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Test"
+      ]
+    },
+    "post": {
+      "operationId": "post_test",
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "required": false
+      },
+      "responses": {
+        "200": {
+          "description": "Request completed"
+        },
+        "201": {
+          "description": "Resource created"
+        },
+        "400": {
+          "description": "Invalid request"
+        },
+        "401": {
+          "description": "Authentication required"
+        },
+        "403": {
+          "description": "Insufficient permission"
+        },
+        "404": {
+          "description": "Resource not found"
+        },
+        "429": {
+          "description": "Rate limit exceeded"
+        },
+        "500": {
+          "description": "Internal error"
+        },
+        "default": {
+          "description": "Request error"
+        }
+      },
+      "tags": [
+        "Test"
+      ]
+    }
+  }
+}
