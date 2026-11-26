@@ -46,6 +46,8 @@ async function main() {
       throw new TypeError(`invalid JSON for ${key}: ${error.message}`);
     }
   }
+  const { data } = await client.call(command, values);
+  if (data !== undefined) process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 }
 
 main().catch((error) => {

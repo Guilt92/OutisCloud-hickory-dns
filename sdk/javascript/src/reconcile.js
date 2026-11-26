@@ -32,10 +32,12 @@ export async function planDesiredState(client, desired) {
       }
       if (Object.keys(changes).length) actions.push({ action: 'update-zone', domain, zoneId: existing.id, changes });
     }
-    const zoneRecords = existing
-      ? await client.request('GET', '/api/v1/zones/{id}/records', { params: { id: existing.id } })
-      : { data: [] };
-    const currentRecords = Array.isArray(zoneRecords.data) ? zoneRecords.data : [];
+    const currentRecords = [];
+    if (existing) {
+      for await (const record of client.paginate('/api/v1/zones/{id}/records', { params: { id: existing.id } })) {
+        currentRecords.push(record);
+      }
+    }
     const indexedRecords = new Map(currentRecords.map((record) => [recordKey(record), record]));
     const desiredRecords = new Map();
     for (const record of zone.records || []) {

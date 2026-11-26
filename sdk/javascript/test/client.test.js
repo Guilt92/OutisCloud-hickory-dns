@@ -2,9 +2,59 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { spawn } from 'node:child_process';
 import { OutisCloudClient, ApiError } from '../src/client.js';
 import { operations } from '../src/generated.js';
 import { applyPlan, planDesiredState } from '../src/reconcile.js';
+
+test('CLI subprocess actually invokes authenticated operations and prints results', async () => {
+  let requests = 0;
+  await withServer((req, res) => {
+    requests += 1;
+    assert.equal(req.url, '/api/v1/zones?limit=2');
+    assert.equal(req.headers.authorization, 'Bearer fixture-token');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{"data":[]}');
+  }, async (baseUrl) => {
+    const child = spawn(process.execPath, [new URL('../src/cli.js', import.meta.url).pathname,
+      'get_api_v1_zones', '--query', '{"limit":2}'], {
+      env: { ...process.env, OUTISCLOUD_API_URL: baseUrl, OUTISCLOUD_API_TOKEN: 'fixture-token' },
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const [code] = await once(child, 'close');
+    assert.equal(code, 0, stderr);
+    assert.deepEqual(JSON.parse(stdout), { data: [] });
+    assert.equal(requests, 1);
+  });
+});
+
+test('reconciliation reads later record pages before planning creates or pruning', async () => {
+  const records = Array.from({ length: 101 }, (_, i) => ({
+    id: `r${i}`, name: `h${i}`, record_type: 'A', value: '192.0.2.1', ttl: 300,
+  }));
+  const offsets = [];
+  await withServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    res.setHeader('Content-Type', 'application/json');
+    if (url.pathname === '/api/v1/zones') {
+      res.setHeader('X-Total-Count', '1');
+      res.end(JSON.stringify({ data: [{ id: 'z1', domain: 'example.test' }] }));
+    } else {
+      const offset = Number(url.searchParams.get('offset'));
+      offsets.push(offset);
+      res.setHeader('X-Total-Count', '101');
+      res.end(JSON.stringify(records.slice(offset, offset + 100)));
+    }
+  }, async (baseUrl) => {
+    const plan = await planDesiredState(new OutisCloudClient({ baseUrl }), {
+      prune: true, zones: [{ domain: 'example.test', records }],
+    });
+    assert.deepEqual(plan, []);
+    assert.deepEqual(offsets, [0, 100]);
+  });
+});
 
 async function withServer(handler, run) {
   const server = createServer(handler);
@@ -92,15 +142,13 @@ test('pagination follows opaque cursors and yields rows across pages', async () 
 test('declarative plan is repeatable, dry-run safe, and explicit about pruning', async () => {
   const current = [{ id: 'z1', domain: 'example.test', geodns_enabled: true }];
   const client = {
-    async *paginate() { yield* current; },
-    async request(method, route) {
-      assert.equal(method, 'GET');
-      assert.equal(route, '/api/v1/zones/{id}/records');
-      return { data: [
+    async *paginate(route) {
+      if (route === '/api/v1/zones') { yield* current; return; }
+      yield* [
         { id: 'r1', name: 'www', record_type: 'A', value: '192.0.2.1', ttl: 60 },
         { id: 'r2', name: 'old', record_type: 'TXT', value: 'remove-me', ttl: 60 },
         { id: 'r3', name: '@', record_type: 'NS', value: 'ns1.example.test.', ttl: 3600 },
-      ] };
+      ];
     },
   };
   const desired = { zones: [{ domain: 'EXAMPLE.TEST.', geodns_enabled: false, records: [
@@ -140,7 +188,7 @@ test('applying a new desired zone creates it before adding its records', async (
 test('declarative apply updates only explicitly managed zone settings', async () => {
   let put;
   const client = {
-    async *paginate() { yield { id: 'zone-id', domain: 'example.test', geodns_enabled: true, ecs_enabled: false }; },
+    async *paginate(route) { if (route === '/api/v1/zones') yield { id: 'zone-id', domain: 'example.test', geodns_enabled: true, ecs_enabled: false }; },
     async request(method, route, options) {
       if (method === 'GET') return { data: [] };
       put = { method, route, body: options.body };
