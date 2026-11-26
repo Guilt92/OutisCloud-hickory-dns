@@ -948,6 +948,114 @@ address = "127.0.0.1:{denied_port}"
 }
 
 #[tokio::test]
+async fn secondary_refreshes_from_primary_on_soa_timer_without_notify() {
+    let primary_zone = "$ORIGIN timer-secondary.test.\n@ 60 IN SOA ns.timer-secondary.test. hostmaster.timer-secondary.test. 1 1 1 30 1\n@ 60 IN NS ns.timer-secondary.test.\nns 60 IN A 192.0.2.1\nwww 60 IN A 192.0.2.11\n";
+    let primary_config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "timer-secondary.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+file = "primary.zone"
+"#;
+    let primary = TestServer::start_temporary(primary_config, &[("primary.zone", primary_zone)]);
+    let primary_tcp = primary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("primary TCP listener");
+    let secondary_zone = primary_zone
+        .replace(" 1 1 1 30", " 0 1 1 30")
+        .replace("192.0.2.11", "192.0.2.10");
+    let secondary_config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "timer-secondary.test"
+zone_type = "Secondary"
+file = "secondary.zone"
+[[zones.masters]]
+address = "127.0.0.1:{primary_tcp}"
+"#
+    );
+    let secondary = TestServer::start_temporary_with_zone_writes(
+        &secondary_config,
+        &[("secondary.zone", &secondary_zone)],
+    );
+    let secondary_udp = secondary
+        .ports
+        .get_v4(Protocol::Udp)
+        .expect("secondary UDP listener");
+    let mut secondary_client = {
+        let stream = UdpClientStream::builder(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, secondary_udp)),
+            TokioRuntimeProvider::new(),
+        )
+        .build();
+        let (client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
+        tokio::spawn(background);
+        client
+    };
+
+    let updated = primary_zone
+        .replace(" 1 1 1 30", " 2 1 1 30")
+        .replace("192.0.2.11", "192.0.2.22");
+    primary.write_temporary_file("primary.zone", &updated);
+    let primary_stream = UdpClientStream::builder(
+        SocketAddr::from((
+            Ipv4Addr::LOCALHOST,
+            primary.ports.get_v4(Protocol::Udp).unwrap(),
+        )),
+        TokioRuntimeProvider::new(),
+    )
+    .build();
+    let (mut primary_client, background) =
+        Client::<TokioRuntimeProvider>::from_sender(primary_stream);
+    tokio::spawn(background);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let response = primary_client
+            .query(
+                Name::from_str("timer-secondary.test.").unwrap(),
+                DNSClass::IN,
+                RecordType::SOA,
+            )
+            .await
+            .unwrap();
+        if response
+            .answers()
+            .iter()
+            .any(|record| matches!(record.data(), RData::SOA(soa) if soa.serial() == 2))
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "primary did not reload updated serial"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    loop {
+        let response = secondary_client
+            .query(
+                Name::from_str("www.timer-secondary.test.").unwrap(),
+                DNSClass::IN,
+                RecordType::A,
+            )
+            .await
+            .unwrap();
+        if response.answers().iter().any(|record| matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 22))) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "secondary did not refresh at the SOA refresh interval"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
 #[cfg(feature = "__dnssec")]
 async fn primary_notifies_with_tsig_and_retries_unresponsive_peer() {
     use std::sync::{

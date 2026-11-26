@@ -397,6 +397,7 @@ impl DnsServer {
 
         // configure our server based on the config_path
         let zone_dir = zonedir.unwrap_or(directory);
+        let mut secondary_schedules = Vec::new();
         for zone in zones {
             let zone_name = zone
                 .zone()
@@ -406,26 +407,31 @@ impl DnsServer {
             // stale configured file when its primary can be reached. Fetch a
             // complete, validated AXFR before loading the initial catalog.
             if matches!(&zone.zone_type_config, ZoneTypeConfig::Secondary(_)) {
-                let has_valid_last_known_good = match &zone.zone_type_config {
-                    ZoneTypeConfig::Secondary(server_config) => server_config
-                        .stores
-                        .iter()
-                        .find_map(|store| match store {
+                let secondary_file = match &zone.zone_type_config {
+                    ZoneTypeConfig::Secondary(server_config) => {
+                        server_config.stores.iter().find_map(|store| match store {
                             ServerStoreConfig::File(file) => Some(file.zone_path.clone()),
                             _ => None,
                         })
-                        .map(|file| zone_dir.join(file))
-                        .and_then(|path| fs::read_to_string(path).ok())
-                        .and_then(|contents| {
-                            ZoneParser::new(contents, None, Some(zone_name.clone()))
-                                .parse()
-                                .ok()
-                        })
-                        .is_some_and(|(_, records)| {
-                            records
-                                .iter()
-                                .any(|(_, rrset)| rrset.record_type() == RecordType::SOA)
-                        }),
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| format!("secondary zone {zone_name} has no file-backed store"))?;
+                let has_valid_last_known_good = match &zone.zone_type_config {
+                    ZoneTypeConfig::Secondary(_) => {
+                        fs::read_to_string(zone_dir.join(&secondary_file))
+                            .ok()
+                            .and_then(|contents| {
+                                ZoneParser::new(contents, None, Some(zone_name.clone()))
+                                    .parse()
+                                    .ok()
+                            })
+                            .is_some_and(|(_, records)| {
+                                records
+                                    .iter()
+                                    .any(|(_, rrset)| rrset.record_type() == RecordType::SOA)
+                            })
+                    }
                     _ => false,
                 };
                 let masters = zone.masters().to_vec();
@@ -436,7 +442,7 @@ impl DnsServer {
                 }
                 let mut refreshed = false;
                 let mut errors = Vec::new();
-                for master in masters {
+                for master in &masters {
                     match refresh_secondary_from_notify(
                         zone_name.clone().into(),
                         master.address,
@@ -465,6 +471,14 @@ impl DnsServer {
                         "secondary initial AXFR failed; serving validated last-known-good zone"
                     );
                 }
+                let timers = secondary_soa_timers(&zone_name, &zone_dir.join(&secondary_file));
+                secondary_schedules.push((
+                    zone_name.clone().into(),
+                    masters,
+                    zone_dir.join(secondary_file),
+                    timers,
+                    refreshed,
+                ));
             }
 
             #[cfg(feature = "metrics")]
@@ -515,6 +529,24 @@ impl DnsServer {
         }
         let handler = SwapHandler::new(catalog, rate_limit);
         handler.set_zone_fingerprints(zone_fingerprints);
+        for (zone, masters, file, timers, initial_refresh_succeeded) in secondary_schedules {
+            let zone_dir = zone_dir.clone();
+            let config_path = config_path.to_path_buf();
+            let reload_tx = reload_tx.clone();
+            tokio::spawn(async move {
+                secondary_refresh_loop(
+                    zone,
+                    masters,
+                    file,
+                    timers,
+                    initial_refresh_succeeded,
+                    config_path,
+                    zone_dir,
+                    reload_tx,
+                )
+                .await;
+            });
+        }
         let refresh_config_path = config_path.to_path_buf();
         let refresh_zone_dir = zone_dir.clone();
         let reload_after_secondary_transfer = reload_tx.clone();
@@ -1108,6 +1140,85 @@ async fn refresh_secondary_from_notify(
     Err(format!(
         "AXFR refresh for {requested_zone} failed after three attempts: {last_error}"
     ))
+}
+
+fn secondary_soa_timers(zone: &Name, path: &Path) -> (StdDuration, StdDuration) {
+    let timers = fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| {
+            ZoneParser::new(contents, None, Some(zone.clone()))
+                .parse()
+                .ok()
+        })
+        .and_then(|(_, records)| {
+            records.into_iter().find_map(|(_, rrset)| {
+                if rrset.record_type() != RecordType::SOA {
+                    return None;
+                }
+                rrset.into_iter().find_map(|record| match record.data() {
+                    RData::SOA(soa) => Some((soa.refresh(), soa.retry())),
+                    _ => None,
+                })
+            })
+        })
+        .unwrap_or((3600, 300));
+    (
+        StdDuration::from_secs(timers.0.max(1) as u64),
+        StdDuration::from_secs(timers.1.max(1) as u64),
+    )
+}
+
+async fn secondary_refresh_loop(
+    zone: hickory_server::proto::rr::LowerName,
+    masters: Vec<NotifyPeerConfig>,
+    file: PathBuf,
+    (mut refresh, mut retry): (StdDuration, StdDuration),
+    initial_refresh_succeeded: bool,
+    config_path: PathBuf,
+    zone_dir: PathBuf,
+    reload_tx: tokio::sync::mpsc::UnboundedSender<()>,
+) {
+    let mut delay = if initial_refresh_succeeded {
+        refresh
+    } else {
+        retry
+    };
+    loop {
+        tokio::time::sleep(delay).await;
+        let mut errors = Vec::new();
+        let mut refreshed = false;
+        for master in &masters {
+            match refresh_secondary_from_notify(
+                zone.clone(),
+                master.address,
+                &config_path,
+                &zone_dir,
+            )
+            .await
+            {
+                Ok(()) => {
+                    refreshed = true;
+                    break;
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        if refreshed {
+            if reload_tx.send(()).is_err() {
+                return;
+            }
+            let origin: Name = zone.clone().into();
+            (refresh, retry) = secondary_soa_timers(&origin, &file);
+            delay = refresh;
+        } else {
+            warn!(
+                %zone,
+                errors = %errors.join("; "),
+                "scheduled secondary refresh failed; preserving last-known-good zone"
+            );
+            delay = retry;
+        }
+    }
 }
 
 async fn fetch_zone_axfr(
