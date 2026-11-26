@@ -8741,8 +8741,49 @@ async fn api_tokens_are_scoped_revocable_and_can_rotate() {
     assert!(token.starts_with("ocd_"));
     assert!(!raw.contains("token_hash"));
 
+    for expires_in_days in [0, 366] {
+        let (status, _, raw) = call!(
+            app,
+            post,
+            "/api/v1/tokens",
+            Some(&admin),
+            j(serde_json::json!({"name":"invalid expiry","expires_in_days":expires_in_days}))
+        );
+        assert_eq!(status, 400, "{raw}");
+    }
+    let (status, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/tokens",
+        Some(&admin),
+        j(serde_json::json!({"name":"invalid scope","scopes":["zones:root"]}))
+    );
+    assert_eq!(status, 400, "{raw}");
+
+    let user_id = add_user(&env.state, "token-user", "token-user-password-1", "user").await;
+    let user_jwt = env.token(&user_id, "user");
+    let (status, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/tokens",
+        Some(&user_jwt),
+        j(serde_json::json!({"name":"forbidden admin scope","scopes":["admin"]}))
+    );
+    assert_eq!(status, 403, "{raw}");
+
     let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&token), None);
     assert_eq!(st, 200, "read scope must allow GET");
+    let last_used: bool = env
+        .state
+        .db
+        .query_one(
+            "SELECT last_used_at IS NOT NULL FROM api_tokens WHERE token_hash=$1",
+            &[&hash_token(&token)],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(last_used, "successful API-token use updates last_used_at");
     let (st, _, _) = call!(
         app,
         post,
@@ -8767,6 +8808,16 @@ async fn api_tokens_are_scoped_revocable_and_can_rotate() {
     assert_eq!(st, 401, "rotated token must stop working");
     let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&new_token), None);
     assert_eq!(st, 200);
+    env.state
+        .db
+        .execute(
+            "UPDATE api_tokens SET expires_at=now()-interval '1 second' WHERE token_hash=$1",
+            &[&hash_token(&new_token)],
+        )
+        .await
+        .unwrap();
+    let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&new_token), None);
+    assert_eq!(st, 401, "expired personal tokens are rejected");
 
     let (st, _, _) = call!(
         app,
