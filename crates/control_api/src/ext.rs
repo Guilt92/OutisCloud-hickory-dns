@@ -2007,10 +2007,36 @@ pub async fn get_audit(
 }
 
 fn csv_field(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        format!("\"{}\"", value.replace('"', "\"\""))
+    // Spreadsheet applications evaluate cells beginning with these characters
+    // even when the CSV value is quoted. Audit details can contain user input.
+    let unsafe_prefix = value
+        .trim_start_matches(' ')
+        .chars()
+        .next()
+        .is_some_and(|ch| matches!(ch, '=' | '+' | '-' | '@' | '\t' | '\r'));
+    let safe = if unsafe_prefix {
+        format!("'{value}")
     } else {
         value.to_string()
+    };
+    if unsafe_prefix || safe.contains(',') || safe.contains('"') || safe.contains('\n') {
+        format!("\"{}\"", safe.replace('"', "\"\""))
+    } else {
+        safe
+    }
+}
+
+#[cfg(test)]
+mod csv_security_tests {
+    use super::csv_field;
+
+    #[test]
+    fn audit_export_neutralizes_spreadsheet_formulas_and_quotes() {
+        assert_eq!(csv_field("=1+1"), "\"'=1+1\"");
+        assert_eq!(csv_field("  @SUM(A1)"), "\"'  @SUM(A1)\"");
+        assert_eq!(csv_field("\t+cmd"), "\"'\t+cmd\"");
+        assert_eq!(csv_field("hello,\"world\""), "\"hello,\"\"world\"\"\"");
+        assert_eq!(csv_field("normal"), "normal");
     }
 }
 
