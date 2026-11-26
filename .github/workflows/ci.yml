@@ -62,6 +62,11 @@ jobs:
           else
             echo "No prior OpenAPI catalog exists at the base revision"
           fi
+      - name: JavaScript SDK generation and tests
+        run: |
+          npm --prefix sdk/javascript run generate
+          git diff --exit-code -- sdk/javascript/src/generated.js
+          npm --prefix sdk/javascript test
       - name: Docs consistency
         run: python3 scripts/docs_check.py
 

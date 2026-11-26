@@ -1,0 +1,14 @@
+{
+  "name": "@outiscloud/dns-client",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.js",
+  "files": ["src", "scripts"],
+  "description": "Generated JavaScript client and declarative CLI for OutisCloud authoritative DNS",
+  "bin": { "outiscloud": "./src/cli.js" },
+  "scripts": {
+    "generate": "node ./scripts/generate.mjs",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}
