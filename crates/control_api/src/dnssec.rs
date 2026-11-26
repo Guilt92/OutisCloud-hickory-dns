@@ -461,6 +461,30 @@ pub async fn set_nx_proof(
     }
 }
 
+/// Multi-signer DNSSEC requires coordinated signer and CDS/DNSKEY state across
+/// independently operated providers. This deployment only owns one CSK, so
+/// reject attempts explicitly instead of silently creating an unsafe partial
+/// configuration.
+pub async fn reject_multi_signer(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let token = match auth_from_header(&req, &data.jwt_secret) {
+        Some(token) => token,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    if let Err(response) = zone_access_at(&data.db, &zone_id, &token, Level::Owner).await {
+        return response;
+    }
+    HttpResponse::NotImplemented().json(serde_json::json!({
+        "error": "multi_signer_unsupported",
+        "supported": false,
+        "details": "This control plane supports a single-operator CSK signer only. Multi-signer DNSSEC requires coordinated DNSKEY/CDS state and is not enabled. No DNSSEC state was changed."
+    }))
+}
+
 fn ds_equal(expected: &serde_json::Value, found: &serde_json::Value) -> bool {
     expected["key_tag"] == found["key_tag"]
         && expected["algorithm"] == found["algorithm"]

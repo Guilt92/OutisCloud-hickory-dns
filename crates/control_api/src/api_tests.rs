@@ -4203,6 +4203,23 @@ async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
     assert_eq!(proof["proof"]["nsec3_salt"], "a1b2");
     assert_eq!(proof["proof"]["nsec3_iterations"], 12);
     assert_eq!(proof["proof"]["nsec3_opt_out"], true);
+    let multi_signer_url = format!("/api/v1/zones/{zid}/dnssec/multi-signer");
+    let (unsupported_status, unsupported, unsupported_raw) = call!(
+        app,
+        post,
+        &multi_signer_url,
+        Some(&t),
+        j(serde_json::json!({}))
+    );
+    assert_eq!(unsupported_status, 501, "{unsupported_raw}");
+    assert_eq!(unsupported["error"], "multi_signer_unsupported");
+    assert_eq!(unsupported["supported"], false);
+    assert!(
+        unsupported["details"]
+            .as_str()
+            .unwrap()
+            .contains("No DNSSEC state was changed")
+    );
     let nsec3_config = named();
     assert!(
         nsec3_config.contains("nx_proof_kind = { nsec3 = { algorithm = \"SHA-1\""),

@@ -7616,6 +7616,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::put().to(dnssec::set_nx_proof),
         )
         .route(
+            "/api/v1/zones/{id}/dnssec/multi-signer",
+            web::post().to(dnssec::reject_multi_signer),
+        )
+        .route(
             "/api/v1/zones/{id}/dnssec/disable",
             web::post().to(dnssec::disable_dnssec),
         )
