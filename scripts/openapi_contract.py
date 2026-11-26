@@ -15,6 +15,7 @@ ROUTE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 METHODS = {"get", "post", "put", "patch", "delete"}
+ERROR_STATUSES = ("400", "401", "403", "404", "409", "422", "429", "500", "501", "503", "default")
 PUBLIC_OPERATIONS = {
     ("/api/v1/auth/login", "post"),
     ("/api/v1/auth/refresh", "post"),
@@ -195,12 +196,20 @@ def operation(path, method, handler, source_path, components):
         "401": {"description": "Authentication required"},
         "403": {"description": "Insufficient permission"},
         "404": {"description": "Resource not found"},
+        "409": {"description": "Conflict"},
+        "422": {"description": "Validation failed"},
         "429": {"description": "Rate limit exceeded"},
         "500": {"description": "Internal error"},
+        "501": {"description": "Feature not implemented"},
+        "503": {"description": "Service unavailable"},
         "default": {"description": "Request error"},
     }
     if method == "post":
         responses["201"] = {"description": "Resource created"}
+    for status in ERROR_STATUSES:
+        responses[status]["content"] = {
+            "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
+        }
     result = {"operationId": operation_id, "tags": [tag.replace("-", " ").title()], "responses": responses}
     path_parameters = re.findall(r"\{([^}]+)\}", path)
     if path_parameters:
@@ -221,7 +230,17 @@ def operation(path, method, handler, source_path, components):
 
 
 def render():
-    components = {}
+    components = {
+        "ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string"},
+                "error": {"type": "string"},
+                "details": {"nullable": True},
+            },
+            "required": ["code", "error", "details"],
+        }
+    }
     paths = {}
     operations = extract_operations()
     for (path, method), (handler, source_path) in sorted(operations.items()):
@@ -323,6 +342,10 @@ def validate(document):
                 errors.append(f"{path} {method}: generic request body schema is not allowed")
             if schema:
                 validate_schema(schema, f"{path} {method}")
+            for status, response in item.get("responses", {}).items():
+                response_schema = response.get("content", {}).get("application/json", {}).get("schema")
+                if response_schema:
+                    validate_schema(response_schema, f"{path} {method} response {status}")
     if errors:
         raise ValueError("\n".join(errors))
 

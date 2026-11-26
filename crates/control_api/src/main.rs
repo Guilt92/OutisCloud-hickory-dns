@@ -1,5 +1,5 @@
 use actix_web::HttpMessage;
-use actix_web::body::MessageBody;
+use actix_web::body::{MessageBody, to_bytes};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::middleware::Next;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::header, web};
@@ -468,6 +468,84 @@ fn invalid_list_query() -> HttpResponse {
         "error": "invalid_query",
         "details": "Unsupported sort field or order"
     }))
+}
+
+fn status_error_code(status: actix_web::http::StatusCode) -> &'static str {
+    match status.as_u16() {
+        400 | 422 => "invalid_request",
+        401 => "unauthorized",
+        403 => "forbidden",
+        404 => "not_found",
+        409 => "conflict",
+        429 => "rate_limited",
+        501 => "not_implemented",
+        503 => "service_unavailable",
+        500..=599 => "internal_error",
+        _ => "request_failed",
+    }
+}
+
+/// Preserve existing response fields while guaranteeing clients a stable
+/// `code`, `error`, and `details` envelope for every JSON client/server error.
+async fn error_envelope_middleware(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<actix_web::body::BoxBody>, actix_web::Error> {
+    let response = next.call(req).await?;
+    let status = response.status();
+    if !(status.is_client_error() || status.is_server_error()) {
+        return Ok(response.map_into_boxed_body());
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !content_type.contains("application/json") {
+        return Ok(response.map_into_boxed_body());
+    }
+    let (request, response) = response.into_parts();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body())
+        .await
+        .map_err(|_| actix_web::error::ErrorInternalServerError("failed to read error response"))?;
+    let code = status_error_code(status);
+    let normalized = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .map(|value| {
+            let mut object = value.as_object().cloned().unwrap_or_default();
+            if !object
+                .get("code")
+                .is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+            {
+                object.insert("code".into(), code.into());
+            }
+            if !object.get("error").is_some_and(|v| v.is_string()) {
+                object.insert("error".into(), code.into());
+            }
+            if !object.contains_key("details") {
+                object.insert(
+                    "details".into(),
+                    object
+                        .get("message")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                );
+            }
+            serde_json::Value::Object(object)
+        })
+        .unwrap_or_else(|| serde_json::json!({"code": code, "error": code, "details": null}));
+    let mut builder = HttpResponse::build(status);
+    for (name, value) in headers.iter() {
+        if name != header::CONTENT_LENGTH && name != header::CONTENT_TYPE {
+            builder.insert_header((name.clone(), value.clone()));
+        }
+    }
+    Ok(ServiceResponse::new(
+        request,
+        builder.json(normalized).map_into_boxed_body(),
+    ))
 }
 
 /// Republish zone files and report the real outcome. `zone_domain` is the zone
@@ -8385,6 +8463,7 @@ async fn main() -> std::io::Result<()> {
             ))
             .wrap(actix_web::middleware::from_fn(auth_middleware))
             .wrap(actix_web::middleware::from_fn(api_rate_limit_middleware))
+            .wrap(actix_web::middleware::from_fn(error_envelope_middleware))
             .wrap(cors)
             .wrap(prometheus.clone())
             .wrap(actix_web::middleware::from_fn(metrics_guard))

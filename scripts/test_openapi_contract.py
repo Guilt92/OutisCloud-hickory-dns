@@ -21,6 +21,11 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertIn("domain", schema["required"])
         self.assertEqual(schema["properties"]["template_variables"]["type"], "object")
         self.assertNotIn("/test", document["paths"])
+        self.assertEqual(
+            document["paths"]["/api/v1/zones"]["post"]["responses"]["400"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ErrorResponse",
+        )
+        self.assertEqual(document["components"]["schemas"]["ErrorResponse"]["required"], ["code", "error", "details"])
         contract.validate(document)
 
     def test_compatibility_rejects_new_required_request_fields(self):

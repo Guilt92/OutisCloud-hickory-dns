@@ -579,6 +579,7 @@ macro_rules! app {
             App::new()
                 .wrap(actix_web::middleware::from_fn(security_headers))
                 .wrap(actix_web::middleware::from_fn(auth_middleware))
+                .wrap(actix_web::middleware::from_fn(error_envelope_middleware))
                 .app_data(web::Data::new($env.state.clone()))
                 .app_data(web::Data::new($env.full.clone()))
                 .configure(configure_routes),
@@ -8764,6 +8765,13 @@ async fn openapi_spec_is_published() {
             .starts_with("3.")
     );
     assert!(body["components"]["schemas"].is_object());
+    assert_eq!(
+        body["components"]["schemas"]["ErrorResponse"]["required"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
     assert!(!body["paths"].as_object().unwrap().contains_key("/test"));
     let zone_request = &body["paths"]["/api/v1/zones"]["post"]["requestBody"]["content"]["application/json"]
         ["schema"];
@@ -8798,6 +8806,38 @@ async fn openapi_spec_is_published() {
     assert_eq!(
         body["components"]["securitySchemes"]["BearerAuth"]["scheme"],
         "bearer"
+    );
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn api_errors_have_stable_codes_without_breaking_legacy_error_fields() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let (status, unauthorized_body, _) = call!(app, get, "/api/v1/users", None::<&str>, None);
+    assert_eq!(status, 401);
+    assert_eq!(unauthorized_body["code"], "unauthorized");
+    assert_eq!(unauthorized_body["error"], "unauthorized");
+    assert_eq!(
+        unauthorized_body["details"],
+        "Authentication token required"
+    );
+
+    let user = add_user(
+        &env.state,
+        "error-envelope-user",
+        "error-envelope-pass",
+        "user",
+    )
+    .await;
+    let user_token = env.token(&user, "user");
+    let (status, forbidden_body, _) = call!(app, get, "/api/v1/users", Some(&user_token), None);
+    assert_eq!(status, 403);
+    assert_eq!(forbidden_body["code"], "forbidden");
+    assert_eq!(forbidden_body["error"], "forbidden");
+    assert_eq!(
+        forbidden_body["details"],
+        "Admin role required to list users"
     );
     env.cleanup().await;
 }
