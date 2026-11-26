@@ -93,6 +93,46 @@ pub fn test_soa(handler: impl ZoneHandler, keys: &[DNSKEY]) {
     verify(&soa_records, &rrsig_records, keys);
 }
 
+pub fn test_child_signaling(handler: impl ZoneHandler, keys: &[DNSKEY]) {
+    let cds = block_on(handler.lookup(
+        handler.origin(),
+        RecordType::CDS,
+        None,
+        LookupOptions::for_dnssec(),
+    ))
+    .expect("CDS lookup");
+    let cdnskey = block_on(handler.lookup(
+        handler.origin(),
+        RecordType::CDNSKEY,
+        None,
+        LookupOptions::for_dnssec(),
+    ))
+    .expect("CDNSKEY lookup");
+
+    let sep_count = keys.iter().filter(|key| key.secure_entry_point()).count();
+    assert_eq!(
+        cdnskey
+            .iter()
+            .filter(|record| record.record_type() == RecordType::CDNSKEY)
+            .count(),
+        sep_count,
+        "publish a CDNSKEY for each secure-entry-point DNSKEY"
+    );
+    assert_eq!(
+        cds.iter()
+            .filter(|record| record.record_type() == RecordType::CDS)
+            .count(),
+        sep_count * 2,
+        "publish SHA-256 and SHA-384 CDS records for each secure-entry-point DNSKEY"
+    );
+    assert!(cds.iter().any(|record| {
+        matches!(record.data(), RData::DNSSEC(DNSSECRData::RRSIG(sig)) if sig.input().type_covered == RecordType::CDS)
+    }), "CDS RRset must be signed");
+    assert!(cdnskey.iter().any(|record| {
+        matches!(record.data(), RData::DNSSEC(DNSSECRData::RRSIG(sig)) if sig.input().type_covered == RecordType::CDNSKEY)
+    }), "CDNSKEY RRset must be signed");
+}
+
 pub fn test_ns(handler: impl ZoneHandler, keys: &[DNSKEY]) {
     let lookup = block_on(handler.lookup(
         handler.origin(),
@@ -468,6 +508,7 @@ macro_rules! dnssec_battery {
             mod $name {
                 define_dnssec_test!($new;
                     test_a_lookup,
+                    test_child_signaling,
                     test_soa,
                     test_ns,
                     test_aname_lookup,

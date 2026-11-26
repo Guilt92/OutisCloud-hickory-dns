@@ -253,7 +253,6 @@ impl<P: RuntimeProvider + Send + Sync> InMemoryZoneHandler<P> {
             RData::DNSSEC(DNSSECRData::DNSKEY(dnskey)),
         );
 
-        // TODO: also generate the CDS and CDNSKEY
         let serial = inner.serial(origin);
         inner.upsert(dnskey, serial, dns_class);
         inner.secure_keys.push(signer);

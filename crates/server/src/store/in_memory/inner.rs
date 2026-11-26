@@ -21,8 +21,8 @@ use crate::{
     proto::{
         ProtoError,
         dnssec::{
-            DnsSecResult, DnssecSigner, Nsec3HashAlgorithm,
-            rdata::{DNSSECRData, NSEC, NSEC3, NSEC3PARAM, RRSIG},
+            DigestType, DnsSecResult, DnssecSigner, Nsec3HashAlgorithm, PublicKey, Verifier,
+            rdata::{CDNSKEY, CDS, DNSKEY, DNSSECRData, NSEC, NSEC3, NSEC3PARAM, RRSIG},
         },
     },
     zone_handler::{LookupError, Nsec3QueryInfo},
@@ -484,6 +484,8 @@ impl InnerInMemory {
         nx_proof_kind: Option<&NxProofKind>,
         signature_inception: OffsetDateTime,
     ) -> DnsSecResult<()> {
+        self.regenerate_child_signaling(origin, dns_class)?;
+
         // TODO: only call nsec_zone after adds/deletes
         // needs to be called before incrementing the soa serial, to make sure IXFR works properly
         match nx_proof_kind {
@@ -503,6 +505,71 @@ impl InnerInMemory {
 
         // TODO: should we auto sign here? or maybe up a level...
         self.sign_zone(origin, dns_class, signature_inception)
+    }
+
+    #[cfg(feature = "__dnssec")]
+    fn regenerate_child_signaling(
+        &mut self,
+        origin: &LowerName,
+        dns_class: DNSClass,
+    ) -> DnsSecResult<()> {
+        let ttl = self.minimum_ttl(origin);
+        let serial = self.serial(origin);
+        self.records.retain(|key, _| {
+            key.record_type != RecordType::CDS && key.record_type != RecordType::CDNSKEY
+        });
+
+        let dnskeys = self
+            .records
+            .get(&RrKey::new(origin.clone(), RecordType::DNSKEY))
+            .into_iter()
+            .flat_map(|rrset| rrset.records(false))
+            .filter_map(|record| match record.data() {
+                RData::DNSSEC(DNSSECRData::DNSKEY(key)) if key.secure_entry_point() => {
+                    Some(key.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<DNSKEY>>();
+
+        for key in dnskeys {
+            let cdnskey = CDNSKEY::new(
+                key.zone_key(),
+                key.secure_entry_point(),
+                key.revoke(),
+                Some(key.algorithm()),
+                key.public_key().public_bytes().to_vec(),
+            );
+            self.upsert(
+                Record::from_rdata(
+                    origin.clone().into(),
+                    ttl,
+                    RData::DNSSEC(DNSSECRData::CDNSKEY(cdnskey)),
+                ),
+                serial,
+                dns_class,
+            );
+
+            for digest_type in [DigestType::SHA256, DigestType::SHA384] {
+                let digest = key.to_digest(&origin.clone().into(), digest_type)?;
+                let cds = CDS::new(
+                    key.calculate_key_tag()?,
+                    Some(key.algorithm()),
+                    digest_type,
+                    digest.as_ref().to_vec(),
+                );
+                self.upsert(
+                    Record::from_rdata(
+                        origin.clone().into(),
+                        ttl,
+                        RData::DNSSEC(DNSSECRData::CDS(cds)),
+                    ),
+                    serial,
+                    dns_class,
+                );
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "__dnssec")]
