@@ -7618,6 +7618,129 @@ async fn record_delete_publish_failure_restores_record() {
 }
 
 #[actix_web::test]
+async fn bulk_record_delete_is_atomic_scoped_and_preserves_last_known_good_on_publish_failure() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let token = env.token(&env.admin, "admin");
+    let zone = make_zone(&env, &app, &token, "bulk-delete.example").await;
+    let other_zone = make_zone(&env, &app, &token, "bulk-delete-other.example").await;
+    let zone_records = format!("/api/v1/zones/{zone}/records");
+
+    let create = |name: &str, value: &str| {
+        j(serde_json::json!({"name":name,"record_type":"A","value":value,"ttl":300}))
+    };
+    let (status, first, raw) = call!(
+        app,
+        post,
+        &zone_records,
+        Some(&token),
+        create("bulk-a", "192.0.2.10")
+    );
+    assert_eq!(status, 201, "{raw}");
+    let first_id = first["id"].as_str().unwrap().to_string();
+    let (status, second, raw) = call!(
+        app,
+        post,
+        &zone_records,
+        Some(&token),
+        create("bulk-b", "192.0.2.11")
+    );
+    assert_eq!(status, 201, "{raw}");
+    let second_id = second["id"].as_str().unwrap().to_string();
+
+    let metadata_url = format!("/api/v1/zones/{zone}/records/{first_id}/metadata");
+    let (status, _, raw) = call!(
+        app,
+        put,
+        &metadata_url,
+        Some(&token),
+        j(serde_json::json!({"comment":"keep on rollback","tags":["bulk","rollback"]}))
+    );
+    assert_eq!(status, 200, "{raw}");
+
+    let other_record_id: String = env
+        .state
+        .db
+        .query_one(
+            "SELECT CAST(id AS varchar) FROM records WHERE CAST(zone_id AS varchar) = $1 LIMIT 1",
+            &[&other_zone],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let bulk_url = format!("/api/v1/zones/{zone}/records/bulk-delete");
+    let (status, _, _) = call!(
+        app,
+        post,
+        &bulk_url,
+        Some(&token),
+        j(serde_json::json!({"record_ids":[first_id, other_record_id]}))
+    );
+    assert_eq!(
+        status, 404,
+        "a foreign-zone id must abort the complete selection"
+    );
+
+    let soa_id: String = env.state.db.query_one(
+        "SELECT CAST(id AS varchar) FROM records WHERE CAST(zone_id AS varchar) = $1 AND upper(record_type) = 'SOA' LIMIT 1",
+        &[&zone],
+    ).await.unwrap().get(0);
+    let (status, body, _) = call!(
+        app,
+        post,
+        &bulk_url,
+        Some(&token),
+        j(serde_json::json!({"record_ids":[soa_id]}))
+    );
+    assert_eq!(status, 409);
+    assert!(body["error"].as_str().unwrap().contains("SOA"));
+
+    let apex_ns: Vec<String> = env.state.db.query(
+        "SELECT CAST(id AS varchar) FROM records WHERE CAST(zone_id AS varchar) = $1 AND lower(name)='@' AND upper(record_type)='NS'",
+        &[&zone],
+    ).await.unwrap().into_iter().map(|row| row.get(0)).collect();
+    let (status, body, _) = call!(
+        app,
+        post,
+        &bulk_url,
+        Some(&token),
+        j(serde_json::json!({"record_ids":apex_ns}))
+    );
+    assert_eq!(status, 409);
+    assert!(body["error"].as_str().unwrap().contains("final apex NS"));
+
+    std::fs::remove_dir_all(env.dir.path()).unwrap();
+    std::fs::write(env.dir.path(), b"not a directory").unwrap();
+    let (status, body, raw) = call!(
+        app,
+        post,
+        &bulk_url,
+        Some(&token),
+        j(serde_json::json!({"record_ids":[first_id, second_id]}))
+    );
+    assert_eq!(status, 500, "{raw}");
+    assert_eq!(body["error"], "publish_failed", "{raw}");
+    let restored = env.state.db.query(
+        "SELECT comment, tags::text FROM records WHERE CAST(zone_id AS varchar) = $1 AND name='bulk-a'",
+        &[&zone],
+    ).await.unwrap();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].get::<_, String>(0), "keep on rollback");
+    assert!(restored[0].get::<_, String>(1).contains("rollback"));
+    let remaining: i64 = env.state.db.query_one(
+        "SELECT count(*) FROM records WHERE CAST(zone_id AS varchar) = $1 AND name IN ('bulk-a','bulk-b')",
+        &[&zone],
+    ).await.unwrap().get(0);
+    assert_eq!(
+        remaining, 2,
+        "publication failure restores the whole selection"
+    );
+    std::fs::remove_file(env.dir.path()).unwrap();
+    std::fs::create_dir_all(env.dir.path()).unwrap();
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn import_dry_run_writes_nothing() {
     let Some(env) = setup().await else { return };
     let app = app!(env);

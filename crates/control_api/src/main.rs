@@ -7533,6 +7533,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::delete().to(delete_record),
         )
         .route(
+            "/api/v1/zones/{zone_id}/records/bulk-delete",
+            web::post().to(zone_ops::bulk_delete_records),
+        )
+        .route(
             "/api/v1/zones/{zone_id}/records/{record_id}/metadata",
             web::put().to(set_record_metadata),
         )

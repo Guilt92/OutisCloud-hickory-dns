@@ -27,6 +27,7 @@ export default function Records(){
   const [metaRecord, setMetaRecord] = React.useState(null)
   const [metaComment, setMetaComment] = React.useState('')
   const [metaTags, setMetaTags] = React.useState('')
+  const [selectedIds, setSelectedIds] = React.useState(() => new Set())
   const loading = paged.loading
   const notify = React.useContext(Notifications)
   const notifyRef = React.useRef(notify)
@@ -131,6 +132,42 @@ export default function Records(){
     } catch (e) {
       const errMsg = e.response?.data?.error || e.message || 'delete failed'
       notify?.error(errMsg)
+    }
+  }
+
+  const toggleSelected = (recordId) => setSelectedIds(current => {
+    const next = new Set(current)
+    if (next.has(recordId)) next.delete(recordId)
+    else next.add(recordId)
+    return next
+  })
+
+  const togglePageSelection = () => setSelectedIds(current => {
+    const next = new Set(current)
+    const allSelected = records.length > 0 && records.every(record => next.has(record.id))
+    for (const record of records) {
+      if (allSelected) next.delete(record.id)
+      else next.add(record.id)
+    }
+    return next
+  })
+
+  const bulkRemove = async () => {
+    const recordIds = [...selectedIds]
+    if (!recordIds.length) return
+    const confirmed = await askConfirm({
+      title: `Delete ${recordIds.length} selected records?`,
+      message: 'The selection is deleted as one zone-scoped operation. The server rejects a selection that would remove the SOA or final apex nameserver, and restores all selected records if publication fails.',
+      confirmLabel: `Delete ${recordIds.length} records`,
+    })
+    if (!confirmed) return
+    try {
+      const result = await api.post(`/api/v1/zones/${zoneId}/records/bulk-delete`, { record_ids: recordIds })
+      setSelectedIds(new Set())
+      load()
+      notify?.success(`${result.data?.deleted ?? recordIds.length} records deleted`)
+    } catch (e) {
+      notify?.error(apiErrorMessage(e, 'bulk delete failed'))
     }
   }
   
@@ -248,6 +285,14 @@ export default function Records(){
       )}
 
       <input className="input" aria-label="Search records by name, value or type" placeholder="Search records by name, value or type…" value={paged.query} onChange={e => paged.setQuery(e.target.value)} />
+      {!readOnly && selectedIds.size > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-danger-500/25 bg-danger-500/[0.04] p-3" role="region" aria-label="Bulk record actions">
+          <span className="text-sm">{selectedIds.size} record{selectedIds.size === 1 ? '' : 's'} selected</span>
+          <button className="btn-sm text-danger-600 border border-danger-500/30" onClick={bulkRemove}>
+            <Trash2 className="w-4 h-4" /> Delete selected
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <motion.div
@@ -266,6 +311,7 @@ export default function Records(){
             <table className="table">
               <thead>
                 <tr>
+                  {!readOnly && <th><input type="checkbox" aria-label="Select all records on this page" checked={records.length > 0 && records.every(record => selectedIds.has(record.id))} onChange={togglePageSelection} /></th>}
                   <th>Name</th>
                   <th>Type</th>
                   <th>Value</th>
@@ -282,6 +328,7 @@ export default function Records(){
                     animate={{ opacity: 1 }}
                     transition={{ delay: i * 0.02 }}
                   >
+                    {!readOnly && <td><input type="checkbox" aria-label={`Select record ${r.name || '@'} ${r.record_type}`} checked={selectedIds.has(r.id)} onChange={() => toggleSelected(r.id)} /></td>}
                     <td className="font-medium text-ink">{r.name || '@'}</td>
                     <td>
                       <span className="badge badge-default font-mono">{r.record_type}</span>

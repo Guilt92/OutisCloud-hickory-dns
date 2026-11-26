@@ -53,7 +53,7 @@ test('zone history diff renders revision setting changes', async ({ page }) => {
     { id: 'revision-1', domain: 'history.example', reason: 'zone updated', user: 'admin', created_at: '2026-01-01T00:00:00Z', record_count: 3 },
   ] }))
   await page.route('**/api/v1/zones/ui-history-zone/revisions/revision-1/diff', (route) => route.fulfill({ status: 200, json: {
-    added: [], removed: [], changed: [],
+    added: [{ name: 'www', record_type: 'A', value: '192.0.2.10' }], removed: [], changed: [],
     settings_changed: {
       from: { domain: 'history.example', geodns_enabled: false, ecs_enabled: false, tags: [] },
       to: { domain: 'history.example', geodns_enabled: true, ecs_enabled: false, tags: [] },
@@ -63,7 +63,7 @@ test('zone history diff renders revision setting changes', async ({ page }) => {
     const path = new URL(route.request().url()).pathname
     if (path.endsWith('/revisions/revision-1/diff')) {
       return route.fulfill({ status: 200, json: {
-        added: [], removed: [], changed: [],
+        added: [{ name: 'www', record_type: 'A', value: '192.0.2.10' }], removed: [], changed: [],
         settings_changed: {
           from: { domain: 'history.example', geodns_enabled: false, ecs_enabled: false, tags: [] },
           to: { domain: 'history.example', geodns_enabled: true, ecs_enabled: false, tags: [] },
@@ -85,5 +85,6 @@ test('zone history diff renders revision setting changes', async ({ page }) => {
   await page.getByRole('button', { name: 'History', exact: true }).click()
   await page.getByRole('button', { name: 'Diff' }).click()
   await expect(page.getByRole('heading', { name: 'Zone settings' })).toBeVisible()
+  await expect(page.getByText('+ www A 192.0.2.10')).toBeVisible()
   await expect(page.getByText('geodns_enabled: false → true')).toBeVisible()
 })

@@ -24,6 +24,7 @@ const ALLOWED = [
   /^\/api\/v1\/zones\/\*$/,
   /^\/api\/v1\/zones\/\*\/(export|import|records|members|revisions|verify|dnssec|tenant|metadata|clone|lifecycle|transfer-policy)$/,
   /^\/api\/v1\/zones\/\*\/records\/\*$/,
+  /^\/api\/v1\/zones\/\*\/records\/bulk-delete$/,
   /^\/api\/v1\/zones\/\*\/records\/\*\/metadata$/,
   /^\/api\/v1\/zones\/\*\/members\/\*$/,
   /^\/api\/v1\/zones\/\*\/revisions\/\*\/restore$/,
@@ -70,6 +71,10 @@ for (const entry of fs.readdirSync(backendRoot)) {
   const route = /\.route\(\s*"([^"]+)"\s*,\s*web::(get|post|put|patch|delete)\(\)/g
   let match
   while ((match = route.exec(source))) {
+    backendRoutes.add(`${match[2].toUpperCase()} ${match[1].replace(/\{[^}]+\}/g, '*')}`)
+  }
+  const handler_route = /\.route\(\s*"([^"]+)"\s*,\s*web::(get|post|put|patch|delete)\(\)\.to\(/g
+  while ((match = handler_route.exec(source))) {
     backendRoutes.add(`${match[2].toUpperCase()} ${match[1].replace(/\{[^}]+\}/g, '*')}`)
   }
 }

@@ -6,6 +6,184 @@ use super::*;
 pub const MAX_BIND_IMPORT_BYTES: usize = 1024 * 1024;
 pub const MAX_BULK_ZONES: usize = 100;
 pub const MAX_BULK_RECORDS_PER_ZONE: usize = 5000;
+pub const MAX_BULK_DELETE_RECORDS: usize = 100;
+
+#[derive(Deserialize)]
+pub struct BulkDeleteRecordsReq {
+    pub record_ids: Vec<String>,
+}
+
+fn bulk_delete_db_error(context: &str, error: &tokio_postgres::Error) -> HttpResponse {
+    log::warn!("{context} failed: {}", full_error_string(error));
+    HttpResponse::InternalServerError().json(serde_json::json!({
+        "error": "database error",
+        "details": context,
+    }))
+}
+
+/// Delete a bounded, explicitly selected set of records atomically. The API
+/// rejects any selection that would remove an SOA or the final apex NS, and
+/// restores the exact selected rows if publication fails.
+pub async fn bulk_delete_records(
+    path: web::Path<String>,
+    body: web::Json<BulkDeleteRecordsReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let token = match auth_from_header(&req, &data.jwt_secret) {
+        Some(token) => token,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    let access = match zone_access(&data.db, &zone_id, &token).await {
+        Ok(access) => access,
+        Err(response) => return response,
+    };
+    if body.record_ids.is_empty() || body.record_ids.len() > MAX_BULK_DELETE_RECORDS {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("select between 1 and {MAX_BULK_DELETE_RECORDS} records")
+        }));
+    }
+    let ids: std::collections::HashSet<String> = body.record_ids.iter().cloned().collect();
+    if ids.len() != body.record_ids.len() || ids.iter().any(|id| Uuid::parse_str(id).is_err()) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "record_ids must be unique UUIDs"}));
+    }
+    let ordered_ids = body.record_ids.clone();
+    let tx = match data.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => return bulk_delete_db_error("bulk record deletion transaction", &error),
+    };
+    let client = tx.client();
+    if let Err(error) = client.batch_execute("BEGIN").await {
+        return bulk_delete_db_error("bulk record deletion begin", &error);
+    }
+    let selected = match client.query(
+        "SELECT CAST(id AS varchar), name, record_type, value, ttl, priority, comment, tags \
+         FROM records WHERE CAST(zone_id AS varchar) = $1 AND CAST(id AS varchar) = ANY($2::text[]) \
+         FOR UPDATE",
+        &[&zone_id, &ordered_ids],
+    ).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            let _ = client.batch_execute("ROLLBACK").await;
+            return bulk_delete_db_error("bulk record deletion lookup", &error);
+        }
+    };
+    if selected.len() != ordered_ids.len() {
+        let _ = client.batch_execute("ROLLBACK").await;
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "one or more selected records do not exist in this zone"
+        }));
+    }
+    if selected
+        .iter()
+        .any(|row| row.get::<_, String>(2).eq_ignore_ascii_case("SOA"))
+    {
+        let _ = client.batch_execute("ROLLBACK").await;
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "bulk deletion cannot remove an SOA record"
+        }));
+    }
+    let selected_apex_ns = selected
+        .iter()
+        .filter(|row| {
+            row.get::<_, String>(2).eq_ignore_ascii_case("NS")
+                && matches!(row.get::<_, String>(1).to_ascii_lowercase().as_str(), "@")
+        })
+        .count() as i64;
+    if selected_apex_ns > 0 {
+        let remaining: i64 = match client
+            .query_one(
+                "SELECT count(*) FROM records WHERE CAST(zone_id AS varchar) = $1 \
+             AND lower(name) = '@' AND upper(record_type) = 'NS' \
+             AND CAST(id AS varchar) <> ALL($2::text[])",
+                &[&zone_id, &ordered_ids],
+            )
+            .await
+        {
+            Ok(row) => row.get(0),
+            Err(error) => {
+                let _ = client.batch_execute("ROLLBACK").await;
+                return bulk_delete_db_error("bulk record deletion apex NS guard", &error);
+            }
+        };
+        if remaining == 0 {
+            let _ = client.batch_execute("ROLLBACK").await;
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "error": "bulk deletion cannot remove the final apex NS record"
+            }));
+        }
+    }
+    if let Err(error) = client.execute(
+        "DELETE FROM records WHERE CAST(zone_id AS varchar) = $1 AND CAST(id AS varchar) = ANY($2::text[])",
+        &[&zone_id, &ordered_ids],
+    ).await {
+        let _ = client.batch_execute("ROLLBACK").await;
+        return bulk_delete_db_error("bulk record deletion", &error);
+    }
+    if let Err(error) = client.batch_execute("COMMIT").await {
+        let _ = client.batch_execute("ROLLBACK").await;
+        return bulk_delete_db_error("bulk record deletion commit", &error);
+    }
+
+    if let Err(error) = publish(&data.dns_manager, &data.db, Some(&access.domain)).await {
+        warn!(
+            "bulk record deletion publish failed for zone {}: {}",
+            zone_id, error
+        );
+        let restore = async {
+            let restore_tx = data.db.begin().await?;
+            let restore_client = restore_tx.client();
+            restore_client.batch_execute("BEGIN").await?;
+            for row in &selected {
+                restore_client.execute(
+                    "INSERT INTO records (id, zone_id, name, record_type, value, ttl, priority, comment, tags) \
+                     VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6, $7, $8, $9)",
+                    &[&row.get::<_, String>(0), &zone_id, &row.get::<_, String>(1),
+                      &row.get::<_, String>(2), &row.get::<_, String>(3), &row.get::<_, i32>(4),
+                      &row.get::<_, Option<i32>>(5), &row.get::<_, String>(6),
+                      &row.get::<_, serde_json::Value>(7)],
+                ).await?;
+            }
+            restore_client.batch_execute("COMMIT").await
+        }.await;
+        if let Err(restore_error) = restore {
+            let details = full_error_string(&restore_error);
+            warn!(
+                "bulk record deletion rollback failed for zone {}: {}",
+                zone_id, details
+            );
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "publish_failed_rollback_failed",
+                "details": details,
+                "saved": false,
+                "published": false
+            }));
+        }
+        return publish_failed_rolled_back(&error);
+    }
+    let revision_saved = ext::snapshot_zone(
+        &data.db,
+        &zone_id,
+        Some(&token.claims.sub),
+        "bulk record delete",
+    )
+    .await;
+    audit(
+        &data.db,
+        Some(&token.claims.sub),
+        "bulk_delete_records",
+        "zone",
+        Some(zone_id.clone()),
+        &req,
+        serde_json::json!({"zone": access.domain, "record_ids": ordered_ids, "deleted": selected.len()}),
+    ).await;
+    HttpResponse::Ok().json(serde_json::json!({
+        "deleted": selected.len(),
+        "revision_snapshot": if revision_saved { "saved" } else { "failed" }
+    }))
+}
 
 #[derive(Deserialize)]
 pub struct BindImportReq {
