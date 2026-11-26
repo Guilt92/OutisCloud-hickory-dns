@@ -2536,6 +2536,20 @@ async fn zone_sharing_levels() {
         None
     );
     assert_eq!(ml.as_array().unwrap().len(), 2);
+    let member_page = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/zones/{zid}/members?limit=1&q=bob&sort=username&order=desc"
+            ))
+            .insert_header(("Authorization", format!("Bearer {tc}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(member_page.status(), 200);
+    assert_eq!(member_page.headers().get("X-Total-Count").unwrap(), "1");
+    let member_page_body: serde_json::Value = test::read_body_json(member_page).await;
+    assert_eq!(member_page_body.as_array().unwrap()[0]["username"], "bob");
     let (st, _, _) = call!(
         app,
         delete,
@@ -5348,6 +5362,28 @@ async fn nameservers_and_server_status_authorization() {
     assert_eq!(admin_page.headers().get("X-Total-Count").unwrap(), "2");
     let admin_body: serde_json::Value = test::read_body_json(admin_page).await;
     assert_eq!(admin_body.as_array().unwrap().len(), 1);
+    let sorted_response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/nameservers?sort=hostname&order=desc")
+            .insert_header(("Authorization", format!("Bearer {ta}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(sorted_response.status(), 200);
+    let sorted_body: serde_json::Value = test::read_body_json(sorted_response).await;
+    assert_eq!(sorted_body[0]["hostname"], "ns-on.example");
+    let invalid_sort = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/nameservers?sort=hostname%20DESC")
+            .insert_header(("Authorization", format!("Bearer {ta}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(invalid_sort.status(), 400);
+    let invalid_body: serde_json::Value = test::read_body_json(invalid_sort).await;
+    assert_eq!(invalid_body["error"], "invalid_query");
     // writes stay admin-only
     let (st, _, _) = call!(
         app,
@@ -8799,6 +8835,27 @@ async fn api_tokens_are_scoped_revocable_and_can_rotate() {
     let token = body["token"].as_str().unwrap().to_string();
     assert!(token.starts_with("ocd_"));
     assert!(!raw.contains("token_hash"));
+    let (st, _, raw) = call!(
+        app,
+        post,
+        "/api/v1/tokens",
+        Some(&admin),
+        j(serde_json::json!({"name":"z token","scopes":["zones:read"]}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let token_page = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/tokens?limit=1&sort=name&order=asc")
+            .insert_header(("Authorization", format!("Bearer {admin}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(token_page.status(), 200);
+    assert_eq!(token_page.headers().get("X-Total-Count").unwrap(), "2");
+    let token_page_body: serde_json::Value = test::read_body_json(token_page).await;
+    assert_eq!(token_page_body["tokens"].as_array().unwrap().len(), 1);
+    assert_eq!(token_page_body["tokens"][0]["name"], "read only");
 
     for expires_in_days in [0, 366] {
         let (status, _, raw) = call!(
@@ -8888,6 +8945,78 @@ async fn api_tokens_are_scoped_revocable_and_can_rotate() {
     assert_eq!(st, 200);
     let (st, _, _) = call!(app, get, "/api/v1/zones", Some(&new_token), None);
     assert_eq!(st, 401);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
+async fn automation_list_filters_sort_and_count_empty_pages() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let admin = env.token(&env.admin, "admin");
+    for (kind, url, n) in [
+        ("zeta", "https://zeta.example/hook", 1i32),
+        ("alpha", "https://alpha.example/hook", 2i32),
+    ] {
+        env.state.db.execute(
+            "INSERT INTO jobs (id,user_id,kind,status,progress,total) VALUES ($1::text::uuid,$2::text::uuid,$3,'queued',0,0)",
+            &[&Uuid::new_v4().to_string(), &env.admin, &kind],
+        ).await.unwrap();
+        env.state.db.execute(
+            "INSERT INTO webhooks (id,user_id,url,secret,events) VALUES ($1::text::uuid,$2::text::uuid,$3,'test-secret','[\"zone.updated\"]'::jsonb)",
+            &[&Uuid::new_v4().to_string(), &env.admin, &url],
+        ).await.unwrap();
+        env.state
+            .db
+            .execute(
+                "UPDATE jobs SET created_at=now()-($2::int * interval '1 second') WHERE kind=$1",
+                &[&kind, &n],
+            )
+            .await
+            .unwrap();
+    }
+
+    let jobs = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/jobs?limit=1&sort=kind&order=asc")
+            .insert_header(("Authorization", format!("Bearer {admin}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(jobs.status(), 200);
+    assert_eq!(jobs.headers().get("X-Total-Count").unwrap(), "2");
+    let jobs_body: serde_json::Value = test::read_body_json(jobs).await;
+    assert_eq!(jobs_body["jobs"].as_array().unwrap().len(), 1);
+    assert_eq!(jobs_body["jobs"][0]["kind"], "alpha");
+
+    let hooks = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/webhooks?limit=1&q=alpha&sort=url&order=asc")
+            .insert_header(("Authorization", format!("Bearer {admin}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(hooks.status(), 200);
+    assert_eq!(hooks.headers().get("X-Total-Count").unwrap(), "1");
+    let hooks_body: serde_json::Value = test::read_body_json(hooks).await;
+    assert_eq!(hooks_body["webhooks"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        hooks_body["webhooks"][0]["url"],
+        "https://alpha.example/hook"
+    );
+
+    let empty_jobs = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/jobs?offset=100")
+            .insert_header(("Authorization", format!("Bearer {admin}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(empty_jobs.headers().get("X-Total-Count").unwrap(), "2");
+    let empty_body: serde_json::Value = test::read_body_json(empty_jobs).await;
+    assert_eq!(empty_body["jobs"].as_array().unwrap().len(), 0);
     env.cleanup().await;
 }
 

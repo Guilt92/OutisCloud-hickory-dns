@@ -38,6 +38,8 @@ pub struct HealthListQuery {
     pub zone_id: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
 }
 
 fn valid_rtype(rtype: &str) -> Result<(), String> {
@@ -266,15 +268,47 @@ pub async fn list_checks(
     let is_admin = tok.claims.role == "admin";
     let limit = query.limit.unwrap_or(100).clamp(1, MAX_CHECKS_PER_REQUEST);
     let offset = query.offset.unwrap_or(0).max(0);
+    let sort = match query.sort.as_deref().unwrap_or("created") {
+        "created" => "h.created_at",
+        "name" => "h.name",
+        "target" => "h.target",
+        "status" => "h.status",
+        _ => {
+            return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Unsupported sort field"}),
+            );
+        }
+    };
+    let direction =
+        match query.order.as_deref().unwrap_or("desc") {
+            "asc" => "ASC",
+            "desc" => "DESC",
+            _ => return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Order must be asc or desc"}),
+            ),
+        };
+    let visibility = "($2 OR (h.zone_id IS NOT NULL AND (CAST(z.owner AS varchar) = $3 OR EXISTS (SELECT 1 FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $3) OR EXISTS (SELECT 1 FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $3))))";
+    let total_sql = format!(
+        "SELECT count(*) FROM health_checks h LEFT JOIN zones z ON z.id = h.zone_id WHERE ($1::text IS NULL OR CAST(h.zone_id AS varchar) = $1) AND {visibility}"
+    );
+    let total: i64 = match data
+        .db
+        .query_one(&total_sql, &[&zone_filter, &is_admin, &tok.claims.sub])
+        .await
+    {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list health checks count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error":"database_error"}));
+        }
+    };
     let sql = format!(
         "SELECT {HEALTH_COLUMNS}, count(*) OVER() FROM health_checks h \
          LEFT JOIN zones z ON z.id = h.zone_id \
          WHERE ($1::text IS NULL OR CAST(h.zone_id AS varchar) = $1) \
-           AND ($2 OR (h.zone_id IS NOT NULL AND ( \
-                 CAST(z.owner AS varchar) = $3 \
-                 OR EXISTS (SELECT 1 FROM zone_members m WHERE m.zone_id = z.id AND CAST(m.user_id AS varchar) = $3) \
-                 OR EXISTS (SELECT 1 FROM tenant_members tm WHERE tm.tenant_id = z.tenant_id AND CAST(tm.user_id AS varchar) = $3)))) \
-         ORDER BY h.created_at DESC LIMIT $4::bigint OFFSET $5::bigint"
+           AND {visibility} \
+         ORDER BY {sort} {direction}, h.id LIMIT $4::bigint OFFSET $5::bigint"
     );
     match data
         .db
@@ -285,7 +319,6 @@ pub async fn list_checks(
         .await
     {
         Ok(rows) => {
-            let total: i64 = rows.first().and_then(|r| r.try_get(19).ok()).unwrap_or(0);
             let out: Vec<serde_json::Value> = rows.iter().map(row_json).collect();
             HttpResponse::Ok()
                 .insert_header(("X-Total-Count", total.to_string()))

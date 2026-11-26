@@ -109,6 +109,7 @@ pub struct MemberReq {
 
 pub async fn list_members(
     path: web::Path<String>,
+    page: web::Query<PageQuery>,
     data: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
@@ -120,10 +121,40 @@ pub async fn list_members(
     if let Err(r) = zone_access_at(&data.db, &zone_id, &tok, Level::Read).await {
         return r;
     }
-    match data.db.query(
-        "SELECT CAST(m.user_id AS varchar), u.username, m.role FROM zone_members m JOIN users u ON u.id = m.user_id \
-         WHERE CAST(m.zone_id AS varchar) = $1 ORDER BY u.username", &[&zone_id]).await {
-        Ok(rows) => HttpResponse::Ok().json(rows.iter().map(|r| serde_json::json!({
+    let (limit, offset, qtext) = page.parts();
+    let sort = match page.sort_column(
+        &[("username", "u.username"), ("role", "m.role")],
+        "username",
+    ) {
+        Ok(value) => value,
+        Err(()) => {
+            return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Unsupported sort field"}),
+            );
+        }
+    };
+    let direction =
+        match page.sort_direction() {
+            Ok(value) => value,
+            Err(()) => return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Order must be asc or desc"}),
+            ),
+        };
+    let total: i64 = match data.db.query_one(
+        "SELECT count(*) FROM zone_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.zone_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%')",
+        &[&zone_id, &qtext],
+    ).await {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_members count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    let sql = format!(
+        "SELECT CAST(m.user_id AS varchar), u.username, m.role FROM zone_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.zone_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%') ORDER BY {sort} {direction}, u.id LIMIT $3::bigint OFFSET $4::bigint"
+    );
+    match data.db.query(&sql, &[&zone_id, &qtext, &limit, &offset]).await {
+        Ok(rows) => HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(rows.iter().map(|r| serde_json::json!({
             "user_id": r.get::<_, String>(0), "username": r.get::<_, String>(1), "role": r.get::<_, String>(2)
         })).collect::<Vec<_>>()),
         Err(e) => { warn!("list_members: {}", full_error_string(&e)); HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"})) }
@@ -290,6 +321,7 @@ pub(crate) async fn snapshot_zone_with_retention(
 
 pub async fn list_revisions(
     path: web::Path<String>,
+    page: web::Query<PageQuery>,
     data: web::Data<AppState>,
     req: HttpRequest,
 ) -> impl Responder {
@@ -301,10 +333,40 @@ pub async fn list_revisions(
     if let Err(r) = zone_access_at(&data.db, &zone_id, &tok, Level::Read).await {
         return r;
     }
-    match data.db.query(
-        "SELECT CAST(r.id AS varchar), r.domain, r.reason, COALESCE(u.username, ''), r.created_at::text, jsonb_array_length(r.records) \
-         FROM zone_revisions r LEFT JOIN users u ON u.id = r.user_id WHERE CAST(r.zone_id AS varchar) = $1 ORDER BY r.created_at DESC", &[&zone_id]).await {
-        Ok(rows) => HttpResponse::Ok().json(rows.iter().map(|r| serde_json::json!({
+    let (limit, offset, qtext) = page.parts();
+    let sort = match page.sort_column(
+        &[("created", "r.created_at"), ("reason", "r.reason")],
+        "created",
+    ) {
+        Ok(value) => value,
+        Err(()) => {
+            return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Unsupported sort field"}),
+            );
+        }
+    };
+    let direction =
+        match page.sort_direction_or("desc") {
+            Ok(value) => value,
+            Err(()) => return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Order must be asc or desc"}),
+            ),
+        };
+    let total: i64 = match data.db.query_one(
+        "SELECT count(*) FROM zone_revisions r WHERE CAST(r.zone_id AS varchar) = $1 AND ($2::text IS NULL OR r.reason ILIKE '%' || $2 || '%')",
+        &[&zone_id, &qtext],
+    ).await {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_revisions count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    let sql = format!(
+        "SELECT CAST(r.id AS varchar), r.domain, r.reason, COALESCE(u.username, ''), r.created_at::text, jsonb_array_length(r.records) FROM zone_revisions r LEFT JOIN users u ON u.id = r.user_id WHERE CAST(r.zone_id AS varchar) = $1 AND ($2::text IS NULL OR r.reason ILIKE '%' || $2 || '%') ORDER BY {sort} {direction}, r.id LIMIT $3::bigint OFFSET $4::bigint"
+    );
+    match data.db.query(&sql, &[&zone_id, &qtext, &limit, &offset]).await {
+        Ok(rows) => HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(rows.iter().map(|r| serde_json::json!({
             "id": r.get::<_, String>(0), "domain": r.get::<_, String>(1), "reason": r.get::<_, String>(2),
             "user": r.get::<_, String>(3), "created_at": r.get::<_, String>(4), "record_count": r.get::<_, i32>(5)
         })).collect::<Vec<_>>()),
@@ -1746,6 +1808,8 @@ pub struct PageQuery {
     offset: Option<i64>,
     q: Option<String>,
     tag: Option<String>,
+    sort: Option<String>,
+    order: Option<String>,
 }
 impl PageQuery {
     /// (limit, offset, search text)
@@ -1767,6 +1831,35 @@ impl PageQuery {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
+
+    /// Resolve the requested sort field through an endpoint-owned allowlist.
+    /// The returned SQL identifier is always a static string from that list.
+    pub fn sort_column(
+        &self,
+        allowed: &[(&'static str, &'static str)],
+        default: &str,
+    ) -> Result<&'static str, ()> {
+        let requested = self.sort.as_deref().unwrap_or(default);
+        allowed
+            .iter()
+            .find(|(name, _)| *name == requested)
+            .map(|(_, column)| *column)
+            .ok_or(())
+    }
+
+    /// Resolve `order=asc|desc`; default ordering is ascending.
+    pub fn sort_direction(&self) -> Result<&'static str, ()> {
+        self.sort_direction_or("asc")
+    }
+
+    /// Resolve `order=asc|desc` while preserving an endpoint's historical default.
+    pub fn sort_direction_or(&self, default: &'static str) -> Result<&'static str, ()> {
+        match self.order.as_deref().unwrap_or(default) {
+            "asc" => Ok("ASC"),
+            "desc" => Ok("DESC"),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1777,6 +1870,8 @@ pub struct AuditQuery {
     user_id: Option<String>,
     resource_type: Option<String>,
     since: Option<String>,
+    sort: Option<String>,
+    order: Option<String>,
 }
 
 pub async fn list_audit(
@@ -1794,6 +1889,25 @@ pub async fn list_audit(
     }
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let offset = q.offset.unwrap_or(0).max(0);
+    let sort = match q.sort.as_deref().unwrap_or("created") {
+        "created" => "created_at",
+        "action" => "action",
+        "user_id" => "user_id",
+        "resource_type" => "resource_type",
+        _ => {
+            return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Unsupported sort field"}),
+            );
+        }
+    };
+    let direction =
+        match q.order.as_deref().unwrap_or("desc") {
+            "asc" => "ASC",
+            "desc" => "DESC",
+            _ => return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Order must be asc or desc"}),
+            ),
+        };
     let since: Option<String> = q
         .since
         .as_deref()
@@ -1818,7 +1932,7 @@ pub async fn list_audit(
     };
     let rows = match data.db.query(&format!(
         "SELECT CAST(id AS varchar), COALESCE(CAST(user_id AS varchar), ''), action, resource_type, COALESCE(resource_id, ''), COALESCE(details::text, ''), COALESCE(ip_address, ''), created_at::text \
-         FROM audit_logs WHERE {} ORDER BY created_at DESC, id LIMIT $5 OFFSET $6", where_sql),
+         FROM audit_logs WHERE {} ORDER BY {} {}, id LIMIT $5 OFFSET $6", where_sql, sort, direction),
         &[&q.action, &q.user_id, &q.resource_type, &since, &limit, &offset]).await {
         Ok(r) => r, Err(e) => { warn!("audit list: {}", full_error_string(&e)); return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"})) }
     };
@@ -2009,6 +2123,29 @@ mod unit {
         }
         .parts();
         assert_eq!(tiny.0, Some(1));
+    }
+
+    #[test]
+    fn page_sort_is_allowlisted_and_direction_is_closed() {
+        let allowed = [("name", "name"), ("created", "created_at")];
+        let query = PageQuery {
+            sort: Some("created".into()),
+            order: Some("desc".into()),
+            ..Default::default()
+        };
+        assert_eq!(query.sort_column(&allowed, "name"), Ok("created_at"));
+        assert_eq!(query.sort_direction(), Ok("DESC"));
+
+        let bad_column = PageQuery {
+            sort: Some("name DESC".into()),
+            ..Default::default()
+        };
+        assert_eq!(bad_column.sort_column(&allowed, "name"), Err(()));
+        let bad_direction = PageQuery {
+            order: Some("sideways".into()),
+            ..Default::default()
+        };
+        assert_eq!(bad_direction.sort_direction(), Err(()));
     }
 
     #[test]

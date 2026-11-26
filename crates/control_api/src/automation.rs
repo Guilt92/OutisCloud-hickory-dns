@@ -395,20 +395,37 @@ pub async fn list_tokens(
         Some(t) => t,
         None => return unauthorized(),
     };
-    let (limit, offset, _) = page.parts();
-    let sql = "SELECT CAST(id AS varchar), name, prefix, to_char(expires_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-                      scopes, to_char(last_used_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-                      to_char(revoked_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-                      to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), count(*) OVER() \
-               FROM api_tokens WHERE CAST(user_id AS varchar) = $1 ORDER BY created_at DESC \
-               LIMIT $2::bigint OFFSET $3::bigint";
+    let (limit, offset, qtext) = page.parts();
+    let sort = match page.sort_column(
+        &[("created", "created_at"), ("expires", "expires_at"), ("name", "name")],
+        "created",
+    ) {
+        Ok(value) => value,
+        Err(()) => return HttpResponse::BadRequest().json(serde_json::json!({"error":"invalid_query","details":"Unsupported sort field or order"})),
+    };
+    let direction = match page.sort_direction_or("desc") {
+        Ok(value) => value,
+        Err(()) => return HttpResponse::BadRequest().json(serde_json::json!({"error":"invalid_query","details":"Unsupported sort field or order"})),
+    };
+    let total: i64 = match data.db.query_one(
+        "SELECT count(*) FROM api_tokens WHERE CAST(user_id AS varchar) = $1 AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR prefix ILIKE '%' || $2 || '%')",
+        &[&tok.claims.sub, &qtext],
+    ).await {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_tokens count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    let sql = format!(
+        "SELECT CAST(id AS varchar), name, prefix, to_char(expires_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), scopes, to_char(last_used_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), to_char(revoked_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM api_tokens WHERE CAST(user_id AS varchar) = $1 AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR prefix ILIKE '%' || $2 || '%') ORDER BY {sort} {direction}, id LIMIT $3::bigint OFFSET $4::bigint"
+    );
     match data
         .db
-        .query(sql, &[&tok.claims.sub, &limit, &offset])
+        .query(&sql, &[&tok.claims.sub, &qtext, &limit, &offset])
         .await
     {
         Ok(rows) => {
-            let total: i64 = rows.first().and_then(|r| r.try_get(8).ok()).unwrap_or(0);
             let mut out = Vec::new();
             for r in &rows {
                 out.push(token_row_to_json(r));
@@ -563,6 +580,8 @@ pub struct JobQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub status: Option<String>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
 }
 
 pub async fn list_jobs(
@@ -577,25 +596,50 @@ pub async fn list_jobs(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
     let admin = tok.claims.role == "admin";
-    let sql = "SELECT CAST(id AS varchar), kind, status, progress, total, result, error, \
+    let sort = match q.sort.as_deref().unwrap_or("created") {
+        "created" => "created_at",
+        "updated" => "updated_at",
+        "kind" => "kind",
+        "status" => "status",
+        _ => {
+            return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Unsupported sort field"}),
+            );
+        }
+    };
+    let direction =
+        match q.order.as_deref().unwrap_or("desc") {
+            "asc" => "ASC",
+            "desc" => "DESC",
+            _ => return HttpResponse::BadRequest().json(
+                serde_json::json!({"error":"invalid_query","details":"Order must be asc or desc"}),
+            ),
+        };
+    let total: i64 = match data.db.query_one(
+        "SELECT count(*) FROM jobs WHERE ($1 OR CAST(user_id AS varchar) = $2) AND ($3::text IS NULL OR status = $3)",
+        &[&admin, &tok.claims.sub, &q.status],
+    ).await {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_jobs count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    let sql = format!(
+        "SELECT CAST(id AS varchar), kind, status, progress, total, result, error, \
                       to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-                      to_char(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), count(*) OVER() \
+                      to_char(updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
                FROM jobs WHERE ($1 OR CAST(user_id AS varchar) = $2) \
                  AND ($3::text IS NULL OR status = $3) \
-               ORDER BY created_at DESC LIMIT $4 OFFSET $5";
+               ORDER BY {sort} {direction}, id LIMIT $4 OFFSET $5"
+    );
     match data
         .db
-        .query(sql, &[&admin, &tok.claims.sub, &q.status, &limit, &offset])
+        .query(&sql, &[&admin, &tok.claims.sub, &q.status, &limit, &offset])
         .await
     {
         Ok(rows) => HttpResponse::Ok()
-            .insert_header((
-                "X-Total-Count",
-                rows.first()
-                    .and_then(|r| r.try_get::<_, i64>(9).ok())
-                    .unwrap_or(0)
-                    .to_string(),
-            ))
+            .insert_header(("X-Total-Count", total.to_string()))
             .json(serde_json::json!({
                 "jobs": rows.iter().map(|r| serde_json::json!({
                     "id": r.get::<_, String>(0), "kind": r.get::<_, String>(1),
@@ -931,31 +975,43 @@ pub async fn list_webhooks(
         Some(t) => t,
         None => return unauthorized(),
     };
-    let (limit, offset, _) = page.parts();
+    let (limit, offset, qtext) = page.parts();
+    let sort = match page.sort_column(&[("created", "created_at"), ("url", "url")], "created") {
+        Ok(value) => value,
+        Err(()) => return HttpResponse::BadRequest().json(serde_json::json!({"error":"invalid_query","details":"Unsupported sort field or order"})),
+    };
+    let direction = match page.sort_direction_or("desc") {
+        Ok(value) => value,
+        Err(()) => return HttpResponse::BadRequest().json(serde_json::json!({"error":"invalid_query","details":"Unsupported sort field or order"})),
+    };
     let admin = tok.claims.role == "admin";
+    let total: i64 = match data.db.query_one(
+        "SELECT count(*) FROM webhooks WHERE ($1 OR CAST(user_id AS varchar) = $2) AND ($3::text IS NULL OR url ILIKE '%' || $3 || '%')",
+        &[&admin, &tok.claims.sub, &qtext],
+    ).await {
+        Ok(row) => row.get(0),
+        Err(e) => {
+            warn!("list_webhooks count: {}", full_error_string(&e));
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database_error"}));
+        }
+    };
+    let sql = format!(
+        "SELECT CAST(id AS varchar), url, events, enabled, to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM webhooks WHERE ($1 OR CAST(user_id AS varchar) = $2) AND ($3::text IS NULL OR url ILIKE '%' || $3 || '%') ORDER BY {sort} {direction}, id LIMIT $4::bigint OFFSET $5::bigint"
+    );
     match data
         .db
-        .query(
-            "SELECT CAST(id AS varchar), url, events, enabled, \
-                to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), count(*) OVER() \
-         FROM webhooks WHERE ($1 OR CAST(user_id AS varchar) = $2) ORDER BY created_at DESC \
-         LIMIT $3::bigint OFFSET $4::bigint",
-            &[&admin, &tok.claims.sub, &limit, &offset],
-        )
+        .query(&sql, &[&admin, &tok.claims.sub, &qtext, &limit, &offset])
         .await
     {
-        Ok(rows) => {
-            let total: i64 = rows.first().and_then(|r| r.try_get(5).ok()).unwrap_or(0);
-            HttpResponse::Ok()
-                .insert_header(("X-Total-Count", total.to_string()))
-                .json(serde_json::json!({
-                    "webhooks": rows.iter().map(|r| serde_json::json!({
-                        "id": r.get::<_, String>(0), "url": r.get::<_, String>(1),
-                        "events": scope_list(&r.get::<_, serde_json::Value>(2)),
-                        "enabled": r.get::<_, bool>(3), "created_at": r.get::<_, String>(4),
-                    })).collect::<Vec<_>>()
-                }))
-        }
+        Ok(rows) => HttpResponse::Ok()
+            .insert_header(("X-Total-Count", total.to_string()))
+            .json(serde_json::json!({
+                "webhooks": rows.iter().map(|r| serde_json::json!({
+                    "id": r.get::<_, String>(0), "url": r.get::<_, String>(1),
+                    "events": scope_list(&r.get::<_, serde_json::Value>(2)),
+                    "enabled": r.get::<_, bool>(3), "created_at": r.get::<_, String>(4),
+                })).collect::<Vec<_>>()
+            })),
         Err(e) => {
             warn!("list_webhooks: {}", full_error_string(&e));
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))

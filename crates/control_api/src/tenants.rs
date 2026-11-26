@@ -377,6 +377,14 @@ pub async fn list_tenants(
         let _ = tenant_for_user(&data.db, &tok.claims.sub, None, false).await;
     }
     let (limit, offset, qtext) = page.parts();
+    let sort = match page.sort_column(&[("name", "t.name"), ("created", "t.created_at")], "name") {
+        Ok(value) => value,
+        Err(()) => return invalid_list_query(),
+    };
+    let direction = match page.sort_direction() {
+        Ok(value) => value,
+        Err(()) => return invalid_list_query(),
+    };
     let count = data.db.query_one(
         "SELECT count(*) FROM tenants t LEFT JOIN tenant_members m ON m.tenant_id = t.id AND CAST(m.user_id AS varchar) = $2 WHERE ($1 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR t.name ILIKE '%' || $3 || '%')",
         &[&is_admin, &tok.claims.sub, &qtext],
@@ -385,14 +393,22 @@ pub async fn list_tenants(
         Ok(row) => row.get(0),
         Err(e) => return db_error("list_tenants_count", &e),
     };
-    let rows = data.db.query(
+    let list_sql = format!(
         "SELECT CAST(t.id AS varchar), t.name, t.max_zones, t.max_records, t.created_at::text, \
                 (SELECT count(*) FROM zones z WHERE z.tenant_id = t.id), \
                 (SELECT count(*) FROM records r JOIN zones z ON z.id = r.zone_id WHERE z.tenant_id = t.id), \
                 (SELECT count(*) FROM tenant_members x WHERE x.tenant_id = t.id), \
                 COALESCE(m.role, CASE WHEN $1 THEN 'admin' ELSE '' END) \
          FROM tenants t LEFT JOIN tenant_members m ON m.tenant_id = t.id AND CAST(m.user_id AS varchar) = $2 \
-         WHERE ($1 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR t.name ILIKE '%' || $3 || '%') ORDER BY t.name, t.id LIMIT $4::bigint OFFSET $5::bigint", &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset]).await;
+         WHERE ($1 OR m.user_id IS NOT NULL) AND ($3::text IS NULL OR t.name ILIKE '%' || $3 || '%') ORDER BY {sort} {direction}, t.id LIMIT $4::bigint OFFSET $5::bigint"
+    );
+    let rows = data
+        .db
+        .query(
+            &list_sql,
+            &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset],
+        )
+        .await;
     match rows {
         Ok(rows) => HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(rows.iter().map(|r| serde_json::json!({
             "id": r.get::<_, String>(0), "name": r.get::<_, String>(1), "max_zones": r.get::<_, Option<i32>>(2), "max_records": r.get::<_, Option<i32>>(3),
@@ -551,6 +567,17 @@ pub async fn list_tenant_members(
         Err(r) => return r,
     }
     let (limit, offset, qtext) = page.parts();
+    let sort = match page.sort_column(
+        &[("username", "u.username"), ("role", "m.role")],
+        "username",
+    ) {
+        Ok(value) => value,
+        Err(()) => return invalid_list_query(),
+    };
+    let direction = match page.sort_direction() {
+        Ok(value) => value,
+        Err(()) => return invalid_list_query(),
+    };
     let total: i64 = match data.db.query_one(
         "SELECT count(*) FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%')",
         &[&id, &qtext],
@@ -558,7 +585,10 @@ pub async fn list_tenant_members(
         Ok(row) => row.get(0),
         Err(e) => return db_error("list_tenant_members_count", &e),
     };
-    match data.db.query("SELECT CAST(u.id AS varchar), u.username, m.role FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%') ORDER BY u.username, u.id LIMIT $3::bigint OFFSET $4::bigint", &[&id, &qtext, &limit, &offset]).await {
+    let list_sql = format!(
+        "SELECT CAST(u.id AS varchar), u.username, m.role FROM tenant_members m JOIN users u ON u.id = m.user_id WHERE CAST(m.tenant_id AS varchar) = $1 AND ($2::text IS NULL OR u.username ILIKE '%' || $2 || '%') ORDER BY {sort} {direction}, u.id LIMIT $3::bigint OFFSET $4::bigint"
+    );
+    match data.db.query(&list_sql, &[&id, &qtext, &limit, &offset]).await {
         Ok(rows) => HttpResponse::Ok().insert_header(("X-Total-Count", total.to_string())).json(rows.iter().map(|r| serde_json::json!({"user_id": r.get::<_, String>(0), "username": r.get::<_, String>(1), "role": r.get::<_, String>(2)})).collect::<Vec<_>>()),
         Err(e) => db_error("list_tenant_members", &e),
     }
