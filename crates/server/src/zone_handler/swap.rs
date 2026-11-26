@@ -1,7 +1,7 @@
 //! A request handler whose catalog can be replaced while the server is
 //! running (hot reload), with optional per-source rate limiting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,8 @@ use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 
 use crate::net::runtime::Time;
 use crate::net::xfer::Protocol;
-use crate::proto::op::{Header, ResponseCode};
+use crate::proto::op::{Header, OpCode, ResponseCode};
+use crate::proto::rr::LowerName;
 use crate::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use crate::zone_handler::{Catalog, MessageResponseBuilder};
 
@@ -49,6 +50,18 @@ fn limiter_key(ip: IpAddr) -> IpAddr {
     }
 }
 
+fn zone_is_expired(expired: &HashSet<LowerName>, query_name: &LowerName) -> bool {
+    expired.iter().any(|zone| zone.zone_of(query_name))
+}
+
+fn is_expired_query(expired: &HashSet<LowerName>, request: &Request) -> bool {
+    request.op_code() == OpCode::Query
+        && request
+            .queries()
+            .iter()
+            .any(|query| zone_is_expired(expired, query.name()))
+}
+
 struct Shared {
     catalog: RwLock<Arc<Catalog>>,
     limiter: Option<DefaultKeyedRateLimiter<IpAddr>>,
@@ -57,6 +70,7 @@ struct Shared {
     slip: u32,
     reloads: AtomicU64,
     zone_fingerprints: RwLock<HashMap<String, String>>,
+    expired_zones: RwLock<HashSet<LowerName>>,
 }
 
 /// Cheap to clone; all clones share the same catalog and limiter.
@@ -83,6 +97,7 @@ impl SwapHandler {
                 slip: limit.map(|l| l.slip).unwrap_or(0),
                 reloads: AtomicU64::new(0),
                 zone_fingerprints: RwLock::new(HashMap::new()),
+                expired_zones: RwLock::new(HashSet::new()),
             }),
         }
     }
@@ -137,6 +152,24 @@ impl SwapHandler {
             .unwrap_or_else(|e| e.into_inner()) = fingerprints;
     }
 
+    /// Mark a secondary zone expired so queries fail closed instead of serving stale data.
+    pub fn mark_zone_expired(&self, zone: LowerName) {
+        self.shared
+            .expired_zones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(zone);
+    }
+
+    /// Clear the expired state after a successful primary refresh.
+    pub fn mark_zone_fresh(&self, zone: &LowerName) {
+        self.shared
+            .expired_zones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(zone);
+    }
+
     fn current(&self) -> Arc<Catalog> {
         self.shared
             .catalog
@@ -188,6 +221,25 @@ impl RequestHandler for SwapHandler {
             header.set_response_code(ResponseCode::Refused);
             return ResponseInfo::from(header);
         }
+        let expired_query = {
+            let expired_zones = self
+                .shared
+                .expired_zones
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            is_expired_query(&expired_zones, request)
+        };
+        if expired_query {
+            let mut header = Header::response_from_request(request.header());
+            header.set_response_code(ResponseCode::ServFail);
+            let response =
+                MessageResponseBuilder::new(request.raw_queries(), None).build_no_records(header);
+            let mut response_handle = response_handle;
+            return match response_handle.send_response(response).await {
+                Ok(info) => info,
+                Err(_) => ResponseInfo::from(header),
+            };
+        }
         self.current()
             .handle_request::<R, T>(request, response_handle)
             .await
@@ -197,6 +249,8 @@ impl RequestHandler for SwapHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::rr::LowerName;
+    use crate::proto::rr::Name;
 
     #[test]
     fn ipv6_sources_share_a_budget_per_slash_64() {
@@ -240,5 +294,23 @@ mod tests {
         h.swap(Catalog::new());
         assert_ne!(before, Arc::as_ptr(&h.current()));
         assert_eq!(h.reloads(), 1);
+    }
+
+    #[test]
+    fn expired_zone_rejects_its_apex_and_children_but_not_siblings() {
+        let zone = LowerName::from(Name::from_ascii("example.test.").unwrap());
+        let expired = HashSet::from([zone]);
+        assert!(zone_is_expired(
+            &expired,
+            &Name::from_ascii("example.test.").unwrap().into()
+        ));
+        assert!(zone_is_expired(
+            &expired,
+            &Name::from_ascii("www.example.test.").unwrap().into()
+        ));
+        assert!(!zone_is_expired(
+            &expired,
+            &Name::from_ascii("notexample.test.").unwrap().into()
+        ));
     }
 }

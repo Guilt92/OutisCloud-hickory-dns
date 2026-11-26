@@ -948,6 +948,78 @@ address = "127.0.0.1:{denied_port}"
 }
 
 #[tokio::test]
+async fn expired_secondary_fails_closed_after_primary_is_unavailable() {
+    let zone = "$ORIGIN expire.test.\n$TTL 30\n@ IN SOA ns.expire.test. hostmaster.expire.test. 1 1 1 3 1\n@ IN NS ns.expire.test.\nns IN A 192.0.2.1\nwww IN A 192.0.2.9\n";
+    let primary_config = r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "expire.test"
+zone_type = "Primary"
+axfr_policy = "AllowAll"
+file = "primary.zone"
+"#;
+    let primary = TestServer::start_temporary(primary_config, &[("primary.zone", zone)]);
+    let primary_port = primary
+        .ports
+        .get_v4(Protocol::Tcp)
+        .expect("primary TCP listener");
+    let secondary_config = format!(
+        r#"
+listen_addrs_ipv4 = ["127.0.0.1"]
+[[zones]]
+zone = "expire.test"
+zone_type = "Secondary"
+file = "secondary.zone"
+[[zones.masters]]
+address = "127.0.0.1:{primary_port}"
+"#
+    );
+    let secondary = TestServer::start_temporary_with_zone_writes(
+        &secondary_config,
+        &[("secondary.zone", zone)],
+    );
+    let secondary_port = secondary
+        .ports
+        .get_v4(Protocol::Udp)
+        .expect("secondary UDP listener");
+    let stream = UdpClientStream::builder(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, secondary_port)),
+        TokioRuntimeProvider::new(),
+    )
+    .build();
+    let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(background);
+    let name = Name::from_str("www.expire.test.").unwrap();
+    let initial = query_message(&mut client, name.clone(), RecordType::A)
+        .await
+        .expect("initial answer");
+    assert!(initial.answers().iter().any(|record| {
+        matches!(record.data(), RData::A(address) if *address == A::new(192, 0, 2, 9))
+    }));
+
+    let mut primary = primary;
+    primary.stop();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let response = query_message(&mut client, name.clone(), RecordType::A)
+            .await
+            .expect("secondary DNS response");
+        if response.response_code() == ResponseCode::ServFail {
+            assert!(
+                response.answers().is_empty(),
+                "expired zone must not leak stale records"
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "secondary continued serving after SOA expire elapsed"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[tokio::test]
 async fn secondary_refreshes_from_primary_on_soa_timer_without_notify() {
     let primary_zone = "$ORIGIN timer-secondary.test.\n@ 60 IN SOA ns.timer-secondary.test. hostmaster.timer-secondary.test. 1 1 1 30 1\n@ 60 IN NS ns.timer-secondary.test.\nns 60 IN A 192.0.2.1\nwww 60 IN A 192.0.2.11\n";
     let primary_config = r#"

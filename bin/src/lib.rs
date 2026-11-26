@@ -5,7 +5,7 @@
     feature = "__h3"
 ))]
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 use std::{
     io::Error,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -533,6 +533,7 @@ impl DnsServer {
             let zone_dir = zone_dir.clone();
             let config_path = config_path.to_path_buf();
             let reload_tx = reload_tx.clone();
+            let handler = handler.clone();
             tokio::spawn(async move {
                 secondary_refresh_loop(
                     zone,
@@ -543,6 +544,7 @@ impl DnsServer {
                     config_path,
                     zone_dir,
                     reload_tx,
+                    handler,
                 )
                 .await;
             });
@@ -1143,7 +1145,7 @@ async fn refresh_secondary_from_notify(
     ))
 }
 
-fn secondary_soa_timers(zone: &Name, path: &Path) -> (StdDuration, StdDuration) {
+fn secondary_soa_timers(zone: &Name, path: &Path) -> (StdDuration, StdDuration, StdDuration) {
     let timers = fs::read_to_string(path)
         .ok()
         .and_then(|contents| {
@@ -1157,15 +1159,16 @@ fn secondary_soa_timers(zone: &Name, path: &Path) -> (StdDuration, StdDuration) 
                     return None;
                 }
                 rrset.into_iter().find_map(|record| match record.data() {
-                    RData::SOA(soa) => Some((soa.refresh(), soa.retry())),
+                    RData::SOA(soa) => Some((soa.refresh(), soa.retry(), soa.expire())),
                     _ => None,
                 })
             })
         })
-        .unwrap_or((3600, 300));
+        .unwrap_or((3600, 300, 604800));
     (
         StdDuration::from_secs(timers.0.max(1) as u64),
         StdDuration::from_secs(timers.1.max(1) as u64),
+        StdDuration::from_secs(timers.2.max(1) as u64),
     )
 }
 
@@ -1173,12 +1176,22 @@ async fn secondary_refresh_loop(
     zone: hickory_server::proto::rr::LowerName,
     masters: Vec<NotifyPeerConfig>,
     file: PathBuf,
-    (mut refresh, mut retry): (StdDuration, StdDuration),
+    (mut refresh, mut retry, mut expire): (StdDuration, StdDuration, StdDuration),
     initial_refresh_succeeded: bool,
     config_path: PathBuf,
     zone_dir: PathBuf,
     reload_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    handler: SwapHandler,
 ) {
+    let modified_age = fs::metadata(&file)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .unwrap_or_default();
+    let mut last_success = Instant::now()
+        .checked_sub(modified_age)
+        .unwrap_or_else(Instant::now);
+    let mut withdrawn = false;
     let mut delay = if initial_refresh_succeeded {
         refresh
     } else {
@@ -1199,7 +1212,13 @@ async fn secondary_refresh_loop(
             {
                 Ok(changed) => {
                     refreshed = true;
-                    if changed {
+                    last_success = Instant::now();
+                    let was_withdrawn = withdrawn;
+                    if was_withdrawn {
+                        handler.mark_zone_fresh(&zone);
+                        withdrawn = false;
+                    }
+                    if changed || was_withdrawn {
                         // The transfer may be valid but carry the current serial.
                         // Only reload the serving catalog when the file changed.
                         let _ = reload_tx.send(());
@@ -1211,7 +1230,7 @@ async fn secondary_refresh_loop(
         }
         if refreshed {
             let origin: Name = zone.clone().into();
-            (refresh, retry) = secondary_soa_timers(&origin, &file);
+            (refresh, retry, expire) = secondary_soa_timers(&origin, &file);
             delay = refresh;
         } else {
             warn!(
@@ -1220,6 +1239,11 @@ async fn secondary_refresh_loop(
                 "scheduled secondary refresh failed; preserving last-known-good zone"
             );
             delay = retry;
+        }
+        if !refreshed && !withdrawn && last_success.elapsed() >= expire {
+            handler.mark_zone_expired(zone.clone());
+            withdrawn = true;
+            error!(%zone, ?expire, "secondary SOA expire timer elapsed; failing queries closed until refresh succeeds");
         }
     }
 }

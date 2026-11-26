@@ -14,7 +14,7 @@ use std::{
 };
 
 use regex::Regex;
-use tracing::{info, warn};
+use tracing::warn;
 
 use hickory_net::{NetError, client::ClientHandle, xfer::Protocol};
 #[cfg(feature = "__dnssec")]
@@ -200,6 +200,23 @@ impl TestServer {
         fs::read_to_string(temp_dir.path().join(name)).expect("read temporary server fixture")
     }
 
+    /// Stop this isolated server while keeping the fixture directory alive.
+    pub fn stop(&mut self) {
+        if let Err(err) = self.child.kill() {
+            if err.kind() != std::io::ErrorKind::InvalidInput {
+                warn!("could not kill test server: {err}");
+            }
+        }
+        if let Err(err) = self.child.wait() {
+            warn!("could not wait for test server: {err}");
+        }
+        if let Some(reader) = self.output_reader.take() {
+            if reader.join().is_err() {
+                warn!("test server output reader panicked");
+            }
+        }
+    }
+
     /// Permit the isolated child server's dropped-privilege account to atomically
     /// replace zone fixtures, as a real secondary must do after a valid AXFR.
     #[cfg(unix)]
@@ -331,19 +348,7 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        match self.child.kill() {
-            Ok(()) => info!("killed test server"),
-            Err(err) => warn!("could not kill test server: {err}"),
-        }
-
-        if let Err(err) = self.child.wait() {
-            warn!("could not wait for test server: {err}");
-        }
-        if let Some(reader) = self.output_reader.take() {
-            if reader.join().is_err() {
-                warn!("test server output reader panicked");
-            }
-        }
+        self.stop();
         if let Ok(output) = self.output.lock() {
             for line in output.iter() {
                 println!("SRV: {line}");
