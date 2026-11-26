@@ -1,9 +1,10 @@
 //! Encrypted-at-rest storage primitives for DNSSEC private keys.
 //!
 //! The wrapping key is injected by the deployment through
-//! `DNSSEC_KEY_ENCRYPTION_KEY` as base64 encoding of exactly 32 random bytes.
-//! Keep that value in a secret manager or mounted runtime secret, separate
-//! from zone files and database backups. The envelope uses AES-256-GCM and an
+//! `DNSSEC_KEY_ENCRYPTION_KEY` as base64 encoding of exactly 32 random bytes,
+//! or `DNSSEC_KEY_ENCRYPTION_KEY_FILE` pointing to a private mounted secret
+//! containing that encoding. Configure exactly one source. Keep the secret
+//! separate from zone files and database backups. The envelope uses AES-256-GCM and an
 //! authenticated version header. Legacy plaintext files can be read while
 //! migrating; setting `DNSSEC_REQUIRE_ENCRYPTED_KEYS=true` rejects them and
 //! also requires the wrapping key for newly written keys.
@@ -16,6 +17,7 @@ use std::{env, fs, io, path::Path};
 
 const MAGIC: &[u8] = b"OUTIS-DNSSEC-KEY\0\x01";
 const KEY_ENV: &str = "DNSSEC_KEY_ENCRYPTION_KEY";
+const KEY_FILE_ENV: &str = "DNSSEC_KEY_ENCRYPTION_KEY_FILE";
 const REQUIRE_ENV: &str = "DNSSEC_REQUIRE_ENCRYPTED_KEYS";
 const NONCE_LEN: usize = 12;
 const BACKUP_MAGIC: &[u8] = b"OUTIS-DNSSEC-BACKUP\0\x01";
@@ -54,11 +56,39 @@ fn require_encryption() -> bool {
 }
 
 fn configured_key() -> Result<Option<[u8; 32]>, KeyStoreError> {
-    let encoded = match env::var(KEY_ENV) {
-        Ok(encoded) if !encoded.trim().is_empty() => encoded,
-        _ => return Ok(None),
+    let encoded = env::var(KEY_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let key_file = env::var_os(KEY_FILE_ENV).filter(|value| !value.is_empty());
+    if encoded.is_some() && key_file.is_some() {
+        return Err(KeyStoreError::Configuration(format!(
+            "configure only one of {KEY_ENV} and {KEY_FILE_ENV}"
+        )));
+    }
+    if let Some(encoded) = encoded {
+        return parse_wrapping_key(&encoded).map(Some);
+    }
+    let Some(path) = key_file else {
+        return Ok(None);
     };
-    parse_wrapping_key(&encoded).map(Some)
+    let path = Path::new(&path);
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(KeyStoreError::Configuration(format!(
+            "{KEY_FILE_ENV} must reference a regular, non-symlink file"
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(KeyStoreError::Configuration(format!(
+                "{KEY_FILE_ENV} permissions must not grant group or other access"
+            )));
+        }
+    }
+    let encoded = fs::read_to_string(path)?;
+    parse_wrapping_key(encoded.trim()).map(Some)
 }
 
 /// Parse a base64 encoded 256-bit wrapping key for explicit offline tooling.
@@ -413,6 +443,7 @@ fn uuid_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn encrypted_envelope_round_trips_and_rejects_tampering() {
@@ -430,11 +461,12 @@ mod tests {
 
     #[test]
     fn configured_encryption_fails_closed_and_round_trips() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
         let old_key = env::var_os(KEY_ENV);
+        let old_key_file = env::var_os(KEY_FILE_ENV);
         let old_required = env::var_os(REQUIRE_ENV);
         env::remove_var(KEY_ENV);
+        env::remove_var(KEY_FILE_ENV);
         env::set_var(REQUIRE_ENV, "true");
         assert!(encrypt_configured(b"secret").is_err());
         assert!(decrypt_configured(b"legacy plaintext").is_err());
@@ -449,9 +481,63 @@ mod tests {
             Some(value) => env::set_var(KEY_ENV, value),
             None => env::remove_var(KEY_ENV),
         }
+        match old_key_file {
+            Some(value) => env::set_var(KEY_FILE_ENV, value),
+            None => env::remove_var(KEY_FILE_ENV),
+        }
         match old_required {
             Some(value) => env::set_var(REQUIRE_ENV, value),
             None => env::remove_var(REQUIRE_ENV),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mounted_wrapping_key_requires_private_regular_file_and_rejects_ambiguous_sources() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_key = env::var_os(KEY_ENV);
+        let old_key_file = env::var_os(KEY_FILE_ENV);
+        env::remove_var(KEY_ENV);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrapping-key");
+        let wrapping_key = [0x62u8; 32];
+        fs::write(&path, data_encoding::BASE64.encode(&wrapping_key)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        env::set_var(KEY_FILE_ENV, &path);
+
+        let encrypted = encrypt_configured(b"file-mounted secret").unwrap();
+        assert_eq!(
+            decrypt_configured(&encrypted).unwrap(),
+            b"file-mounted secret"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(
+            configured_key().is_err(),
+            "world-readable wrapping keys are rejected"
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        let link = dir.path().join("key-link");
+        symlink(&path, &link).unwrap();
+        env::set_var(KEY_FILE_ENV, &link);
+        assert!(
+            configured_key().is_err(),
+            "symlinked wrapping keys are rejected"
+        );
+
+        env::set_var(KEY_ENV, data_encoding::BASE64.encode(&wrapping_key));
+        env::set_var(KEY_FILE_ENV, &path);
+        assert!(
+            configured_key().is_err(),
+            "ambiguous key sources are rejected"
+        );
+        match old_key {
+            Some(value) => env::set_var(KEY_ENV, value),
+            None => env::remove_var(KEY_ENV),
+        }
+        match old_key_file {
+            Some(value) => env::set_var(KEY_FILE_ENV, value),
+            None => env::remove_var(KEY_FILE_ENV),
         }
     }
 
