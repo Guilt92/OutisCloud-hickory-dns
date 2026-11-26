@@ -88,6 +88,90 @@
         },
         "type": "object"
       },
+      "AuditEntryResponse": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuditLogEntry",
+            "nullable": true
+          },
+          "error": {
+            "nullable": true,
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "type": "object"
+      },
+      "AuditListResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AuditLogEntry"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "error": {
+            "nullable": true,
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "type": "object"
+      },
+      "AuditLogEntry": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "ip_address": {
+            "nullable": true,
+            "type": "string"
+          },
+          "resource_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string"
+          },
+          "user_id": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "resource_type",
+          "details",
+          "created_at"
+        ],
+        "type": "object"
+      },
       "BindImportReq": {
         "properties": {
           "dry_run": {
@@ -1056,6 +1140,107 @@
         },
         "required": [
           "url"
+        ],
+        "type": "object"
+      },
+      "ZoneDetailResponse": {
+        "properties": {
+          "data": {
+            "nullable": true,
+            "properties": {
+              "access": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "domain": {
+                "type": "string"
+              },
+              "ecs_enabled": {
+                "type": "boolean"
+              },
+              "geodns_enabled": {
+                "type": "boolean"
+              },
+              "hold_reason": {
+                "nullable": true,
+                "type": "string"
+              },
+              "hold_until": {
+                "nullable": true,
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "nameservers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tenant_id": {
+                "nullable": true,
+                "type": "string"
+              },
+              "tenant_name": {
+                "nullable": true,
+                "type": "string"
+              },
+              "verification": {
+                "nullable": true,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "name",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "zone_type": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "error": {
+            "nullable": true,
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "error"
         ],
         "type": "object"
       },
@@ -3134,6 +3319,13 @@
         "operationId": "get_api_v1_audit_logs",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditListResponse"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {
@@ -3400,6 +3592,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditEntryResponse"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {
@@ -12177,6 +12376,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneDetailResponse"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {

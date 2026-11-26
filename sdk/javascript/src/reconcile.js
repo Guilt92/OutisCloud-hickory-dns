@@ -17,7 +17,20 @@ export async function planDesiredState(client, desired) {
     seenDomains.add(domain);
     const existing = byDomain.get(domain);
     if (!existing) {
-      actions.push({ action: 'create-zone', domain, zone_type: zone.zone_type || 'primary' });
+      actions.push({
+        action: 'create-zone',
+        domain,
+        zone_type: zone.zone_type || 'primary',
+        tenant_id: zone.tenant_id,
+        geodns_enabled: zone.geodns_enabled,
+        ecs_enabled: zone.ecs_enabled,
+      });
+    } else {
+      const changes = {};
+      for (const field of ['geodns_enabled', 'ecs_enabled']) {
+        if (zone[field] !== undefined && Boolean(zone[field]) !== Boolean(existing[field])) changes[field] = Boolean(zone[field]);
+      }
+      if (Object.keys(changes).length) actions.push({ action: 'update-zone', domain, zoneId: existing.id, changes });
     }
     const zoneRecords = existing
       ? await client.request('GET', '/api/v1/zones/{id}/records', { params: { id: existing.id } })
@@ -60,7 +73,13 @@ export async function applyPlan(client, actions, { dryRun = true, allowDestructi
   for (const item of actions) {
     if (item.action === 'create-zone') {
       const result = await client.request('POST', '/api/v1/zones', {
-        body: { domain: item.domain, zone_type: item.zone_type },
+        body: {
+          domain: item.domain,
+          zone_type: item.zone_type,
+          tenant_id: item.tenant_id,
+          geodns_enabled: item.geodns_enabled,
+          ecs_enabled: item.ecs_enabled,
+        },
         headers: { 'Idempotency-Key': randomUUID() },
       });
       createdZones.set(item.domain, result.data.id);
@@ -69,7 +88,12 @@ export async function applyPlan(client, actions, { dryRun = true, allowDestructi
       const zoneId = item.zoneId || createdZones.get(item.domain);
       if (!zoneId) throw new Error(`plan references unavailable zone ${item.domain}`);
       let result;
-      if (item.action === 'create-record') {
+      if (item.action === 'update-zone') {
+        result = await client.request('PUT', `/api/v1/zones/${encodeURIComponent(zoneId)}`, {
+          body: item.changes,
+          headers: { 'Idempotency-Key': randomUUID() },
+        });
+      } else if (item.action === 'create-record') {
         result = await client.request('POST', `/api/v1/zones/${encodeURIComponent(zoneId)}/records`, {
           body: item.record,
           headers: { 'Idempotency-Key': randomUUID() },

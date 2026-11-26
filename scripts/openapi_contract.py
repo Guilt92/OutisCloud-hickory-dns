@@ -24,10 +24,13 @@ SUCCESS_RESPONSE_SCHEMAS = {
     ("/health", "get"): {"$ref": "#/components/schemas/HealthResponse"},
     ("/ready", "get"): {"$ref": "#/components/schemas/HealthResponse"},
     ("/api/v1/zones", "get"): {"$ref": "#/components/schemas/ZoneListResponse"},
+    ("/api/v1/zones/{id}", "get"): {"$ref": "#/components/schemas/ZoneDetailResponse"},
     ("/api/v1/zones/{id}/records", "get"): {
         "type": "array",
         "items": {"$ref": "#/components/schemas/RecordResponse"},
     },
+    ("/api/v1/audit/logs", "get"): {"$ref": "#/components/schemas/AuditListResponse"},
+    ("/api/v1/audit/logs/{id}", "get"): {"$ref": "#/components/schemas/AuditEntryResponse"},
 }
 
 
@@ -256,6 +259,7 @@ def render():
         }
     }
     zone_item = rust_type_schema("ZoneWithOwner", components)
+    audit_item = rust_type_schema("AuditLogEntry", components)
     rust_type_schema("RecordResponse", components)
     components["ZoneListResponse"] = {
         "type": "object",
@@ -270,6 +274,45 @@ def render():
         "type": "object",
         "properties": {"status": {"type": "string"}},
         "required": ["status"],
+    }
+    zone_detail_properties = dict(components["ZoneWithOwner"]["properties"])
+    zone_detail_properties["nameservers"] = {"type": "array", "items": {"type": "string"}}
+    zone_detail_properties["verification"] = {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string"},
+            "name": {"type": "string"},
+            "value": {"type": "string"},
+        },
+        "required": ["type", "name", "value"],
+        "nullable": True,
+    }
+    components["ZoneDetailResponse"] = {
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean"},
+            "data": {"type": "object", "properties": zone_detail_properties, "nullable": True},
+            "error": {"type": "string", "nullable": True},
+        },
+        "required": ["success", "data", "error"],
+    }
+    components["AuditListResponse"] = {
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean"},
+            "data": {"type": "array", "items": audit_item, "nullable": True},
+            "error": {"type": "string", "nullable": True},
+        },
+        "required": ["success", "data", "error"],
+    }
+    components["AuditEntryResponse"] = {
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean"},
+            "data": {"$ref": "#/components/schemas/AuditLogEntry", "nullable": True},
+            "error": {"type": "string", "nullable": True},
+        },
+        "required": ["success", "data", "error"],
     }
     paths = {}
     operations = extract_operations()

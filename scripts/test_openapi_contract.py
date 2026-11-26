@@ -33,9 +33,14 @@ class OpenApiContractTests(unittest.TestCase):
         health = document["paths"]["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         zones = document["paths"]["/api/v1/zones"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         records = document["paths"]["/api/v1/zones/{id}/records"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        detail = document["paths"]["/api/v1/zones/{id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        audit = document["paths"]["/api/v1/audit/logs"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         self.assertEqual(health["$ref"], "#/components/schemas/HealthResponse")
         self.assertEqual(zones["$ref"], "#/components/schemas/ZoneListResponse")
         self.assertEqual(records["items"]["$ref"], "#/components/schemas/RecordResponse")
+        self.assertEqual(detail["$ref"], "#/components/schemas/ZoneDetailResponse")
+        self.assertEqual(audit["$ref"], "#/components/schemas/AuditListResponse")
+        self.assertIn("nameservers", document["components"]["schemas"]["ZoneDetailResponse"]["properties"]["data"]["properties"])
         self.assertIn("domain", document["components"]["schemas"]["ZoneWithOwner"]["required"])
         self.assertIn("record_type", document["components"]["schemas"]["RecordResponse"]["required"])
         contract.validate(document)

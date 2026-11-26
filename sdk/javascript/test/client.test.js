@@ -90,7 +90,7 @@ test('pagination follows opaque cursors and yields rows across pages', async () 
 });
 
 test('declarative plan is repeatable, dry-run safe, and explicit about pruning', async () => {
-  const current = [{ id: 'z1', domain: 'example.test' }];
+  const current = [{ id: 'z1', domain: 'example.test', geodns_enabled: true }];
   const client = {
     async *paginate() { yield* current; },
     async request(method, route) {
@@ -103,15 +103,15 @@ test('declarative plan is repeatable, dry-run safe, and explicit about pruning',
       ] };
     },
   };
-  const desired = { zones: [{ domain: 'EXAMPLE.TEST.', records: [
+  const desired = { zones: [{ domain: 'EXAMPLE.TEST.', geodns_enabled: false, records: [
     { name: 'www', record_type: 'A', value: '192.0.2.1', ttl: 300 },
     { name: 'api', record_type: 'A', value: '192.0.2.2', ttl: 300 },
   ] }] };
   const plan = await planDesiredState(client, desired);
-  assert.deepEqual(plan.map(({ action }) => action), ['update-record', 'create-record']);
+  assert.deepEqual(plan.map(({ action }) => action), ['update-zone', 'update-record', 'create-record']);
   assert.deepEqual(await applyPlan(client, plan), { dryRun: true, actions: plan });
   const pruning = await planDesiredState(client, { ...desired, prune: true });
-  assert.deepEqual(pruning.map(({ action }) => action), ['update-record', 'create-record', 'delete-record']);
+  assert.deepEqual(pruning.map(({ action }) => action), ['update-zone', 'update-record', 'create-record', 'delete-record']);
   await assert.rejects(applyPlan(client, pruning, { dryRun: false }), /allowDestructive/);
 });
 
@@ -135,4 +135,20 @@ test('applying a new desired zone creates it before adding its records', async (
   assert.equal(calls[0].route, '/api/v1/zones');
   assert.equal(calls[1].route, '/api/v1/zones/new-zone/records');
   assert.ok(calls.every(({ options }) => options.headers['Idempotency-Key']));
+});
+
+test('declarative apply updates only explicitly managed zone settings', async () => {
+  let put;
+  const client = {
+    async *paginate() { yield { id: 'zone-id', domain: 'example.test', geodns_enabled: true, ecs_enabled: false }; },
+    async request(method, route, options) {
+      if (method === 'GET') return { data: [] };
+      put = { method, route, body: options.body };
+      return { data: { success: true } };
+    },
+  };
+  const plan = await planDesiredState(client, { zones: [{ domain: 'example.test', geodns_enabled: false, records: [] }] });
+  assert.deepEqual(plan, [{ action: 'update-zone', domain: 'example.test', zoneId: 'zone-id', changes: { geodns_enabled: false } }]);
+  await applyPlan(client, plan, { dryRun: false });
+  assert.deepEqual(put, { method: 'PUT', route: '/api/v1/zones/zone-id', body: { geodns_enabled: false } });
 });
