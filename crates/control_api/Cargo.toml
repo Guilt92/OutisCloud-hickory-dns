@@ -65,3 +65,7 @@ tokio-test = "0.4"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+[[bin]]
+name = "dnssec-recovery"
+path = "src/bin/dnssec-recovery.rs"

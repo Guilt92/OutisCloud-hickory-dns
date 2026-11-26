@@ -9,45 +9,16 @@ before configuring it for service.
 
 Use the same maintenance window and recovery point for the PostgreSQL backup
 and key archive. DNSSEC key create, rollover, completion, and disable actions
-must not run while the pair is being captured. `pg_dump` provides a consistent
-database snapshot; the operator must keep its resulting backup with the key
-archive and manifest.
+must not run while the pair is being captured. The recovery verifier compares
+the encrypted metadata snapshot with the restored database and refuses to
+accept a mismatched pair.
 
 ```sh
 umask 077
 install -d -m 0700 "$RECOVERY_DIR"
-psql "$DATABASE_URL" -XAt -v ON_ERROR_STOP=1 > "$RECOVERY_DIR/recovery-manifest.json" <<'SQL'
-  SELECT jsonb_build_object(
-    'format_version', 1,
-    'captured_at', transaction_timestamp(),
-    'zones', COALESCE((
-      SELECT jsonb_agg(jsonb_build_object(
-        'id', id, 'domain', domain,
-        'dnssec_enabled', COALESCE(dnssec_enabled, false),
-        'proof_type', COALESCE(dnssec_proof_type, 'nsec'),
-        'nsec3_salt', COALESCE(dnssec_nsec3_salt, ''),
-        'nsec3_iterations', COALESCE(dnssec_nsec3_iterations, 0),
-        'nsec3_opt_out', COALESCE(dnssec_nsec3_opt_out, false)
-      ) ORDER BY domain)
-      FROM zones WHERE COALESCE(dnssec_enabled, false)
-    ), '[]'::jsonb),
-    'keys', COALESCE((
-      SELECT jsonb_agg(jsonb_build_object(
-        'zone_id', k.zone_id, 'key_tag', k.key_tag,
-        'algorithm', k.algorithm, 'public_key', k.public_key,
-        'key_file', k.key_file, 'status', k.status,
-        'created_at', k.created_at, 'retired_at', k.retired_at
-      ) ORDER BY k.zone_id, k.key_tag)
-      FROM dnssec_keys k JOIN zones z ON z.id = k.zone_id
-      WHERE COALESCE(z.dnssec_enabled, false) OR k.status = 'retired'
-    ), '[]'::jsonb)
-  )::text;
-SQL
-chmod 0600 "$RECOVERY_DIR/recovery-manifest.json"
 pg_dump "$DATABASE_URL" --format=custom --file="$RECOVERY_DIR/control-db.dump"
-cargo run -p hickory-key-store --bin dnssec-key-backup -- \
-  backup "$DNSSEC_KEY_DIR" "$RECOVERY_DIR/dnssec-keys.enc" \
-  "$RECOVERY_DIR/recovery-manifest.json"
+DATABASE_URL="$DATABASE_URL" cargo run -p control_api --bin dnssec-recovery -- \
+  backup "$DNSSEC_KEY_DIR" "$RECOVERY_DIR/dnssec-keys.enc"
 sha256sum "$RECOVERY_DIR/control-db.dump" "$RECOVERY_DIR/dnssec-keys.enc" \
   > "$RECOVERY_DIR/SHA256SUMS"
 chmod 0600 "$RECOVERY_DIR"/*
@@ -57,8 +28,8 @@ The key archive is authenticated and encrypted with AES-256-GCM. The wrapping
 key is loaded from `DNSSEC_KEY_ENCRYPTION_KEY` or the private mounted
 `DNSSEC_KEY_ENCRYPTION_KEY_FILE`; keep it in a secret manager separate from
 this recovery set. The manifest contains public key material and operational
-metadata, and is encrypted inside the key archive as well as retained as a
-0600 comparison file. Store the database dump, archive, checksums, and recovery
+metadata, and is encrypted inside the key archive. Store the database dump,
+archive, checksums, and recovery
 key in separate protected locations according to the organization's escrow
 policy. Verify checksums after copying the set off host.
 
@@ -74,11 +45,18 @@ policy. Verify checksums after copying the set off host.
      restore "$RECOVERY_DIR/dnssec-keys.enc" "$RESTORE_KEY_DIR"
    ```
 
-4. Compare `$RESTORE_KEY_DIR/recovery-manifest.json` byte-for-byte with the
-   paired manifest. Query the restored `zones` and `dnssec_keys` rows and
-   verify zone IDs, algorithms, tags, public keys, statuses, and key paths
-   against that manifest. Verify every non-retired key path exists, decrypts
-   with the wrapping key, and derives the stored public DNSKEY/key tag.
+4. Compare the restored database to the encrypted metadata snapshot and check
+   active key files:
+
+   ```sh
+   DATABASE_URL="$RESTORED_DATABASE_URL" cargo run -p control_api --bin dnssec-recovery -- \
+     verify "$RESTORE_KEY_DIR"
+   ```
+
+   This checks zone IDs/domains and proof settings, key tags, algorithms,
+   public keys, statuses, and key paths against the manifest, then confirms
+   each active/prepublished key exists and decrypts. It fails closed if the
+   database dump and key archive came from different metadata states.
 5. Generate configuration from the restored database and key directory. Run
    DNSKEY, CDS/CDNSKEY, and signed-answer checks against an isolated listener;
    use an independent validator with a test trust anchor. Do not change parent
