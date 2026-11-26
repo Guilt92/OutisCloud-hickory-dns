@@ -55,6 +55,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           python3 scripts/openapi_contract.py --check
+          python3 -m unittest scripts.test_openapi_contract -v
           if git cat-file -e "$BASE_REF:crates/control_api/openapi-paths.json" 2>/dev/null; then
             git show "$BASE_REF:crates/control_api/openapi-paths.json" > "$RUNNER_TEMP/openapi-baseline.json"
             python3 scripts/openapi_contract.py --check-breaking "$RUNNER_TEMP/openapi-baseline.json"

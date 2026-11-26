@@ -8764,6 +8764,29 @@ async fn openapi_spec_is_published() {
             .starts_with("3.")
     );
     assert!(body["components"]["schemas"].is_object());
+    assert!(!body["paths"].as_object().unwrap().contains_key("/test"));
+    let zone_request = &body["paths"]["/api/v1/zones"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    assert_eq!(zone_request["$ref"], "#/components/schemas/CreateZoneReq");
+    assert!(body["components"]["schemas"]["CreateZoneReq"]["properties"]["domain"].is_object());
+    assert!(
+        body["components"]["schemas"]["CreateZoneReq"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "domain")
+    );
+    assert!(body["paths"]["/api/v1/auth/mfa/setup"]["post"]["security"].is_array());
+    assert!(
+        body["paths"]["/api/v1/auth/login"]["post"]
+            .get("security")
+            .is_none()
+    );
+    assert_eq!(
+        body["paths"]["/api/v1/auth/mfa/enable"]["post"]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/CodeReq"
+    );
     let published_operations: usize = body["paths"]
         .as_object()
         .unwrap()

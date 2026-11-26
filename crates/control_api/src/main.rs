@@ -7715,7 +7715,19 @@ async fn openapi_spec() -> impl Responder {
     let generated_paths: serde_json::Value =
         serde_json::from_str(include_str!("../openapi-paths.json"))
             .expect("generated OpenAPI route catalog must be valid JSON");
-    document["paths"] = generated_paths;
+    document["paths"] = generated_paths["paths"].clone();
+    if let Some(schemas) = generated_paths
+        .get("components")
+        .and_then(|components| components.get("schemas"))
+        .and_then(serde_json::Value::as_object)
+    {
+        let destination = document["components"]["schemas"]
+            .as_object_mut()
+            .expect("OpenAPI components.schemas must be an object");
+        for (name, schema) in schemas {
+            destination.insert(name.clone(), schema.clone());
+        }
+    }
     document["components"]["securitySchemes"]["BearerAuth"] = serde_json::json!({
         "type": "http", "scheme": "bearer", "bearerFormat": "JWT"
     });
