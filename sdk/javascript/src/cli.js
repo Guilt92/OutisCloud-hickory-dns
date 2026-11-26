@@ -9,11 +9,14 @@ function usage() {
   process.exitCode = 2;
 }
 
+function help() {
+  process.stdout.write(`OutisCloud DNS API client\n\nUsage:\n  outiscloud <operationId> [--params JSON] [--query JSON] [--body JSON]\n  outiscloud reconcile <desired-state.json> [--yes] [--prune]\n\nEnvironment:\n  OUTISCLOUD_API_URL    API origin, for example https://dns.example.test\n  OUTISCLOUD_API_TOKEN  Bearer API token\n\nDesired state JSON:\n  {"zones":[{"domain":"example.test","zone_type":"primary","records":[{"name":"www","record_type":"A","value":"192.0.2.10","ttl":300}]}]}\n\nReconciliation prints a read-only plan by default. --yes applies additions and updates.\nRecord deletion requires both desired-state pruning (--prune) and --yes. SOA and NS records are never pruned.\n`);
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === '--help' || command === '-h') {
-    usage();
-    process.exitCode = 0;
+    help();
     return;
   }
   const client = new OutisCloudClient({

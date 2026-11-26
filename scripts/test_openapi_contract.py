@@ -28,6 +28,54 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertEqual(document["components"]["schemas"]["ErrorResponse"]["required"], ["code", "error", "details"])
         contract.validate(document)
 
+    def test_success_responses_publish_endpoint_specific_schemas(self):
+        document = json.loads(contract.render())
+        health = document["paths"]["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        zones = document["paths"]["/api/v1/zones"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        records = document["paths"]["/api/v1/zones/{id}/records"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(health["$ref"], "#/components/schemas/HealthResponse")
+        self.assertEqual(zones["$ref"], "#/components/schemas/ZoneListResponse")
+        self.assertEqual(records["items"]["$ref"], "#/components/schemas/RecordResponse")
+        self.assertIn("domain", document["components"]["schemas"]["ZoneWithOwner"]["required"])
+        self.assertIn("record_type", document["components"]["schemas"]["RecordResponse"]["required"])
+        contract.validate(document)
+
+    def test_compatibility_rejects_removed_response_properties(self):
+        current = json.loads(contract.render())
+        baseline = {
+            "paths": {
+                "/health": {
+                    "get": {
+                        "responses": {
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/HealthResponse"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "HealthResponse": {
+                        "type": "object",
+                        "properties": {"status": {"type": "string"}},
+                    }
+                }
+            },
+        }
+        current["components"]["schemas"]["HealthResponse"]["properties"].pop("status")
+        baseline_path = Path(__file__).with_suffix(".baseline.tmp.json")
+        try:
+            baseline_path.write_text(json.dumps(baseline))
+            with self.assertRaisesRegex(ValueError, "response property removed: GET /health.status"):
+                contract.check_breaking_changes(current, baseline_path)
+        finally:
+            baseline_path.unlink(missing_ok=True)
+
     def test_compatibility_rejects_new_required_request_fields(self):
         current = {
             "paths": {

@@ -20,6 +20,15 @@ PUBLIC_OPERATIONS = {
     ("/api/v1/auth/login", "post"),
     ("/api/v1/auth/refresh", "post"),
 }
+SUCCESS_RESPONSE_SCHEMAS = {
+    ("/health", "get"): {"$ref": "#/components/schemas/HealthResponse"},
+    ("/ready", "get"): {"$ref": "#/components/schemas/HealthResponse"},
+    ("/api/v1/zones", "get"): {"$ref": "#/components/schemas/ZoneListResponse"},
+    ("/api/v1/zones/{id}/records", "get"): {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/RecordResponse"},
+    },
+}
 
 
 def production_source(path):
@@ -210,6 +219,11 @@ def operation(path, method, handler, source_path, components):
         responses[status]["content"] = {
             "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
         }
+    success_schema = SUCCESS_RESPONSE_SCHEMAS.get((path, method))
+    if success_schema:
+        responses["200"]["content"] = {
+            "application/json": {"schema": success_schema}
+        }
     result = {"operationId": operation_id, "tags": [tag.replace("-", " ").title()], "responses": responses}
     path_parameters = re.findall(r"\{([^}]+)\}", path)
     if path_parameters:
@@ -240,6 +254,22 @@ def render():
             },
             "required": ["code", "error", "details"],
         }
+    }
+    zone_item = rust_type_schema("ZoneWithOwner", components)
+    rust_type_schema("RecordResponse", components)
+    components["ZoneListResponse"] = {
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean"},
+            "data": {"type": "array", "items": zone_item, "nullable": True},
+            "error": {"type": "string", "nullable": True},
+        },
+        "required": ["success", "data", "error"],
+    }
+    components["HealthResponse"] = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
     }
     paths = {}
     operations = extract_operations()
@@ -274,6 +304,52 @@ def check_breaking_changes(current, baseline_path):
                 removed.append(f"request schema changed: {method.upper()} {path}")
     old_schemas = baseline.get("components", {}).get("schemas", {})
     new_schemas = current.get("components", {}).get("schemas", {})
+
+    def resolve_schema(schema, schemas):
+        visited = set()
+        while "$ref" in schema:
+            name = schema["$ref"].split("/")[-1]
+            if name in visited or name not in schemas:
+                return schema
+            visited.add(name)
+            schema = schemas[name]
+        return schema
+
+    def compare_response_schema(old, new, context):
+        old = resolve_schema(old, old_schemas)
+        new = resolve_schema(new, new_schemas)
+        if old.get("type") and new.get("type") and old["type"] != new["type"]:
+            removed.append(f"response type changed: {context}")
+            return
+        if old.get("nullable") is not True and new.get("nullable") is True:
+            removed.append(f"response became nullable: {context}")
+        if old.get("enum") and (not new.get("enum") or not set(old["enum"]).issubset(new["enum"])):
+            removed.append(f"response enum narrowed: {context}")
+        if old.get("type") == "object":
+            old_properties = old.get("properties", {})
+            new_properties = new.get("properties", {})
+            for field, old_property in old_properties.items():
+                if field not in new_properties:
+                    removed.append(f"response property removed: {context}.{field}")
+                else:
+                    compare_response_schema(old_property, new_properties[field], f"{context}.{field}")
+        if old.get("type") == "array" and "items" in old and "items" in new:
+            compare_response_schema(old["items"], new["items"], f"{context}[]")
+
+    for path, methods in old_paths.items():
+        if not path.startswith("/") or path == "/test":
+            continue
+        for method, old_operation in methods.items():
+            new_operation = new_paths.get(path, {}).get(method)
+            if not new_operation:
+                continue
+            old_response = old_operation.get("responses", {}).get("200", {}).get("content", {}).get("application/json", {}).get("schema")
+            new_response = new_operation.get("responses", {}).get("200", {}).get("content", {}).get("application/json", {}).get("schema")
+            if old_response and new_response:
+                compare_response_schema(old_response, new_response, f"{method.upper()} {path}")
+            elif old_response and not new_response:
+                removed.append(f"response schema removed: {method.upper()} {path}")
+
     for name, old_schema in old_schemas.items():
         new_schema = new_schemas.get(name)
         if new_schema is None:

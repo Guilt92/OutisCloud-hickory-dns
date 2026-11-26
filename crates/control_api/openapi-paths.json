@@ -580,6 +580,17 @@
         ],
         "type": "object"
       },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
       "ImportRecordReq": {
         "properties": {
           "name": {
@@ -708,6 +719,53 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "RecordResponse": {
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "record_type": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ttl": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "type": "string"
+          },
+          "zone_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "zone_id",
+          "name",
+          "record_type",
+          "value",
+          "ttl",
+          "priority"
+        ],
         "type": "object"
       },
       "RefreshRequest": {
@@ -1020,6 +1078,30 @@
         ],
         "type": "object"
       },
+      "ZoneListResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ZoneWithOwner"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "error": {
+            "nullable": true,
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "type": "object"
+      },
       "ZoneMetadataReq": {
         "properties": {
           "description": {
@@ -1034,6 +1116,71 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "ZoneWithOwner": {
+        "properties": {
+          "access": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "ecs_enabled": {
+            "type": "boolean"
+          },
+          "geodns_enabled": {
+            "type": "boolean"
+          },
+          "hold_reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "hold_until": {
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "nullable": true,
+            "type": "string"
+          },
+          "tenant_name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "zone_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "domain",
+          "owner",
+          "zone_type",
+          "created_at",
+          "geodns_enabled"
+        ],
         "type": "object"
       }
     }
@@ -11469,6 +11616,13 @@
         "operationId": "get_api_v1_zones",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneListResponse"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {
@@ -14793,6 +14947,16 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RecordResponse"
+                  },
+                  "type": "array"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {
@@ -16695,6 +16859,13 @@
         "operationId": "get_health",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {
@@ -17064,6 +17235,13 @@
         "operationId": "get_ready",
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
             "description": "Request completed"
           },
           "400": {
