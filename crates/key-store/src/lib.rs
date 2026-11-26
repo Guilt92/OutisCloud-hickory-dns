@@ -202,6 +202,79 @@ pub fn migrate_directory(directory: &Path, key: &[u8; 32]) -> Result<usize, KeyS
     Ok(migrated)
 }
 
+/// Re-encrypt an existing key tree under a new wrapping key. The destination
+/// must be a new directory outside the source. All source envelopes are
+/// authenticated before creating the destination, so an incorrect old key
+/// cannot produce a partially rotated tree.
+pub fn rewrap_directory(
+    source: &Path,
+    destination: &Path,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<usize, KeyStoreError> {
+    if old_key == new_key {
+        return Err(KeyStoreError::Configuration(
+            "new wrapping key must differ from old key".into(),
+        ));
+    }
+    if fs::symlink_metadata(source)?.file_type().is_symlink() {
+        return Err(KeyStoreError::Configuration(
+            "source must be a regular directory".into(),
+        ));
+    }
+    let source = source.canonicalize()?;
+    if !source.is_dir() {
+        return Err(KeyStoreError::Configuration(
+            "source must be a regular directory".into(),
+        ));
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| KeyStoreError::Configuration("destination needs a parent directory".into()))?
+        .canonicalize()?;
+    if parent.starts_with(&source) {
+        return Err(KeyStoreError::Configuration(
+            "destination must be outside the source tree".into(),
+        ));
+    }
+    let name = destination
+        .file_name()
+        .ok_or_else(|| KeyStoreError::Configuration("destination needs a directory name".into()))?;
+    let destination = parent.join(name);
+    if destination.exists() || fs::symlink_metadata(&destination).is_ok() {
+        return Err(KeyStoreError::Configuration(
+            "destination already exists".into(),
+        ));
+    }
+    let mut files = Vec::new();
+    collect_key_files(&source, &source, &mut files)?;
+    let mut plaintext = Vec::with_capacity(files.len());
+    for (path, bytes) in files {
+        plaintext.push((path, decrypt_with_key(&bytes, old_key)?));
+    }
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir(&destination)?;
+    #[cfg(unix)]
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))?;
+    let result = (|| {
+        for (path, bytes) in &plaintext {
+            let target = destination.join(path);
+            let parent = target.parent().ok_or(KeyStoreError::Crypto)?;
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            atomic_replace(&target, &encrypt_with_key(bytes, new_key)?)?;
+        }
+        Ok::<(), KeyStoreError>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&destination);
+    }
+    result?;
+    Ok(plaintext.len())
+}
+
 /// Create a single authenticated backup containing all regular `.pem` files
 /// below a DNSSEC key directory. Symlinks and oversized trees are rejected.
 pub fn create_encrypted_backup(directory: &Path, key: &[u8; 32]) -> Result<Vec<u8>, KeyStoreError> {
@@ -639,6 +712,58 @@ mod tests {
             restore_encrypted_backup(&backup, &source.path().join("wrong-key"), &[0x74u8; 32])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rewrap_authenticates_all_keys_and_preserves_source_on_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(source.join("retired")).unwrap();
+        let old = [0x11; 32];
+        let new = [0x22; 32];
+        let active = encrypt_with_key(b"active", &old).unwrap();
+        let retired = encrypt_with_key(b"retired", &old).unwrap();
+        fs::write(source.join("active.pem"), &active).unwrap();
+        fs::write(source.join("retired/old.pem"), &retired).unwrap();
+        let bad_dest = root.path().join("bad");
+        assert!(rewrap_directory(&source, &bad_dest, &[0x33; 32], &new).is_err());
+        assert!(!bad_dest.exists());
+        assert_eq!(fs::read(source.join("active.pem")).unwrap(), active);
+        let destination = root.path().join("rotated");
+        assert_eq!(
+            rewrap_directory(&source, &destination, &old, &new).unwrap(),
+            2
+        );
+        assert_eq!(
+            decrypt_with_key(&fs::read(destination.join("active.pem")).unwrap(), &new).unwrap(),
+            b"active"
+        );
+        assert_eq!(
+            decrypt_with_key(
+                &fs::read(destination.join("retired/old.pem")).unwrap(),
+                &new
+            )
+            .unwrap(),
+            b"retired"
+        );
+        assert!(
+            decrypt_with_key(&fs::read(destination.join("active.pem")).unwrap(), &old).is_err()
+        );
+        assert!(rewrap_directory(&source, &destination, &old, &new).is_err());
+        assert!(rewrap_directory(&source, &source.join("nested"), &old, &new).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(destination.join("active.pem"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]

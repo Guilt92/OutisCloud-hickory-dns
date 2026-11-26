@@ -18,3 +18,7 @@ path = "src/bin/migrate.rs"
 [[bin]]
 name = "dnssec-key-backup"
 path = "src/bin/dnssec-key-backup.rs"
+
+[[bin]]
+name = "rewrap-dnssec-keys"
+path = "src/bin/rewrap.rs"
