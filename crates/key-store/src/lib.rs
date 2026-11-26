@@ -91,6 +91,17 @@ fn configured_key() -> Result<Option<[u8; 32]>, KeyStoreError> {
     parse_wrapping_key(encoded.trim()).map(Some)
 }
 
+/// Load the wrapping key from the configured secret-manager environment or
+/// private mounted secret file. Offline tools use this instead of requiring a
+/// second environment-specific key-loading implementation.
+pub fn configured_wrapping_key() -> Result<[u8; 32], KeyStoreError> {
+    configured_key()?.ok_or_else(|| {
+        KeyStoreError::Configuration(format!(
+            "{KEY_ENV} or {KEY_FILE_ENV} is required to access DNSSEC backups"
+        ))
+    })
+}
+
 /// Parse a base64 encoded 256-bit wrapping key for explicit offline tooling.
 pub fn parse_wrapping_key(encoded: &str) -> Result<[u8; 32], KeyStoreError> {
     let decoded = data_encoding::BASE64
@@ -194,11 +205,42 @@ pub fn migrate_directory(directory: &Path, key: &[u8; 32]) -> Result<usize, KeyS
 /// Create a single authenticated backup containing all regular `.pem` files
 /// below a DNSSEC key directory. Symlinks and oversized trees are rejected.
 pub fn create_encrypted_backup(directory: &Path, key: &[u8; 32]) -> Result<Vec<u8>, KeyStoreError> {
+    create_encrypted_backup_inner(directory, key, None)
+}
+
+/// Create an encrypted key backup that also carries a caller-produced recovery
+/// manifest (for example, the matching DNSSEC database metadata snapshot).
+/// The manifest is encrypted inside the same authenticated archive and is
+/// restored as `recovery-manifest.json` beside the keys.
+pub fn create_encrypted_backup_with_manifest(
+    directory: &Path,
+    key: &[u8; 32],
+    manifest: &[u8],
+) -> Result<Vec<u8>, KeyStoreError> {
+    if manifest.len() > MAX_BACKUP_BYTES {
+        return Err(KeyStoreError::Configuration(
+            "DNSSEC recovery manifest exceeds the 64 MiB limit".into(),
+        ));
+    }
+    create_encrypted_backup_inner(directory, key, Some(manifest))
+}
+
+fn create_encrypted_backup_inner(
+    directory: &Path,
+    key: &[u8; 32],
+    manifest: Option<&[u8]>,
+) -> Result<Vec<u8>, KeyStoreError> {
     let mut files = Vec::new();
     collect_key_files(directory, directory, &mut files)?;
-    if files.len() > MAX_BACKUP_FILES {
+    if files.len() + usize::from(manifest.is_some()) > MAX_BACKUP_FILES {
         return Err(KeyStoreError::Configuration(
             "too many DNSSEC key files for backup".into(),
+        ));
+    }
+    if let Some(manifest) = manifest {
+        files.push((
+            std::path::PathBuf::from("recovery-manifest.json"),
+            manifest.to_vec(),
         ));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -265,12 +307,13 @@ pub fn restore_encrypted_backup(
         let name = std::str::from_utf8(take(&payload, &mut cursor, name_len)?)
             .map_err(|_| KeyStoreError::Crypto)?;
         let relative = Path::new(name);
+        let is_manifest = relative == Path::new("recovery-manifest.json");
         if relative.as_os_str().is_empty()
             || relative.is_absolute()
             || relative
                 .components()
                 .any(|part| !matches!(part, std::path::Component::Normal(_)))
-            || relative.extension().and_then(|ext| ext.to_str()) != Some("pem")
+            || (!is_manifest && relative.extension().and_then(|ext| ext.to_str()) != Some("pem"))
         {
             return Err(KeyStoreError::Configuration(
                 "unsafe path in DNSSEC backup".into(),
@@ -309,7 +352,10 @@ pub fn restore_encrypted_backup(
         let _ = fs::remove_dir_all(destination);
         return Err(error);
     }
-    Ok(files.len())
+    Ok(files
+        .iter()
+        .filter(|(path, _)| path.extension().and_then(|ext| ext.to_str()) == Some("pem"))
+        .count())
 }
 
 fn collect_key_files(
@@ -505,6 +551,7 @@ mod tests {
         fs::write(&path, data_encoding::BASE64.encode(&wrapping_key)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
         env::set_var(KEY_FILE_ENV, &path);
+        assert_eq!(configured_wrapping_key().unwrap(), wrapping_key);
 
         let encrypted = encrypt_configured(b"file-mounted secret").unwrap();
         assert_eq!(
@@ -592,6 +639,45 @@ mod tests {
             restore_encrypted_backup(&backup, &source.path().join("wrong-key"), &[0x74u8; 32])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn recovery_manifest_is_encrypted_and_restored_with_key_snapshot() {
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("active.pem"), b"private material").unwrap();
+        let manifest =
+            br#"{"format":1,"zone_id":"test-zone","keys":[{"tag":42,"status":"active"}]}"#;
+        let key = [0x63u8; 32];
+        let archive = create_encrypted_backup_with_manifest(source.path(), &key, manifest).unwrap();
+        assert!(
+            !archive
+                .windows(manifest.len())
+                .any(|window| window == manifest)
+        );
+        assert_eq!(
+            restore_encrypted_backup(&archive, &source.path().join("restored"), &key).unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read(source.path().join("restored/recovery-manifest.json")).unwrap(),
+            manifest
+        );
+        assert_eq!(
+            fs::read(source.path().join("restored/active.pem")).unwrap(),
+            b"private material"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(source.path().join("restored/recovery-manifest.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[cfg(unix)]
