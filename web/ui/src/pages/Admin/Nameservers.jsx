@@ -252,8 +252,9 @@ export default function Nameservers(){
 
               <div className="p-6 space-y-4">
                 <div>
-                  <label className="form-label">Hostname <span className="text-danger-500">*</span></label>
+                  <label htmlFor="nameserver-hostname" className="form-label">Hostname <span className="text-danger-500">*</span></label>
                   <input 
+                    id="nameserver-hostname"
                     className="input"
                     placeholder="e.g., ns1.example.com" 
                     value={form.hostname} 
@@ -261,8 +262,9 @@ export default function Nameservers(){
                   />
                 </div>
                 <div>
-                  <label className="form-label">IP address <span className="text-danger-500">*</span></label>
+                  <label htmlFor="nameserver-ip" className="form-label">IP address <span className="text-danger-500">*</span></label>
                   <input 
+                    id="nameserver-ip"
                     className="input"
                     placeholder="e.g., 192.0.2.1" 
                     value={form.ip_address} 
@@ -270,8 +272,9 @@ export default function Nameservers(){
                   />
                 </div>
                 <div>
-                  <label className="form-label">Glue IP <span className="text-muted">(optional)</span></label>
+                  <label htmlFor="nameserver-glue-ip" className="form-label">Glue IP <span className="text-muted">(optional)</span></label>
                   <input 
+                    id="nameserver-glue-ip"
                     className="input"
                     placeholder="IP for glue record (if NS is under this zone)" 
                     value={form.glue_ip} 
@@ -279,8 +282,9 @@ export default function Nameservers(){
                   />
                 </div>
                 <div>
-                  <label className="form-label">Sort order</label>
+                  <label htmlFor="nameserver-sort-order" className="form-label">Sort order</label>
                   <input 
+                    id="nameserver-sort-order"
                     type="number"
                     className="input"
                     placeholder="Display order" 
