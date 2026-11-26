@@ -12,10 +12,21 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
   const [busy, setBusy] = React.useState(false)
   const [confirmDs, setConfirmDs] = React.useState(false)
   const [confirmRetireDs, setConfirmRetireDs] = React.useState(false)
+  const [proofType, setProofType] = React.useState('nsec')
+  const [nsec3Salt, setNsec3Salt] = React.useState('')
+  const [nsec3Iterations, setNsec3Iterations] = React.useState(0)
+  const [nsec3OptOut, setNsec3OptOut] = React.useState(false)
   const err = (e) => setMsg({ bad: true, text: e.response?.data?.details || e.response?.data?.error || e.message })
 
   const load = React.useCallback(async () => {
-    try { setInfo((await api.get(`/api/v1/zones/${zone.id}/dnssec`)).data) } catch (e) { err(e) }
+    try {
+      const next = (await api.get(`/api/v1/zones/${zone.id}/dnssec`)).data
+      setInfo(next)
+      setProofType(next.proof?.type || 'nsec')
+      setNsec3Salt(next.proof?.nsec3_salt || '')
+      setNsec3Iterations(next.proof?.nsec3_iterations || 0)
+      setNsec3OptOut(!!next.proof?.nsec3_opt_out)
+    } catch (e) { err(e) }
   }, [zone.id])
   React.useEffect(() => { load() }, [load])
 
@@ -25,6 +36,22 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
       const r = await api.post(`/api/v1/zones/${zone.id}/dnssec/${path}`, body)
       setInfo(r.data)
       setMsg({ text: r.data?.publish_warning ? `${ok} (warning: ${r.data.publish_warning})` : ok, bad: !!r.data?.publish_warning })
+      onChanged && onChanged()
+    } catch (e) { err(e) }
+    setBusy(false)
+  }
+
+  const saveProof = async () => {
+    setBusy(true); setMsg(null)
+    try {
+      const r = await api.put(`/api/v1/zones/${zone.id}/dnssec/proof`, {
+        proof_type: proofType,
+        nsec3_salt: proofType === 'nsec3' ? nsec3Salt : '',
+        nsec3_iterations: proofType === 'nsec3' ? Number(nsec3Iterations) : 0,
+        nsec3_opt_out: proofType === 'nsec3' && nsec3OptOut,
+      })
+      setInfo(r.data)
+      setMsg({ text: 'Denial proof parameters updated and published' })
       onChanged && onChanged()
     } catch (e) { err(e) }
     setBusy(false)
@@ -74,6 +101,27 @@ export default function DnssecTab({ zone, canManage, onChanged }) {
           {rolling && canManage && k.status !== 'new' && <button className="btn-sm btn-ghost" disabled={busy || !confirmRetireDs} title={confirmRetireDs ? '' : 'Confirm the replacement DS is published first'} onClick={async () => { if (await askConfirm({ title: `Retire key ${k.key_tag}?`, message: 'Only do this after the DS for the other key is published and the old DS has expired from caches.', confirmLabel: 'Retire key' })) act('rollover/complete', { retire_key_tag: k.key_tag }, `Key ${k.key_tag} retired`) }}>Retire this key</button>}
         </div>
       ))}
+
+      {info.enabled && canManage && (
+        <div className="border-t border-line pt-3 space-y-3" data-testid="dnssec-proof-settings">
+          <h3 className="text-sm font-semibold">Denial proof</h3>
+          <label className="text-sm">Proof type
+            <select className="select ml-2" aria-label="Denial proof type" value={proofType} onChange={e => setProofType(e.target.value)}>
+              <option value="nsec">NSEC</option><option value="nsec3">NSEC3</option>
+            </select>
+          </label>
+          {proofType === 'nsec3' && <>
+            <label className="block text-sm">NSEC3 salt (hex, up to 32 bytes)
+              <input className="input mt-1" aria-label="NSEC3 salt" value={nsec3Salt} onChange={e => setNsec3Salt(e.target.value)} placeholder="empty salt" />
+            </label>
+            <label className="block text-sm">Hash iterations (0–150)
+              <input className="input mt-1" aria-label="NSEC3 iterations" type="number" min="0" max="150" value={nsec3Iterations} onChange={e => setNsec3Iterations(Number(e.target.value))} />
+            </label>
+            <label className="text-sm flex items-center gap-2"><input type="checkbox" checked={nsec3OptOut} onChange={e => setNsec3OptOut(e.target.checked)} />Enable NSEC3 Opt-Out</label>
+          </>}
+          <button className="btn-secondary btn-sm" disabled={busy} onClick={saveProof}>Save denial proof</button>
+        </div>
+      )}
 
       {info.enabled && canManage && !rolling && (
         <button className="btn-sm btn-ghost" disabled={busy} onClick={() => act('rollover', { algorithm: currentAlgorithm }, 'Rollover started - publish the new DS, then retire the old key')}>Start key rollover</button>

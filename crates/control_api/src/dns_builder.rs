@@ -434,6 +434,8 @@ struct TomlZone {
     geo_rules: Vec<TomlGeoRule>,
     /// DNSSEC signing keys: (private key file, algorithm name)
     keys: Vec<(String, String)>,
+    /// Optional NSEC3 proof parameters (salt, iterations, opt-out).
+    nsec3: Option<(Vec<u8>, u16, bool)>,
 }
 
 #[derive(Debug, Clone)]
@@ -561,6 +563,7 @@ impl TomlConfigBuilder {
             ecs: false,
             geo_rules: rules,
             keys: Vec::new(),
+            nsec3: None,
         });
 
         Ok(())
@@ -570,6 +573,14 @@ impl TomlConfigBuilder {
     pub fn set_last_zone_keys(&mut self, keys: Vec<(String, String)>) {
         if let Some(z) = self.zones.last_mut() {
             z.keys = keys;
+        }
+    }
+
+    /// Configure NSEC3 denial-of-existence proofs for the most recently added
+    /// signed zone. `None` keeps the default NSEC proof chain.
+    pub fn set_last_zone_nsec3(&mut self, params: Option<(Vec<u8>, u16, bool)>) {
+        if let Some(zone) = self.zones.last_mut() {
+            zone.nsec3 = params;
         }
     }
 
@@ -684,7 +695,19 @@ impl TomlConfigBuilder {
             }
 
             if !zone.keys.is_empty() {
-                result.push_str("nx_proof_kind = \"nsec\"\nkeys = [\n");
+                if let Some((salt, iterations, opt_out)) = &zone.nsec3 {
+                    let salt = salt
+                        .iter()
+                        .map(u8::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    result.push_str(&format!(
+                        "nx_proof_kind = {{ nsec3 = {{ algorithm = \"SHA-1\", salt = [{salt}], iterations = {iterations}, opt_out = {opt_out} }} }}\n"
+                    ));
+                } else {
+                    result.push_str("nx_proof_kind = \"nsec\"\n");
+                }
+                result.push_str("keys = [\n");
                 for (path, alg) in &zone.keys {
                     result.push_str(&format!(
                         "  {{ key_path = \"{}\", algorithm = \"{}\" }},\n",
@@ -931,6 +954,20 @@ mod tests {
             )
         );
         assert_eq!(output.matches("axfr_policy =").count(), 2);
+    }
+
+    #[test]
+    fn nsec3_denial_proof_parameters_render_as_valid_toml() {
+        let mut builder = TomlConfigBuilder::new();
+        builder
+            .add_zone("signed.example".into(), "/z/signed".into(), false, vec![])
+            .unwrap();
+        builder.set_last_zone_keys(vec![("/keys/signed.pem".into(), "ED25519".into())]);
+        builder.set_last_zone_nsec3(Some((vec![0xa1, 0xb2], 12, true)));
+        let generated = builder.build().unwrap();
+        assert!(generated.contains("nx_proof_kind = { nsec3 = { algorithm = \"SHA-1\""));
+        assert!(generated.contains("salt = [161, 178], iterations = 12, opt_out = true"));
+        toml::from_str::<toml::Value>(&generated).expect("NSEC3 TOML must parse");
     }
 
     // Comprehensive validation tests verifying Hickory delegation

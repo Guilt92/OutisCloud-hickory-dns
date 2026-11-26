@@ -7612,6 +7612,10 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::post().to(dnssec::enable_dnssec),
         )
         .route(
+            "/api/v1/zones/{id}/dnssec/proof",
+            web::put().to(dnssec::set_nx_proof),
+        )
+        .route(
             "/api/v1/zones/{id}/dnssec/disable",
             web::post().to(dnssec::disable_dnssec),
         )

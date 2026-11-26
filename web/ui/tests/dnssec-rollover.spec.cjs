@@ -7,8 +7,9 @@ test('DNSSEC rollover carries the active algorithm and protects the replacement 
     dnskey: `dnssec.example. IN DNSKEY 257 3 15 KEY${tag}`,
     ds: [ds(tag)],
   })
-  let info = { enabled: true, next_steps: 'Publish DS at parent', keys: [key(401, 'active')] }
+  let info = { enabled: true, next_steps: 'Publish DS at parent', proof: { type: 'nsec', nsec3_salt: '', nsec3_iterations: 0, nsec3_opt_out: false }, keys: [key(401, 'active')] }
   let submitted
+  let submittedProof
   await page.addInitScript(() => {
     localStorage.setItem('token', 'ui-dnssec-token')
     localStorage.setItem('user', JSON.stringify({ username: 'dnssec-admin', role: 'admin' }))
@@ -24,8 +25,13 @@ test('DNSSEC rollover carries the active algorithm and protects the replacement 
     }
     if (path.endsWith('/dnssec/rollover') && route.request().method() === 'POST') {
       submitted = route.request().postDataJSON()
-      info = { enabled: true, next_steps: 'Publish replacement DS at parent', keys: [key(401, 'active'), key(902, 'new')] }
+      info = { ...info, enabled: true, next_steps: 'Publish replacement DS at parent', keys: [key(401, 'active'), key(902, 'new')] }
       return route.fulfill({ status: 201, json: info })
+    }
+    if (path.endsWith('/dnssec/proof') && route.request().method() === 'PUT') {
+      submittedProof = route.request().postDataJSON()
+      info = { ...info, proof: { type: 'nsec3', nsec3_salt: 'a1b2', nsec3_iterations: 12, nsec3_opt_out: true } }
+      return route.fulfill({ status: 200, json: info })
     }
     if (path.endsWith('/members')) return route.fulfill({ status: 200, json: [] })
     if (path.endsWith('/revisions')) return route.fulfill({ status: 200, json: [] })
@@ -48,4 +54,13 @@ test('DNSSEC rollover carries the active algorithm and protects the replacement 
   await expect(retire).toBeDisabled()
   await page.getByLabel('The replacement DS is published at the registrar and the old DS has expired from caches').check()
   await expect(retire).toBeEnabled()
+
+  await page.getByLabel('Denial proof type').selectOption('nsec3')
+  await page.getByLabel('NSEC3 salt').fill('a1b2')
+  await page.getByLabel('NSEC3 iterations').fill('12')
+  await page.getByLabel('Enable NSEC3 Opt-Out').check()
+  await page.getByRole('button', { name: 'Save denial proof' }).click()
+  await expect.poll(() => submittedProof).toEqual({
+    proof_type: 'nsec3', nsec3_salt: 'a1b2', nsec3_iterations: 12, nsec3_opt_out: true,
+  })
 })

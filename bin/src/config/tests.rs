@@ -79,6 +79,30 @@ fn test_read_config() {
     );
 }
 
+#[cfg(feature = "__dnssec")]
+#[test]
+fn nsec3_zone_configuration_deserializes_salt_iterations_and_opt_out() {
+    use hickory_server::dnssec::NxProofKind;
+
+    let proof: NxProofKind = toml::from_str(
+        r#"nsec3 = { algorithm = "SHA-1", salt = [161, 178], iterations = 12, opt_out = true }"#,
+    )
+    .expect("generated NSEC3 denial proof configuration should parse");
+    match proof {
+        NxProofKind::Nsec3 {
+            salt,
+            iterations,
+            opt_out,
+            ..
+        } => {
+            assert_eq!(&*salt, &[0xa1, 0xb2]);
+            assert_eq!(iterations, 12);
+            assert!(opt_out);
+        }
+        NxProofKind::Nsec => panic!("expected NSEC3 proof configuration"),
+    }
+}
+
 #[test]
 fn test_parse_toml() {
     let config = Config::from_toml("listen_port = 2053").unwrap();

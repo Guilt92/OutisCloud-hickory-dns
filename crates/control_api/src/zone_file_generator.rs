@@ -445,6 +445,7 @@ pub fn generate_full(
         dnssec_keys,
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
         records_map,
         geo_rules_map,
         nameservers,
@@ -460,6 +461,7 @@ pub fn generate_full_with_transfer_policies(
     dnssec_keys: &HashMap<String, Vec<(String, String)>>,
     transfer_policies: &HashMap<String, String>,
     transfer_peers: &HashMap<String, Vec<String>>,
+    nsec3_params: &HashMap<String, (Vec<u8>, u16, bool)>,
     records_map: HashMap<String, Vec<RecordRow>>,
     geo_rules_map: HashMap<String, Vec<GeoRuleRow>>,
     nameservers: Vec<NameserverRow>,
@@ -597,6 +599,7 @@ pub fn generate_full_with_transfer_policies(
         )?;
         toml_builder.set_last_zone_ecs(ecs_zones.contains(zone_id) && geo_on);
         toml_builder.set_last_zone_keys(keys);
+        toml_builder.set_last_zone_nsec3(nsec3_params.get(zone_id).cloned());
         toml_builder.set_last_zone_axfr_policy(
             transfer_policies
                 .get(zone_id)
@@ -723,7 +726,7 @@ pub async fn generate_all(
     let base = base_dir.to_string();
 
     let zones_rows = db
-        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed, COALESCE(axfr_policy, 'Deny') AS axfr_policy, COALESCE(axfr_allowed_peers, '{}'::text[]) AS axfr_allowed_peers FROM zones WHERE COALESCE(status, 'active') IN ('active', 'held') ORDER BY domain", &[])
+        .query("SELECT CAST(id AS varchar) AS id, domain, coalesce(geodns_enabled, true) AS geo, COALESCE(ecs_enabled, false) AS ecs, COALESCE(dnssec_enabled, false) AS signed, COALESCE(axfr_policy, 'Deny') AS axfr_policy, COALESCE(axfr_allowed_peers, '{}'::text[]) AS axfr_allowed_peers, COALESCE(dnssec_proof_type, 'nsec') AS proof_type, COALESCE(dnssec_nsec3_salt, '') AS nsec3_salt, COALESCE(dnssec_nsec3_iterations, 0) AS nsec3_iterations, COALESCE(dnssec_nsec3_opt_out, false) AS nsec3_opt_out FROM zones WHERE COALESCE(status, 'active') IN ('active', 'held') ORDER BY domain", &[])
         .await
         .context("failed to read zones")?;
 
@@ -732,6 +735,7 @@ pub async fn generate_all(
     let mut signed_zones: HashSet<String> = HashSet::new();
     let mut transfer_policies: HashMap<String, String> = HashMap::new();
     let mut transfer_peers: HashMap<String, Vec<String>> = HashMap::new();
+    let mut nsec3_params: HashMap<String, (Vec<u8>, u16, bool)> = HashMap::new();
     let mut records_map: HashMap<String, Vec<RecordRow>> = HashMap::new();
     let mut geo_rules_map: HashMap<String, Vec<GeoRuleRow>> = HashMap::new();
 
@@ -754,6 +758,16 @@ pub async fn generate_all(
         }
         transfer_policies.insert(zone_id.clone(), z.get("axfr_policy"));
         transfer_peers.insert(zone_id.clone(), z.get("axfr_allowed_peers"));
+        if z.get::<_, String>("proof_type") == "nsec3" {
+            let salt_hex: String = z.get("nsec3_salt");
+            let salt = data_encoding::HEXLOWER
+                .decode(salt_hex.as_bytes())
+                .context("invalid persisted NSEC3 salt encoding")?;
+            let iterations: i32 = z.get("nsec3_iterations");
+            let iterations =
+                u16::try_from(iterations).context("invalid persisted NSEC3 iterations")?;
+            nsec3_params.insert(zone_id.clone(), (salt, iterations, z.get("nsec3_opt_out")));
+        }
         zones_vec.push((zone_id.clone(), domain, enabled));
         records_map.insert(zone_id.clone(), Vec::new());
         geo_rules_map.insert(zone_id, Vec::new());
@@ -836,6 +850,7 @@ pub async fn generate_all(
             &dnssec_keys,
             &transfer_policies,
             &transfer_peers,
+            &nsec3_params,
             records_map,
             geo_rules_map,
             nameservers,

@@ -213,6 +213,21 @@ pub fn key_file_name(zone: &str, key_tag: u16) -> String {
 
 pub const SCHEMA: &str = "
     ALTER TABLE zones ADD COLUMN IF NOT EXISTS dnssec_enabled BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE zones ADD COLUMN IF NOT EXISTS dnssec_proof_type TEXT NOT NULL DEFAULT 'nsec';
+    ALTER TABLE zones ADD COLUMN IF NOT EXISTS dnssec_nsec3_salt TEXT NOT NULL DEFAULT '';
+    ALTER TABLE zones ADD COLUMN IF NOT EXISTS dnssec_nsec3_iterations INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE zones ADD COLUMN IF NOT EXISTS dnssec_nsec3_opt_out BOOLEAN NOT NULL DEFAULT false;
+    DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='zones_dnssec_proof_type_check') THEN
+            ALTER TABLE zones ADD CONSTRAINT zones_dnssec_proof_type_check CHECK (dnssec_proof_type IN ('nsec', 'nsec3'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='zones_dnssec_nsec3_iterations_check') THEN
+            ALTER TABLE zones ADD CONSTRAINT zones_dnssec_nsec3_iterations_check CHECK (dnssec_nsec3_iterations BETWEEN 0 AND 150);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='zones_dnssec_nsec3_salt_hex_check') THEN
+            ALTER TABLE zones ADD CONSTRAINT zones_dnssec_nsec3_salt_hex_check CHECK (dnssec_nsec3_salt ~ '^([0-9a-fA-F]{2}){0,32}$');
+        END IF;
+    END $$;
     CREATE TABLE IF NOT EXISTS dnssec_keys (
         id UUID PRIMARY KEY,
         zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
@@ -247,6 +262,17 @@ pub struct CompleteReq {
     pub retire_key_tag: i32,
 }
 
+#[derive(Deserialize)]
+pub struct NxProofReq {
+    pub proof_type: String,
+    #[serde(default)]
+    pub nsec3_salt: String,
+    #[serde(default)]
+    pub nsec3_iterations: i32,
+    #[serde(default)]
+    pub nsec3_opt_out: bool,
+}
+
 fn db_err(what: &str, e: &tokio_postgres::Error) -> HttpResponse {
     warn!("dnssec {}: {}", what, full_error_string(e));
     HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
@@ -257,16 +283,21 @@ async fn describe(
     zone_id: &str,
     domain: &str,
 ) -> Result<serde_json::Value, HttpResponse> {
-    let enabled: bool = match db
+    let zone: tokio_postgres::Row = match db
         .query_one(
-            "SELECT dnssec_enabled FROM zones WHERE CAST(id AS varchar) = $1",
+            "SELECT dnssec_enabled, COALESCE(dnssec_proof_type, 'nsec'), COALESCE(dnssec_nsec3_salt, ''), COALESCE(dnssec_nsec3_iterations, 0), COALESCE(dnssec_nsec3_opt_out, false) FROM zones WHERE CAST(id AS varchar) = $1",
             &[&zone_id],
         )
         .await
     {
-        Ok(r) => r.get(0),
+        Ok(r) => r,
         Err(e) => return Err(db_err("describe", &e)),
     };
+    let enabled: bool = zone.get(0);
+    let proof_type: String = zone.get(1);
+    let nsec3_salt: String = zone.get(2);
+    let nsec3_iterations: i32 = zone.get(3);
+    let nsec3_opt_out: bool = zone.get(4);
     let rows = db
         .query(
             "SELECT key_tag, algorithm, public_key, status, created_at::text FROM dnssec_keys \
@@ -299,7 +330,9 @@ async fn describe(
         "Publish the DS record at your registrar (or parent zone). Until the DS is published the zone is signed but not validated; do not remove it while DNSSEC is enabled."
     };
     Ok(
-        serde_json::json!({ "enabled": enabled, "domain": domain, "keys": keys, "next_steps": next_steps }),
+        serde_json::json!({ "enabled": enabled, "domain": domain, "keys": keys, "next_steps": next_steps,
+            "proof": { "type": proof_type, "nsec3_salt": nsec3_salt,
+                "nsec3_iterations": nsec3_iterations, "nsec3_opt_out": nsec3_opt_out } }),
     )
 }
 
@@ -320,6 +353,111 @@ pub async fn get_dnssec(
     match describe(&data.db, &zone_id, &access.domain).await {
         Ok(v) => HttpResponse::Ok().json(v),
         Err(r) => r,
+    }
+}
+
+pub async fn set_nx_proof(
+    path: web::Path<String>,
+    body: web::Json<NxProofReq>,
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    let token = match auth_from_header(&req, &data.jwt_secret) {
+        Some(token) => token,
+        None => return unauthorized(),
+    };
+    let zone_id = path.into_inner();
+    let access = match zone_access_at(&data.db, &zone_id, &token, Level::Owner).await {
+        Ok(access) => access,
+        Err(response) => return response,
+    };
+    let proof_type = body.proof_type.trim().to_ascii_lowercase();
+    let (salt, iterations, opt_out) = match proof_type.as_str() {
+        "nsec"
+            if body.nsec3_salt.is_empty() && body.nsec3_iterations == 0 && !body.nsec3_opt_out =>
+        {
+            (String::new(), 0, false)
+        }
+        "nsec3" => {
+            let encoded = body.nsec3_salt.trim();
+            if encoded.len() > 64
+                || encoded.len() % 2 != 0
+                || data_encoding::HEXLOWER
+                    .decode(encoded.to_ascii_lowercase().as_bytes())
+                    .is_err()
+            {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "nsec3_salt must be 0 to 32 bytes encoded as hexadecimal"
+                }));
+            }
+            if !(0..=150).contains(&body.nsec3_iterations) {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "nsec3_iterations must be between 0 and 150"
+                }));
+            }
+            (
+                encoded.to_ascii_lowercase(),
+                body.nsec3_iterations,
+                body.nsec3_opt_out,
+            )
+        }
+        "nsec" => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "NSEC does not accept NSEC3 parameters"
+            }));
+        }
+        _ => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "proof_type must be nsec or nsec3"
+            }));
+        }
+    };
+    let previous = match data.db.query_opt(
+        "SELECT dnssec_enabled, COALESCE(dnssec_proof_type, 'nsec'), COALESCE(dnssec_nsec3_salt, ''), COALESCE(dnssec_nsec3_iterations, 0), COALESCE(dnssec_nsec3_opt_out, false) FROM zones WHERE CAST(id AS varchar) = $1",
+        &[&zone_id],
+    ).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error":"zone not found"})),
+        Err(error) => return db_err("read denial proof settings", &error),
+    };
+    if !previous.get::<_, bool>(0) {
+        return HttpResponse::Conflict().json(serde_json::json!({"error":"DNSSEC must be enabled before changing denial proof settings"}));
+    }
+    let old_type: String = previous.get(1);
+    let old_salt: String = previous.get(2);
+    let old_iterations: i32 = previous.get(3);
+    let old_opt_out: bool = previous.get(4);
+    if let Err(error) = data.db.execute(
+        "UPDATE zones SET dnssec_proof_type=$2, dnssec_nsec3_salt=$3, dnssec_nsec3_iterations=$4, dnssec_nsec3_opt_out=$5, updated_at=now() WHERE CAST(id AS varchar)=$1",
+        &[&zone_id, &proof_type, &salt, &iterations, &opt_out],
+    ).await {
+        return db_err("update denial proof settings", &error);
+    }
+    if let Some(error) = publish(&data, &access.domain).await {
+        if let Err(restore_error) = data.db.execute(
+            "UPDATE zones SET dnssec_proof_type=$2, dnssec_nsec3_salt=$3, dnssec_nsec3_iterations=$4, dnssec_nsec3_opt_out=$5, updated_at=now() WHERE CAST(id AS varchar)=$1",
+            &[&zone_id, &old_type, &old_salt, &old_iterations, &old_opt_out],
+        ).await {
+            warn!("failed to restore denial proof settings for {}: {}", zone_id, full_error_string(&restore_error));
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error":"publish_failed_rollback_failed", "saved":false, "published":false
+            }));
+        }
+        let _ = data.dns_manager.regenerate_zones(data.db.clone()).await;
+        return publish_failed_rolled_back(&error);
+    }
+    audit(
+        &data.db,
+        Some(&token.claims.sub),
+        "dnssec_denial_proof_updated",
+        "zone",
+        Some(zone_id.clone()),
+        &req,
+        serde_json::json!({"proof_type":proof_type,"nsec3_salt":salt,"nsec3_iterations":iterations,"nsec3_opt_out":opt_out}),
+    ).await;
+    match describe(&data.db, &zone_id, &access.domain).await {
+        Ok(description) => HttpResponse::Ok().json(description),
+        Err(response) => response,
     }
 }
 

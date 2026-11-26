@@ -4174,7 +4174,7 @@ async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
     assert!(kf.is_file());
     assert_eq!(
         std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777,
-        0o640
+        0o600
     );
     assert!(
         std::fs::read_to_string(&kf)
@@ -4187,6 +4187,70 @@ async fn dnssec_lifecycle_keys_ds_rollover_and_guards() {
             && n.contains("algorithm = \"ECDSAP256SHA256\""),
         "{n}"
     );
+    let proof_url = format!("/api/v1/zones/{zid}/dnssec/proof");
+    let (proof_status, proof, proof_raw) = call!(
+        app,
+        put,
+        &proof_url,
+        Some(&t),
+        j(serde_json::json!({
+            "proof_type":"nsec3", "nsec3_salt":"A1b2", "nsec3_iterations":12,
+            "nsec3_opt_out":true
+        }))
+    );
+    assert_eq!(proof_status, 200, "{proof_raw}");
+    assert_eq!(proof["proof"]["type"], "nsec3");
+    assert_eq!(proof["proof"]["nsec3_salt"], "a1b2");
+    assert_eq!(proof["proof"]["nsec3_iterations"], 12);
+    assert_eq!(proof["proof"]["nsec3_opt_out"], true);
+    let nsec3_config = named();
+    assert!(
+        nsec3_config.contains("nx_proof_kind = { nsec3 = { algorithm = \"SHA-1\""),
+        "{nsec3_config}"
+    );
+    assert!(
+        nsec3_config.contains("salt = [161, 178], iterations = 12, opt_out = true"),
+        "{nsec3_config}"
+    );
+    let (invalid_salt_status, _, _) = call!(
+        app,
+        put,
+        &proof_url,
+        Some(&t),
+        j(serde_json::json!({"proof_type":"nsec3","nsec3_salt":"xyz","nsec3_iterations":0}))
+    );
+    assert_eq!(invalid_salt_status, 400);
+    let (invalid_iteration_status, _, _) = call!(
+        app,
+        put,
+        &proof_url,
+        Some(&t),
+        j(serde_json::json!({"proof_type":"nsec3","nsec3_iterations":151}))
+    );
+    assert_eq!(invalid_iteration_status, 400);
+    // A publication failure must restore both the NSEC3 database state and
+    // last-known-good named configuration.
+    let blocked_config = env.dir.path().join("named.toml");
+    std::fs::remove_file(&blocked_config).unwrap();
+    std::fs::create_dir(&blocked_config).unwrap();
+    let (failed_status, failed_body, failed_raw) = call!(
+        app,
+        put,
+        &proof_url,
+        Some(&t),
+        j(serde_json::json!({"proof_type":"nsec","nsec3_salt":"","nsec3_iterations":0}))
+    );
+    assert_eq!(failed_status, 500, "{failed_raw}");
+    assert_eq!(failed_body["error"], "publish_failed", "{failed_raw}");
+    let restored: (String, String, i32, bool) = {
+        let row = env.state.db.query_one(
+            "SELECT dnssec_proof_type,dnssec_nsec3_salt,dnssec_nsec3_iterations,dnssec_nsec3_opt_out FROM zones WHERE CAST(id AS varchar)=$1",
+            &[&zid],
+        ).await.unwrap();
+        (row.get(0), row.get(1), row.get(2), row.get(3))
+    };
+    assert_eq!(restored, ("nsec3".into(), "a1b2".into(), 12, true));
+    std::fs::remove_dir_all(&blocked_config).unwrap();
     // twice is refused
     assert_eq!(
         call!(
