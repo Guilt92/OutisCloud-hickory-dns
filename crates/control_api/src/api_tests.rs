@@ -4116,6 +4116,40 @@ async fn zones_records_users_support_opt_in_pagination_and_search() {
     let (b, total) = get_total!(&format!("/api/v1/zones/{zid}/records?q=192.0.2.5"));
     assert_eq!(b.as_array().unwrap().len(), 1);
     assert_eq!(total.as_deref(), Some("1"));
+    let first_records = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/zones/{zid}/records?q=192.0.2&limit=2&sort=name"
+            ))
+            .insert_header(("Authorization", format!("Bearer {t}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(first_records.headers().get("X-Total-Count").unwrap(), "7");
+    let record_cursor = first_records
+        .headers()
+        .get("X-Next-Cursor")
+        .expect("first record page has a next cursor")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let first_records: serde_json::Value = test::read_body_json(first_records).await;
+    assert_eq!(first_records[0]["name"], "h0");
+    assert_eq!(first_records[1]["name"], "h1");
+    let next_records = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/zones/{zid}/records?q=192.0.2&limit=2&sort=name&cursor={record_cursor}"
+            ))
+            .insert_header(("Authorization", format!("Bearer {t}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(next_records.headers().get("X-Total-Count").unwrap(), "7");
+    let next_records: serde_json::Value = test::read_body_json(next_records).await;
+    assert_eq!(next_records[0]["name"], "h2");
     let (b, _) = get_total!(&format!("/api/v1/zones/{zid}/records"));
     assert_eq!(
         b.as_array().unwrap().len(),

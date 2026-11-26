@@ -4991,6 +4991,45 @@ fn encode_zone_page_cursor(domain: &str, id: &str) -> String {
     )
 }
 
+#[derive(Deserialize, Serialize)]
+struct RecordPageCursor {
+    version: u8,
+    name: String,
+    record_type: String,
+    value: String,
+    id: String,
+}
+
+fn decode_record_page_cursor(value: &str) -> Result<RecordPageCursor, ()> {
+    if value.len() > 8192 {
+        return Err(());
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(value).map_err(|_| ())?;
+    let cursor: RecordPageCursor = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if cursor.version != 1
+        || cursor.name.len() > 253
+        || cursor.record_type.len() > 32
+        || cursor.value.len() > 4096
+        || Uuid::parse_str(&cursor.id).is_err()
+    {
+        return Err(());
+    }
+    Ok(cursor)
+}
+
+fn encode_record_page_cursor(name: &str, record_type: &str, value: &str, id: &str) -> String {
+    URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&RecordPageCursor {
+            version: 1,
+            name: name.to_string(),
+            record_type: record_type.to_string(),
+            value: value.to_string(),
+            id: id.to_string(),
+        })
+        .expect("record cursor serialization is infallible"),
+    )
+}
+
 async fn list_zones(
     page: web::Query<ext::PageQuery>,
     data: web::Data<AppState>,
@@ -6043,6 +6082,38 @@ async fn list_records(
         Ok(value) => value,
         Err(()) => return invalid_list_query(),
     };
+    let cursor = match page.cursor().map(decode_record_page_cursor).transpose() {
+        Ok(value) => value,
+        Err(()) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_query",
+                "details": "Invalid record pagination cursor"
+            }));
+        }
+    };
+    if cursor.is_some() && sort != "name" {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "invalid_query",
+            "details": "Record cursors require sort=name"
+        }));
+    }
+    let cursor_condition = if direction == "DESC" {
+        "(name, record_type, value, id) < ($5, $6, $7, $8::text::uuid)"
+    } else {
+        "(name, record_type, value, id) > ($5, $6, $7, $8::text::uuid)"
+    };
+    let cursor_name = cursor.as_ref().map(|value| value.name.as_str());
+    let cursor_type = cursor.as_ref().map(|value| value.record_type.as_str());
+    let cursor_value = cursor.as_ref().map(|value| value.value.as_str());
+    let cursor_id = cursor.as_ref().map(|value| value.id.as_str());
+    let page_limit = limit.unwrap_or(100);
+    let fetch_limit = page_limit.saturating_add(1);
+    let fetch_offset = if cursor.is_some() { 0 } else { offset };
+    let order_by = if sort == "name" {
+        format!("name {direction}, record_type {direction}, value {direction}, id {direction}")
+    } else {
+        format!("{sort} {direction}, name, record_type, value, id")
+    };
     let total: i64 = match data.db.query_one(
         "SELECT count(*) FROM records WHERE CAST(zone_id AS varchar) = $1 AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR value ILIKE '%' || $2 || '%' OR record_type ILIKE $2)",
         &[&zone_id_str, &qtext],
@@ -6054,11 +6125,23 @@ async fn list_records(
         }
     };
     let list_sql = format!(
-        "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority, count(*) OVER(), COALESCE(comment, ''), tags FROM records WHERE CAST(zone_id AS varchar) = $1 AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR value ILIKE '%' || $2 || '%' OR record_type ILIKE $2) ORDER BY {sort} {direction}, name, record_type, value LIMIT $3::bigint OFFSET $4::bigint"
+        "SELECT CAST(id AS varchar), CAST(zone_id AS varchar), name, record_type, value, ttl, priority, count(*) OVER(), COALESCE(comment, ''), tags FROM records WHERE CAST(zone_id AS varchar) = $1 AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR value ILIKE '%' || $2 || '%' OR record_type ILIKE $2) AND ($5::text IS NULL OR {cursor_condition}) ORDER BY {order_by} LIMIT $3::bigint OFFSET $4::bigint"
     );
-    let rows = match data
+    let mut rows = match data
         .db
-        .query(&list_sql, &[&zone_id_str, &qtext, &limit, &offset])
+        .query(
+            &list_sql,
+            &[
+                &zone_id_str,
+                &qtext,
+                &fetch_limit,
+                &fetch_offset,
+                &cursor_name,
+                &cursor_type,
+                &cursor_value,
+                &cursor_id,
+            ],
+        )
         .await
     {
         Ok(r) => r,
@@ -6067,6 +6150,23 @@ async fn list_records(
             return HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "database error"}));
         }
+    };
+
+    let has_next = rows.len() > page_limit as usize;
+    if has_next {
+        rows.truncate(page_limit as usize);
+    }
+    let next_cursor = if has_next {
+        rows.last().map(|row| {
+            encode_record_page_cursor(
+                row.try_get::<_, String>(2).unwrap_or_default().as_str(),
+                row.try_get::<_, String>(3).unwrap_or_default().as_str(),
+                row.try_get::<_, String>(4).unwrap_or_default().as_str(),
+                row.try_get::<_, String>(0).unwrap_or_default().as_str(),
+            )
+        })
+    } else {
+        None
     };
 
     let records: Vec<RecordResponse> = rows
@@ -6094,9 +6194,12 @@ async fn list_records(
         })
         .collect();
 
-    HttpResponse::Ok()
-        .insert_header(("X-Total-Count", total.to_string()))
-        .json(records)
+    let mut response = HttpResponse::Ok();
+    response.insert_header(("X-Total-Count", total.to_string()));
+    if let Some(cursor) = next_cursor {
+        response.insert_header(("X-Next-Cursor", cursor));
+    }
+    response.json(records)
 }
 
 #[derive(Deserialize)]
