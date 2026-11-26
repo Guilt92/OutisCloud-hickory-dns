@@ -3,6 +3,8 @@ use actix_web::body::{MessageBody, to_bytes};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::middleware::Next;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::header, web};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -135,7 +137,7 @@ fn cors_middleware() -> Cors {
     let mut cors = Cors::default()
         .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
         .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
-        .expose_headers(vec!["X-Total-Count"])
+        .expose_headers(vec!["X-Total-Count", "X-Next-Cursor"])
         .max_age(3600);
 
     if cors_origins.trim() == "*" {
@@ -4956,6 +4958,39 @@ async fn list_zone_templates(req: HttpRequest, data: web::Data<AppState>) -> imp
     HttpResponse::Ok().json(zone_template_catalog())
 }
 
+#[derive(Deserialize, Serialize)]
+struct ZonePageCursor {
+    version: u8,
+    domain: String,
+    id: String,
+}
+
+fn decode_zone_page_cursor(value: &str) -> Result<ZonePageCursor, ()> {
+    if value.len() > 2048 {
+        return Err(());
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(value).map_err(|_| ())?;
+    let cursor: ZonePageCursor = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if cursor.version != 1
+        || Uuid::parse_str(&cursor.id).is_err()
+        || normalize_zone_domain(&cursor.domain).is_err()
+    {
+        return Err(());
+    }
+    Ok(cursor)
+}
+
+fn encode_zone_page_cursor(domain: &str, id: &str) -> String {
+    URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&ZonePageCursor {
+            version: 1,
+            domain: domain.to_string(),
+            id: id.to_string(),
+        })
+        .expect("zone cursor serialization is infallible"),
+    )
+}
+
 async fn list_zones(
     page: web::Query<ext::PageQuery>,
     data: web::Data<AppState>,
@@ -4990,6 +5025,31 @@ async fn list_zones(
         Ok(value) => value,
         Err(()) => return invalid_list_query(),
     };
+    let cursor = match page.cursor().map(decode_zone_page_cursor).transpose() {
+        Ok(value) => value,
+        Err(()) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "invalid_query",
+                "details": "Invalid zone pagination cursor"
+            }));
+        }
+    };
+    if cursor.is_some() && sort != "z.domain" {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "invalid_query",
+            "details": "Zone cursors require sort=domain"
+        }));
+    }
+    let keyset_condition = if direction == "DESC" {
+        "(z.domain, z.id) < ($7, $8::text::uuid)"
+    } else {
+        "(z.domain, z.id) > ($7, $8::text::uuid)"
+    };
+    let cursor_domain = cursor.as_ref().map(|value| value.domain.as_str());
+    let cursor_id = cursor.as_ref().map(|value| value.id.as_str());
+    let page_limit = limit.unwrap_or(100);
+    let fetch_limit = page_limit.saturating_add(1);
+    let fetch_offset = if cursor.is_some() { 0 } else { offset };
     let list_sql = format!(
         "SELECT CAST(z.id AS varchar), z.domain, COALESCE(CAST(z.owner AS varchar), '') as owner, z.zone_type, z.created_at::text, \
                 COALESCE(z.geodns_enabled, true), z.status, z.ecs_enabled, \
@@ -5000,7 +5060,8 @@ async fn list_zones(
          FROM zones z LEFT JOIN zone_members m ON m.zone_id = z.id AND CAST(m.user_id AS varchar) = $2 \
          WHERE ({}) AND ($3::text IS NULL OR z.domain ILIKE '%' || $3 || '%') \
            AND ($6::text IS NULL OR z.tags ? $6) \
-         ORDER BY {sort} {direction}, z.id LIMIT $4::bigint OFFSET $5::bigint",
+           AND ($7::text IS NULL OR {keyset_condition}) \
+         ORDER BY {sort} {direction}, z.id {direction} LIMIT $4::bigint OFFSET $5::bigint",
         tenants::ZONE_VISIBLE
     );
     let count_sql = format!(
@@ -5024,12 +5085,35 @@ async fn list_zones(
         .db
         .query(
             &list_sql,
-            &[&is_admin, &tok.claims.sub, &qtext, &limit, &offset, &tag],
+            &[
+                &is_admin,
+                &tok.claims.sub,
+                &qtext,
+                &fetch_limit,
+                &fetch_offset,
+                &tag,
+                &cursor_domain,
+                &cursor_id,
+            ],
         )
         .await;
 
     match query_result {
-        Ok(rows) => {
+        Ok(mut rows) => {
+            let has_next = rows.len() > page_limit as usize;
+            if has_next {
+                rows.truncate(page_limit as usize);
+            }
+            let next_cursor = if has_next {
+                rows.last().map(|row| {
+                    encode_zone_page_cursor(
+                        row.try_get::<_, String>(1).unwrap_or_default().as_str(),
+                        row.try_get::<_, String>(0).unwrap_or_default().as_str(),
+                    )
+                })
+            } else {
+                None
+            };
             let zones: Vec<ZoneWithOwner> = rows
                 .into_iter()
                 .map(|r| ZoneWithOwner {
@@ -5050,13 +5134,16 @@ async fn list_zones(
                     hold_until: r.try_get(15).unwrap_or(None),
                 })
                 .collect();
-            HttpResponse::Ok()
-                .insert_header(("X-Total-Count", total.to_string()))
-                .json(ApiResponse {
-                    success: true,
-                    data: Some(zones),
-                    error: None,
-                })
+            let mut response = HttpResponse::Ok();
+            response.insert_header(("X-Total-Count", total.to_string()));
+            if let Some(cursor) = next_cursor {
+                response.insert_header(("X-Next-Cursor", cursor));
+            }
+            response.json(ApiResponse {
+                success: true,
+                data: Some(zones),
+                error: None,
+            })
         }
         Err(e) => {
             warn!("list_zones database error: {}", e);

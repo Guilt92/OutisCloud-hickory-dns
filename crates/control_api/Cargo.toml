@@ -5,6 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 actix-web = { version = "4", default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

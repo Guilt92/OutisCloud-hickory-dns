@@ -1810,6 +1810,7 @@ pub struct PageQuery {
     tag: Option<String>,
     sort: Option<String>,
     order: Option<String>,
+    cursor: Option<String>,
 }
 impl PageQuery {
     /// (limit, offset, search text)
@@ -1830,6 +1831,11 @@ impl PageQuery {
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// Opaque endpoint-specific keyset cursor, if supplied.
+    pub fn cursor(&self) -> Option<&str> {
+        self.cursor.as_deref().filter(|value| !value.is_empty())
     }
 
     /// Resolve the requested sort field through an endpoint-owned allowlist.

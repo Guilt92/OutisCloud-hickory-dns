@@ -4047,6 +4047,51 @@ async fn zones_records_users_support_opt_in_pagination_and_search() {
     let (b, total) = get_total!("/api/v1/zones?q=b");
     assert_eq!(b["data"].as_array().unwrap().len(), 2);
     assert_eq!(total.as_deref(), Some("2"));
+    // Cursor pagination uses a stable (domain, id) key and exposes the next
+    // opaque cursor without changing the response body contract.
+    let first = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/zones?q=a&limit=2&sort=domain")
+            .insert_header(("Authorization", format!("Bearer {t}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(first.headers().get("X-Total-Count").unwrap(), "3");
+    let cursor = first
+        .headers()
+        .get("X-Next-Cursor")
+        .expect("first page has a cursor")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let first_body: serde_json::Value = test::read_body_json(first).await;
+    assert_eq!(first_body["data"][0]["domain"], "a1.test");
+    assert_eq!(first_body["data"][1]["domain"], "a2.test");
+    let next = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/api/v1/zones?q=a&limit=2&sort=domain&cursor={cursor}"
+            ))
+            .insert_header(("Authorization", format!("Bearer {t}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(next.headers().get("X-Total-Count").unwrap(), "3");
+    assert!(next.headers().get("X-Next-Cursor").is_none());
+    let next_body: serde_json::Value = test::read_body_json(next).await;
+    assert_eq!(next_body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(next_body["data"][0]["domain"], "a3.test");
+    let invalid = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/zones?cursor=not-a-cursor")
+            .insert_header(("Authorization", format!("Bearer {t}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(invalid.status(), 400);
     // records
     let zid = make_zone(&env, &app, &t, "rec.test").await;
     for i in 0..7 {

@@ -647,6 +647,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-trait",
+ "base64",
  "chrono",
  "data-encoding",
  "env_logger",
