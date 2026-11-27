@@ -5870,6 +5870,65 @@ async fn tenants_isolate_customers_and_enforce_quotas() {
 }
 
 #[actix_web::test]
+async fn deleting_empty_tenant_removes_all_its_analytics_without_orphaning_zones() {
+    let Some(env) = setup().await else { return };
+    let app = app!(env);
+    let token = env.token(&env.admin, "admin");
+    let (st, body, raw) = call!(
+        app,
+        post,
+        "/api/v1/tenants",
+        Some(&token),
+        j(serde_json::json!({"name":"delete-fixture"}))
+    );
+    assert_eq!(st, 201, "{raw}");
+    let id = body["id"].as_str().unwrap();
+    for sql in [
+        "INSERT INTO zone_query_samples(ts,tenant_id,domain,queries,failed) VALUES(now(),$1::text::uuid,'old.example',1,0)",
+        "INSERT INTO zone_qtype_samples(ts,tenant_id,domain,qtype,queries) VALUES(now(),$1::text::uuid,'old.example','A',1)",
+        "INSERT INTO zone_country_samples(ts,tenant_id,domain,country,queries) VALUES(now(),$1::text::uuid,'old.example','US',1)",
+        "INSERT INTO tenant_usage_samples(ts,tenant_id,zones,records) VALUES(now(),$1::text::uuid,0,0)",
+    ] {
+        env.state.db.execute(sql, &[&id]).await.unwrap();
+    }
+    let (st, _, raw) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tenants/{id}"),
+        Some(&token),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    for table in [
+        "zone_query_samples",
+        "zone_qtype_samples",
+        "zone_country_samples",
+        "tenant_usage_samples",
+    ] {
+        let n: i64 = env
+            .state
+            .db
+            .query_one(
+                &format!("SELECT count(*) FROM {table} WHERE CAST(tenant_id AS varchar)=$1"),
+                &[&id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 0, "{table} retained deleted tenant data");
+    }
+    let (st, _, _) = call!(
+        app,
+        delete,
+        &format!("/api/v1/tenants/{id}"),
+        Some(&token),
+        None
+    );
+    assert_eq!(st, 404);
+    env.cleanup().await;
+}
+
+#[actix_web::test]
 async fn concurrent_zone_creates_cannot_exceed_quota() {
     let Some(env) = setup().await else { return };
     let dave = add_user(&env.state, "race-dave", "dave-pass-1", "user").await;

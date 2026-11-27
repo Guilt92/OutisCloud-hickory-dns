@@ -496,8 +496,38 @@ pub async fn delete_tenant(
         return forbidden("admin role required");
     }
     let id = path.into_inner();
-    let n: i64 = match data
-        .db
+    if Uuid::parse_str(&id).is_err() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "invalid id"}));
+    }
+    let tx = match data.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return db_error("delete_tenant", &e),
+    };
+    let c = tx.client();
+    if let Err(e) = c.batch_execute("BEGIN").await {
+        return db_error("delete_tenant", &e);
+    }
+    // A FOR UPDATE lock conflicts with the FK key-share lock acquired by a
+    // concurrent zone create/move. The count and delete must use this session,
+    // otherwise a new zone can become orphaned by ON DELETE SET NULL.
+    match c
+        .query_opt(
+            "SELECT id FROM tenants WHERE CAST(id AS varchar) = $1 FOR UPDATE",
+            &[&id],
+        )
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let _ = c.batch_execute("ROLLBACK").await;
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "tenant not found"}));
+        }
+        Err(e) => {
+            let _ = c.batch_execute("ROLLBACK").await;
+            return db_error("delete_tenant", &e);
+        }
+    }
+    let n: i64 = match c
         .query_one(
             "SELECT count(*) FROM zones WHERE CAST(tenant_id AS varchar) = $1",
             &[&id],
@@ -505,33 +535,41 @@ pub async fn delete_tenant(
         .await
     {
         Ok(r) => r.get(0),
-        Err(e) => return db_error("delete_tenant", &e),
+        Err(e) => {
+            let _ = c.batch_execute("ROLLBACK").await;
+            return db_error("delete_tenant", &e);
+        }
     };
     if n > 0 {
+        let _ = c.batch_execute("ROLLBACK").await;
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "tenant still owns zones", "zones": n}));
     }
-    let _ = data
-        .db
-        .execute(
-            "DELETE FROM zone_query_samples WHERE CAST(tenant_id AS varchar) = $1",
-            &[&id],
-        )
-        .await;
-    let _ = data
-        .db
-        .execute(
-            "DELETE FROM tenant_usage_samples WHERE CAST(tenant_id AS varchar) = $1",
-            &[&id],
-        )
-        .await;
-    match data
-        .db
+    for table in [
+        "zone_query_samples",
+        "zone_qtype_samples",
+        "zone_country_samples",
+        "tenant_usage_samples",
+    ] {
+        if let Err(e) = c
+            .execute(
+                &format!("DELETE FROM {table} WHERE CAST(tenant_id AS varchar) = $1"),
+                &[&id],
+            )
+            .await
+        {
+            let _ = c.batch_execute("ROLLBACK").await;
+            return db_error("delete_tenant", &e);
+        }
+    }
+    match c
         .execute("DELETE FROM tenants WHERE CAST(id AS varchar) = $1", &[&id])
         .await
     {
-        Ok(0) => HttpResponse::NotFound().json(serde_json::json!({"error": "tenant not found"})),
-        Ok(_) => {
+        Ok(1) => {
+            if let Err(e) = c.batch_execute("COMMIT").await {
+                return db_error("delete_tenant", &e);
+            }
             audit(
                 &data.db,
                 Some(&tok.claims.sub),
@@ -544,7 +582,14 @@ pub async fn delete_tenant(
             .await;
             HttpResponse::Ok().json(serde_json::json!({"success": true}))
         }
-        Err(e) => db_error("delete_tenant", &e),
+        Ok(_) => {
+            let _ = c.batch_execute("ROLLBACK").await;
+            HttpResponse::NotFound().json(serde_json::json!({"error": "tenant not found"}))
+        }
+        Err(e) => {
+            let _ = c.batch_execute("ROLLBACK").await;
+            db_error("delete_tenant", &e)
+        }
     }
 }
 
