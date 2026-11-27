@@ -2099,33 +2099,123 @@ pub async fn export_audit(
     let where_sql = "($1::text IS NULL OR action = $1) AND ($2::text IS NULL OR CAST(user_id AS varchar) = $2) \
                      AND ($3::text IS NULL OR resource_type = $3) AND ($4::text IS NULL OR created_at >= $4::text::timestamptz) \
                      AND ($5::text IS NULL OR strpos(lower(concat_ws(' ', action, resource_type, resource_id, details::text)), lower($5)) > 0)";
-    let rows = match data.db.query(&format!(
+    let sql = format!(
         "SELECT CAST(id AS varchar), COALESCE(CAST(user_id AS varchar), ''), action, resource_type, \
          COALESCE(resource_id, ''), COALESCE(details::text, ''), COALESCE(ip_address, ''), created_at::text \
-         FROM audit_logs WHERE {} ORDER BY created_at DESC LIMIT $6", where_sql),
-        &[&q.action, &q.user_id, &q.resource_type, &since, &search, &limit]).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            warn!("audit export: {}", full_error_string(&e));
-            return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"}));
+         FROM audit_logs WHERE {} ORDER BY created_at DESC, id DESC LIMIT $6 OFFSET $7",
+        where_sql
+    );
+    let state = Some((
+        data.db.clone(),
+        q.action.clone(),
+        q.user_id.clone(),
+        q.resource_type.clone(),
+        since,
+        search,
+        limit,
+        0i64,
+        false,
+    ));
+    let stream = futures_util::stream::unfold(state, move |state| {
+        let sql = sql.clone();
+        async move {
+            let Some((
+                db,
+                action,
+                user_id,
+                resource_type,
+                since,
+                search,
+                remaining,
+                offset,
+                header_sent,
+            )) = state
+            else {
+                return None;
+            };
+            if !header_sent {
+                let header =
+                    "id,user_id,action,resource_type,resource_id,details,ip_address,created_at\n";
+                return Some((
+                    Ok::<_, actix_web::Error>(web::Bytes::from_static(header.as_bytes())),
+                    Some((
+                        db,
+                        action,
+                        user_id,
+                        resource_type,
+                        since,
+                        search,
+                        remaining,
+                        offset,
+                        true,
+                    )),
+                ));
+            }
+            if remaining == 0 {
+                return None;
+            }
+            let batch = remaining.min(250);
+            let rows = match db
+                .query(
+                    &sql,
+                    &[
+                        &action,
+                        &user_id,
+                        &resource_type,
+                        &since,
+                        &search,
+                        &batch,
+                        &offset,
+                    ],
+                )
+                .await
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    warn!("audit export: {}", full_error_string(&error));
+                    return Some((
+                        Err(actix_web::error::ErrorInternalServerError(
+                            "audit export failed",
+                        )),
+                        None,
+                    ));
+                }
+            };
+            if rows.is_empty() {
+                return None;
+            }
+            let count = rows.len() as i64;
+            let mut csv = String::new();
+            for row in rows {
+                let fields: Vec<String> = (0..8)
+                    .map(|i| csv_field(&row.get::<_, String>(i)))
+                    .collect();
+                csv.push_str(&fields.join(","));
+                csv.push('\n');
+            }
+            Some((
+                Ok(web::Bytes::from(csv)),
+                Some((
+                    db,
+                    action,
+                    user_id,
+                    resource_type,
+                    since,
+                    search,
+                    remaining - count,
+                    offset + count,
+                    true,
+                )),
+            ))
         }
-    };
-    let mut csv =
-        String::from("id,user_id,action,resource_type,resource_id,details,ip_address,created_at\n");
-    for row in rows {
-        let fields: Vec<String> = (0..8)
-            .map(|i| csv_field(&row.get::<_, String>(i)))
-            .collect();
-        csv.push_str(&fields.join(","));
-        csv.push('\n');
-    }
+    });
     HttpResponse::Ok()
         .content_type("text/csv; charset=utf-8")
         .insert_header((
             "Content-Disposition",
             "attachment; filename=audit-export.csv",
         ))
-        .body(csv)
+        .streaming(stream)
 }
 
 /// Delete audit rows older than `days`; returns the number removed.

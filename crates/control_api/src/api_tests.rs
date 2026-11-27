@@ -9016,6 +9016,16 @@ async fn audit_detail_and_export_endpoints() {
     );
     assert_eq!(st, 200, "{raw}");
     assert!(raw.contains("id,user_id,action"));
+    env.state.db.batch_execute(
+        "INSERT INTO audit_logs(id,action,resource_type,resource_id,details) \
+         SELECT gen_random_uuid(),'audit.streaming','test',g::text,jsonb_build_object('row',g) \
+         FROM generate_series(1,301) AS g"
+    ).await.unwrap();
+    let (st, _, raw) = call!(
+        app, get, "/api/v1/audit/logs/export?q=audit.streaming&limit=500", Some(&t), None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(raw.lines().count(), 302, "all 301 rows must cross the 250-row stream boundary");
     let (st, _, raw) = call!(
         app,
         get,
