@@ -283,7 +283,7 @@ pub fn rewrap_directory(
 /// Create a single authenticated backup containing all regular `.pem` files
 /// below a DNSSEC key directory. Symlinks and oversized trees are rejected.
 pub fn create_encrypted_backup(directory: &Path, key: &[u8; 32]) -> Result<Vec<u8>, KeyStoreError> {
-    create_encrypted_backup_inner(directory, key, None)
+    create_encrypted_backup_inner(directory, key, None, None)
 }
 
 /// Create an encrypted key backup that also carries a caller-produced recovery
@@ -300,17 +300,31 @@ pub fn create_encrypted_backup_with_manifest(
             "DNSSEC recovery manifest exceeds the 64 MiB limit".into(),
         ));
     }
-    create_encrypted_backup_inner(directory, key, Some(manifest))
+    create_encrypted_backup_inner(directory, key, Some(manifest), None)
+}
+
+/// Include the exact DNS server configuration used at the recovery point.
+/// It is encrypted in the same authenticated archive as keys and metadata.
+pub fn create_encrypted_backup_with_config(
+    directory: &Path,
+    key: &[u8; 32],
+    manifest: &[u8],
+    config: &[u8],
+) -> Result<Vec<u8>, KeyStoreError> {
+    create_encrypted_backup_inner(directory, key, Some(manifest), Some(config))
 }
 
 fn create_encrypted_backup_inner(
     directory: &Path,
     key: &[u8; 32],
     manifest: Option<&[u8]>,
+    config: Option<&[u8]>,
 ) -> Result<Vec<u8>, KeyStoreError> {
     let mut files = Vec::new();
     collect_key_files(directory, directory, &mut files)?;
-    if files.len() + usize::from(manifest.is_some()) > MAX_BACKUP_FILES {
+    if files.len() + usize::from(manifest.is_some()) + usize::from(config.is_some())
+        > MAX_BACKUP_FILES
+    {
         return Err(KeyStoreError::Configuration(
             "too many DNSSEC key files for backup".into(),
         ));
@@ -320,6 +334,14 @@ fn create_encrypted_backup_inner(
             std::path::PathBuf::from("recovery-manifest.json"),
             manifest.to_vec(),
         ));
+    }
+    if let Some(config) = config {
+        if config.len() > 1024 * 1024 {
+            return Err(KeyStoreError::Configuration(
+                "DNS configuration exceeds 1 MiB".into(),
+            ));
+        }
+        files.push((std::path::PathBuf::from("named.toml"), config.to_vec()));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut payload = BACKUP_MAGIC.to_vec();
@@ -386,12 +408,15 @@ pub fn restore_encrypted_backup(
             .map_err(|_| KeyStoreError::Crypto)?;
         let relative = Path::new(name);
         let is_manifest = relative == Path::new("recovery-manifest.json");
+        let is_config = relative == Path::new("named.toml");
         if relative.as_os_str().is_empty()
             || relative.is_absolute()
             || relative
                 .components()
                 .any(|part| !matches!(part, std::path::Component::Normal(_)))
-            || (!is_manifest && relative.extension().and_then(|ext| ext.to_str()) != Some("pem"))
+            || (!is_manifest
+                && !is_config
+                && relative.extension().and_then(|ext| ext.to_str()) != Some("pem"))
         {
             return Err(KeyStoreError::Configuration(
                 "unsafe path in DNSSEC backup".into(),
@@ -811,6 +836,41 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn recovery_archive_keeps_configuration_authenticated_and_private() {
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("active.pem"), b"private key").unwrap();
+        let key = [0x41u8; 32];
+        let config = b"[[zones]]\nzone = 'signed.example.'\n";
+        let archive =
+            create_encrypted_backup_with_config(source.path(), &key, b"{}", config).unwrap();
+        assert!(!archive.windows(config.len()).any(|window| window == config));
+        let restored = source.path().join("restored");
+        assert_eq!(
+            restore_encrypted_backup(&archive, &restored, &key).unwrap(),
+            1
+        );
+        assert_eq!(fs::read(restored.join("named.toml")).unwrap(), config);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(restored.join("named.toml"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let mut corrupted = archive;
+        *corrupted.last_mut().unwrap() ^= 1;
+        assert!(
+            restore_encrypted_backup(&corrupted, &source.path().join("corrupted"), &key).is_err()
+        );
+        assert!(!source.path().join("corrupted").exists());
     }
 
     #[cfg(unix)]

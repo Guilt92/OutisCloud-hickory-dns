@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, bail};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, IsolationLevel, NoTls};
 
 const MANIFEST: &str = "recovery-manifest.json";
@@ -62,8 +63,11 @@ async fn run() -> anyhow::Result<()> {
         .context("usage: dnssec-recovery <backup key-dir archive | verify restored-key-dir>")?;
     let first = args.next().context("key directory is required")?;
     let second = args.next();
+    let third = args.next();
     if args.next().is_some() {
-        bail!("usage: dnssec-recovery <backup key-dir archive | verify restored-key-dir>");
+        bail!(
+            "usage: dnssec-recovery <backup key-dir archive [named.toml] | verify restored-key-dir>"
+        );
     }
     let database_url = env::var("DATABASE_URL")
         .context("DATABASE_URL must be supplied through the deployment secret source")?;
@@ -72,20 +76,40 @@ async fn run() -> anyhow::Result<()> {
         Some("backup") => {
             let archive_path = PathBuf::from(second.context("archive destination is required")?);
             let key_dir = Path::new(&first);
-            let manifest = snapshot_manifest(&mut client).await?;
+            let mut manifest = snapshot_manifest(&mut client).await?;
             validate_active_key_paths(&manifest, key_dir)?;
             let wrapping_key = hickory_key_store::configured_wrapping_key()?;
+            let config = if let Some(path) = third {
+                let path = PathBuf::from(path);
+                let metadata = fs::symlink_metadata(&path)?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    bail!("DNS configuration must be a regular, non-symlink file");
+                }
+                let bytes = fs::read(path)?;
+                manifest["config_sha256"] = Value::String(format!("{:x}", Sha256::digest(&bytes)));
+                Some(bytes)
+            } else {
+                None
+            };
             let encoded = serde_json::to_vec(&manifest)?;
-            let archive = hickory_key_store::create_encrypted_backup_with_manifest(
-                key_dir,
-                &wrapping_key,
-                &encoded,
-            )?;
+            let archive = match config.as_deref() {
+                Some(config) => hickory_key_store::create_encrypted_backup_with_config(
+                    key_dir,
+                    &wrapping_key,
+                    &encoded,
+                    config,
+                )?,
+                None => hickory_key_store::create_encrypted_backup_with_manifest(
+                    key_dir,
+                    &wrapping_key,
+                    &encoded,
+                )?,
+            };
             write_new_private_file(&archive_path, &archive)?;
             println!("wrote encrypted DNSSEC key and metadata recovery archive");
         }
         Some("verify") => {
-            if second.is_some() {
+            if second.is_some() || third.is_some() {
                 bail!("usage: dnssec-recovery verify <restored-key-dir>");
             }
             let restored_dir = Path::new(&first);
@@ -96,6 +120,13 @@ async fn run() -> anyhow::Result<()> {
                 || manifest.get("keys") != current.get("keys")
             {
                 bail!("restored database DNSSEC metadata does not match the encrypted manifest");
+            }
+            if let Some(expected) = manifest.get("config_sha256").and_then(Value::as_str) {
+                let config = fs::read(restored_dir.join("named.toml"))
+                    .context("restored DNS configuration is missing")?;
+                if format!("{:x}", Sha256::digest(&config)) != expected {
+                    bail!("restored DNS configuration does not match encrypted manifest");
+                }
             }
             validate_restored_active_key_paths(&current, restored_dir)?;
             println!("restored DNSSEC metadata and active key files match");

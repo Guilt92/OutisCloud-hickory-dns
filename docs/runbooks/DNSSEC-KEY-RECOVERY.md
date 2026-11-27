@@ -18,7 +18,7 @@ umask 077
 install -d -m 0700 "$RECOVERY_DIR"
 pg_dump "$DATABASE_URL" --format=custom --file="$RECOVERY_DIR/control-db.dump"
 DATABASE_URL="$DATABASE_URL" cargo run -p control_api --bin dnssec-recovery -- \
-  backup "$DNSSEC_KEY_DIR" "$RECOVERY_DIR/dnssec-keys.enc"
+  backup "$DNSSEC_KEY_DIR" "$RECOVERY_DIR/dnssec-keys.enc" "$DNS_NAMED_TOML"
 sha256sum "$RECOVERY_DIR/control-db.dump" "$RECOVERY_DIR/dnssec-keys.enc" \
   > "$RECOVERY_DIR/SHA256SUMS"
 chmod 0600 "$RECOVERY_DIR"/*
@@ -29,7 +29,7 @@ key is loaded from `DNSSEC_KEY_ENCRYPTION_KEY` or the private mounted
 `DNSSEC_KEY_ENCRYPTION_KEY_FILE`; keep it in a secret manager separate from
 this recovery set. The manifest contains public key material and operational
 metadata, and is encrypted inside the key archive. Store the database dump,
-archive, checksums, and recovery
+archive (which also contains the authenticated `named.toml`), checksums, and recovery
 key in separate protected locations according to the organization's escrow
 policy. Verify checksums after copying the set off host.
 
@@ -54,8 +54,8 @@ policy. Verify checksums after copying the set off host.
    ```
 
    This checks zone IDs/domains and proof settings, key tags, algorithms,
-   public keys, statuses, and key paths against the manifest, then confirms
-   each active/prepublished key exists and decrypts. It fails closed if the
+   public keys, statuses, key paths, and the restored `named.toml` digest against
+   the manifest, then confirms each active/prepublished key exists and decrypts. It fails closed if the
    database dump and key archive came from different metadata states.
 5. Generate configuration from the restored database and key directory. Run
    DNSKEY, CDS/CDNSKEY, and signed-answer checks against an isolated listener;
