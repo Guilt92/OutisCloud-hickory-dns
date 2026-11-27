@@ -1508,7 +1508,26 @@ pub async fn agent_bundle(
         }
     };
     let hash = bundle_hash(&files);
-    let key = agent_signing_key(&data.agent_signing_secret, &agent_id);
+    let key_version: i16 = match data
+        .db
+        .query_opt(
+            "SELECT signing_key_version FROM agents WHERE CAST(id AS varchar) = $1",
+            &[&agent_id],
+        )
+        .await
+    {
+        Ok(Some(row)) => row.get(0),
+        _ => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error":"bundle unavailable"}));
+        }
+    };
+    let master = if key_version == 1 {
+        &data.jwt_secret
+    } else {
+        &data.agent_signing_secret
+    };
+    let key = agent_signing_key(master, &agent_id);
     let signature = sign_bundle(&key, version, &hash, &files);
     HttpResponse::Ok().json(serde_json::json!({
         "version": version, "hash": hash, "signature": signature, "zone_dir_token": ZONE_DIR_TOKEN,

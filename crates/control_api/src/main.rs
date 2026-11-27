@@ -1493,6 +1493,7 @@ async fn migrate_db(client: &Pool) -> Result<(), tokio_postgres::Error> {
          ALTER TABLE agents ADD COLUMN IF NOT EXISTS sync_requested BOOLEAN NOT NULL DEFAULT false;
          ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_seen_ip TEXT;
          ALTER TABLE agents ADD COLUMN IF NOT EXISTS token_sha256 TEXT;
+         ALTER TABLE agents ADD COLUMN IF NOT EXISTS signing_key_version SMALLINT NOT NULL DEFAULT 1;
          CREATE TABLE IF NOT EXISTS agent_zones (
              agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
              zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
@@ -3781,7 +3782,7 @@ async fn agent_register(
     };
 
     match data.db.execute(
-        "INSERT INTO agents (id, name, addr, token_hash, token_sha256) VALUES ($1::text::uuid, $2, $3, $4, $5)",
+        "INSERT INTO agents (id, name, addr, token_hash, token_sha256, signing_key_version) VALUES ($1::text::uuid, $2, $3, $4, $5, 2)",
         &[&id_str, &body.name, &body.addr, &token_hash, &token_fingerprint]
     ).await {
         Ok(_) => {
@@ -4000,7 +4001,7 @@ async fn rotate_agent_token(
             return HttpResponse::InternalServerError().finish();
         }
     };
-    let res = data.db.execute("UPDATE agents SET token_hash = $1, token_sha256 = $2, updated_at = now() WHERE CAST(id AS varchar) = $3", &[&token_hash, &token_fingerprint, &agent_id]).await;
+    let res = data.db.execute("UPDATE agents SET token_hash = $1, token_sha256 = $2, signing_key_version = 2, updated_at = now() WHERE CAST(id AS varchar) = $3", &[&token_hash, &token_fingerprint, &agent_id]).await;
     match res {
         Ok(r) => {
             if r == 0 {

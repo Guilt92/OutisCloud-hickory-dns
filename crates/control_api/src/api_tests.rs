@@ -2106,6 +2106,93 @@ async fn agent_lifecycle_register_heartbeat_bundle_ack_push_disable() {
         j(serde_json::json!({"enabled": false}))
     );
     assert_eq!(st, 403);
+    // Upgraded pre-existing agents keep their old verifier until rotation.
+    env.state
+        .db
+        .execute(
+            "UPDATE agents SET signing_key_version=1 WHERE CAST(id AS varchar)=$1",
+            &[&id],
+        )
+        .await
+        .unwrap();
+    let (st, legacy_bundle, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(&tokn),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    let legacy_files: Vec<(String, String)> = legacy_bundle["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["name"].as_str().unwrap().into(),
+                f["content"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    let old_key = ext::agent_signing_key(&env.state.jwt_secret, &id);
+    assert_eq!(
+        legacy_bundle["signature"],
+        ext::sign_bundle(
+            &old_key,
+            legacy_bundle["version"].as_i64().unwrap(),
+            legacy_bundle["hash"].as_str().unwrap(),
+            &legacy_files,
+        )
+    );
+    let (st, rotated, raw) = call!(
+        app,
+        post,
+        &format!("/api/v1/agents/{id}/token/rotate"),
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(
+        rotated["signing_key"],
+        ext::agent_signing_key(&env.state.agent_signing_secret, &id)
+    );
+    let new_token = rotated["token"].as_str().unwrap();
+    let (st, new_bundle, raw) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(new_token),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    let new_files: Vec<(String, String)> = new_bundle["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["name"].as_str().unwrap().into(),
+                f["content"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        new_bundle["signature"],
+        ext::sign_bundle(
+            rotated["signing_key"].as_str().unwrap(),
+            new_bundle["version"].as_i64().unwrap(),
+            new_bundle["hash"].as_str().unwrap(),
+            &new_files,
+        )
+    );
+    let (st, _, _) = call!(
+        app,
+        get,
+        &format!("/api/v1/agents/{id}/bundle"),
+        Some(&tokn),
+        None
+    );
+    assert_eq!(st, 401);
     env.cleanup().await;
 }
 
