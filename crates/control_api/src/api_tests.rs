@@ -44,6 +44,7 @@ async fn setup() -> Option<Env> {
     let state = AppState {
         db: client.clone(),
         jwt_secret: "unit-test-secret-unit-test-secret-1234".to_string(),
+        agent_signing_secret: "agent-test-secret-agent-test-secret-1234".to_string(),
         dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
         verify_resolver: "127.0.0.1:9".parse().unwrap(),
         verify_domains: false,
@@ -1887,6 +1888,11 @@ async fn agent_lifecycle_register_heartbeat_bundle_ack_push_disable() {
         reg["token"].as_str().unwrap().to_string(),
         reg["signing_key"].as_str().unwrap().to_string(),
     );
+    assert_eq!(
+        key,
+        ext::agent_signing_key(&env.state.agent_signing_secret, &id)
+    );
+    assert_ne!(key, ext::agent_signing_key(&env.state.jwt_secret, &id));
     let zid = env
         .state
         .db
@@ -4909,6 +4915,7 @@ async fn legacy_schema_upgrades_in_place_keeping_data() {
     let state = AppState {
         db: pool.clone(),
         jwt_secret: "unit-test-secret-unit-test-secret-1234".into(),
+        agent_signing_secret: "agent-test-secret-agent-test-secret-1234".into(),
         dns_manager: Arc::new(DnsManager::new(dir.path().to_string_lossy().to_string())),
         verify_resolver: "127.0.0.1:9".parse().unwrap(),
         verify_domains: false,

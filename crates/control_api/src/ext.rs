@@ -1508,7 +1508,7 @@ pub async fn agent_bundle(
         }
     };
     let hash = bundle_hash(&files);
-    let key = agent_signing_key(&data.jwt_secret, &agent_id);
+    let key = agent_signing_key(&data.agent_signing_secret, &agent_id);
     let signature = sign_bundle(&key, version, &hash, &files);
     HttpResponse::Ok().json(serde_json::json!({
         "version": version, "hash": hash, "signature": signature, "zone_dir_token": ZONE_DIR_TOKEN,

@@ -258,6 +258,7 @@ struct ZoneWithOwner {
 struct AppState {
     db: Arc<Pool>,
     jwt_secret: String,
+    agent_signing_secret: String,
     dns_manager: Arc<DnsManager>,
     /// resolver used for domain-ownership TXT checks
     verify_resolver: std::net::SocketAddr,
@@ -3791,7 +3792,7 @@ async fn agent_register(
             HttpResponse::Created().json(AgentRegisterResponse {
                 id: id.to_string(),
                 token: token_plain,
-                signing_key: ext::agent_signing_key(&data.jwt_secret, &id_str),
+                signing_key: ext::agent_signing_key(&data.agent_signing_secret, &id_str),
             })
         }
         Err(e) => {
@@ -4015,7 +4016,7 @@ async fn rotate_agent_token(
                     serde_json::json!({}),
                 )
                 .await;
-                HttpResponse::Ok().json(serde_json::json!({"token": token_plain, "signing_key": ext::agent_signing_key(&data.jwt_secret, &agent_id)}))
+                HttpResponse::Ok().json(serde_json::json!({"token": token_plain, "signing_key": ext::agent_signing_key(&data.agent_signing_secret, &agent_id)}))
             }
         }
         Err(e) => {
@@ -8330,6 +8331,18 @@ async fn main() -> std::io::Result<()> {
         std::env::var("DATABASE_URL").expect("DATABASE_URL environment variable must be set");
     let jwt_secret =
         std::env::var("JWT_SECRET").expect("JWT_SECRET environment variable must be set");
+    let agent_signing_secret = std::env::var("AGENT_SIGNING_SECRET")
+        .expect("AGENT_SIGNING_SECRET must be set separately from JWT_SECRET");
+    if agent_signing_secret.len() < 32
+        || agent_signing_secret == jwt_secret
+        || agent_signing_secret
+            .to_ascii_lowercase()
+            .contains("replace")
+    {
+        panic!(
+            "AGENT_SIGNING_SECRET must be a distinct non-placeholder secret of at least 32 characters"
+        );
+    }
 
     // Validate JWT_SECRET is sufficiently long for security
     if jwt_secret.len() < 32 {
@@ -8554,6 +8567,7 @@ async fn main() -> std::io::Result<()> {
     let app_state = AppState {
         db: client.clone(),
         jwt_secret: jwt_secret.clone(),
+        agent_signing_secret,
         dns_manager: dns_manager.clone(),
         lookup_resolvers: match lookup::resolvers_from_env() {
             Ok(v) => v,
