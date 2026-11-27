@@ -1,7 +1,8 @@
 import React from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
+import Modal from '../../components/Modal'
 import api from '../../api/client'
-import { Server, MapPin, Plus, Trash2, RefreshCw, Shield, Clock, FileText, Settings, X, Check, AlertTriangle } from 'lucide-react'
+import { Server, MapPin, Plus, Trash2, RefreshCw, Shield, Clock, FileText, Settings, Check, AlertTriangle } from 'lucide-react'
 import { useConfirm } from '../../components/ui'
 import Notifications from '../../components/Notifications'
 import { validators } from '../../hooks/useFormValidation'
@@ -210,47 +211,24 @@ export default function Servers(){
         </div>
       )}
 
-      <AnimatePresence>
-        {showModal && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-            onClick={() => setShowModal(false)}
-          >
-            <motion.div
-              role="dialog" aria-modal="true" aria-label={editingServer ? 'Edit server' : 'Add DNS server'}
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="card shadow-pop w-full max-w-2xl max-h-[90vh] overflow-y-auto"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between px-6 py-5 border-b border-line">
-                <h3 className="text-lg font-bold text-ink">
-                  {editingServer ? 'Edit Server' : 'Add DNS Server'}
-                </h3>
-                <button onClick={() => setShowModal(false)} aria-label="Close dialog" className="btn-sm btn-ghost"><X className="w-4 h-4" /></button>
-              </div>
-
+      <Modal open={showModal} onClose={() => setShowModal(false)} title={editingServer ? 'Edit server' : 'Add DNS server'}>
               <div className="p-6 space-y-5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="form-label">Server Name</label>
-                    <input className="input" placeholder="e.g., US-East-1 Primary" value={form.name} onChange={e=>setForm({...form, name: e.target.value})} />
+                    <label htmlFor="server-name" className="form-label">Server Name</label>
+                    <input id="server-name" className="input" placeholder="e.g., US-East-1 Primary" value={form.name} onChange={e=>setForm({...form, name: e.target.value})} />
                   </div>
                   <div>
-                    <label className="form-label">IP Address</label>
-                    <input className="input" placeholder="e.g., 192.168.1.10" value={form.address} onChange={e=>setForm({...form, address: e.target.value})} />
+                    <label htmlFor="server-address" className="form-label">IP Address</label>
+                    <input id="server-address" className="input" placeholder="e.g., 192.168.1.10" value={form.address} onChange={e=>setForm({...form, address: e.target.value})} />
                   </div>
                   <div>
-                    <label className="form-label">Port</label>
-                    <input type="number" className="input" placeholder="53" value={form.port} onChange={e=>setForm({...form, port: parseInt(e.target.value) || 53})} />
+                    <label htmlFor="server-port" className="form-label">Port</label>
+                    <input id="server-port" type="number" className="input" placeholder="53" value={form.port} onChange={e=>setForm({...form, port: parseInt(e.target.value) || 53})} />
                   </div>
                   <div>
-                    <label className="form-label">Region</label>
-                    <input className="input" placeholder="e.g., us-east" value={form.region} onChange={e=>setForm({...form, region: e.target.value})} />
+                    <label htmlFor="server-region" className="form-label">Region</label>
+                    <input id="server-region" className="input" placeholder="e.g., us-east" value={form.region} onChange={e=>setForm({...form, region: e.target.value})} />
                   </div>
                 </div>
 
@@ -258,12 +236,12 @@ export default function Servers(){
                   <h4 className="text-sm font-semibold text-ink mb-4">DNS Configuration</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="form-label">Max Cache TTL (seconds)</label>
-                      <input type="number" className="input" value={form.max_cache_ttl} onChange={e=>setForm({...form, max_cache_ttl: parseInt(e.target.value) || 3600})} />
+                      <label htmlFor="server-max-cache-ttl" className="form-label">Max Cache TTL (seconds)</label>
+                      <input id="server-max-cache-ttl" type="number" className="input" value={form.max_cache_ttl} onChange={e=>setForm({...form, max_cache_ttl: parseInt(e.target.value) || 3600})} />
                     </div>
                     <div>
-                      <label className="form-label">Min Cache TTL (seconds)</label>
-                      <input type="number" className="input" value={form.min_cache_ttl} onChange={e=>setForm({...form, min_cache_ttl: parseInt(e.target.value) || 60})} />
+                      <label htmlFor="server-min-cache-ttl" className="form-label">Min Cache TTL (seconds)</label>
+                      <input id="server-min-cache-ttl" type="number" className="input" value={form.min_cache_ttl} onChange={e=>setForm({...form, min_cache_ttl: parseInt(e.target.value) || 60})} />
                     </div>
                   </div>
                 </div>
@@ -300,10 +278,7 @@ export default function Servers(){
                   {editingServer ? 'Update' : 'Create'} Server
                 </button>
               </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </Modal>
     </div>
   )
 }
