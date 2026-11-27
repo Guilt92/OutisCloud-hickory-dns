@@ -8808,6 +8808,41 @@ async fn audit_detail_and_export_endpoints() {
 
     let (_, list, _) = call!(app, get, "/api/v1/audit/logs", Some(&t), None);
     let id = list["data"][0]["id"].as_str().unwrap().to_string();
+    let (st, filtered, raw) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs?q=audit-api.example",
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(!filtered["data"].as_array().unwrap().is_empty());
+    let (st, empty, raw) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs?q=no-such-audit-search-value",
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert!(empty["data"].as_array().unwrap().is_empty());
+    for uri in [
+        "/api/v1/audit/logs?since=bad",
+        "/api/v1/audit/logs/export?since=bad",
+    ] {
+        let (st, _, raw) = call!(app, get, uri, Some(&t), None);
+        assert_eq!(st, 400, "{uri}: {raw}");
+    }
+    let viewer = add_user(&env.state, "audit-viewer", "viewer-pass-1", "user").await;
+    let viewer_token = env.token(&viewer, "user");
+    let (st, _, _) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs/export",
+        Some(&viewer_token),
+        None
+    );
+    assert_eq!(st, 403);
 
     let (st, detail, raw) = call!(
         app,
@@ -8828,6 +8863,15 @@ async fn audit_detail_and_export_endpoints() {
     );
     assert_eq!(st, 200, "{raw}");
     assert!(raw.contains("id,user_id,action"));
+    let (st, _, raw) = call!(
+        app,
+        get,
+        "/api/v1/audit/logs/export?q=no-such-audit-search-value",
+        Some(&t),
+        None
+    );
+    assert_eq!(st, 200, "{raw}");
+    assert_eq!(raw.lines().count(), 1, "only CSV header should remain");
     env.cleanup().await;
 }
 

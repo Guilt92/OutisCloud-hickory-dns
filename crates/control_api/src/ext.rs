@@ -1878,6 +1878,23 @@ pub struct AuditQuery {
     since: Option<String>,
     sort: Option<String>,
     order: Option<String>,
+    q: Option<String>,
+}
+
+fn audit_filters(q: &AuditQuery) -> Result<(Option<String>, Option<String>), HttpResponse> {
+    let since = match q.since.as_deref() {
+        Some(value) => Some(chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
+            HttpResponse::BadRequest().json(serde_json::json!({"error":"invalid_query","details":"since must be RFC 3339"}))
+        })?.with_timezone(&chrono::Utc).to_rfc3339()),
+        None => None,
+    };
+    let search = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if search.is_some_and(|s| s.chars().count() > 200) {
+        return Err(HttpResponse::BadRequest().json(
+            serde_json::json!({"error":"invalid_query","details":"q exceeds 200 characters"}),
+        ));
+    }
+    Ok((since, search.map(str::to_string)))
 }
 
 pub async fn list_audit(
@@ -1914,18 +1931,18 @@ pub async fn list_audit(
                 serde_json::json!({"error":"invalid_query","details":"Order must be asc or desc"}),
             ),
         };
-    let since: Option<String> = q
-        .since
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339());
+    let (since, search) = match audit_filters(&q) {
+        Ok(filters) => filters,
+        Err(response) => return response,
+    };
     let where_sql = "($1::text IS NULL OR action = $1) AND ($2::text IS NULL OR CAST(user_id AS varchar) = $2) \
-                     AND ($3::text IS NULL OR resource_type = $3) AND ($4::text IS NULL OR created_at >= $4::text::timestamptz)";
+                     AND ($3::text IS NULL OR resource_type = $3) AND ($4::text IS NULL OR created_at >= $4::text::timestamptz) \
+                     AND ($5::text IS NULL OR strpos(lower(concat_ws(' ', action, resource_type, resource_id, details::text)), lower($5)) > 0)";
     let total: i64 = match data
         .db
         .query_one(
             &format!("SELECT count(*) FROM audit_logs WHERE {}", where_sql),
-            &[&q.action, &q.user_id, &q.resource_type, &since],
+            &[&q.action, &q.user_id, &q.resource_type, &since, &search],
         )
         .await
     {
@@ -1938,8 +1955,8 @@ pub async fn list_audit(
     };
     let rows = match data.db.query(&format!(
         "SELECT CAST(id AS varchar), COALESCE(CAST(user_id AS varchar), ''), action, resource_type, COALESCE(resource_id, ''), COALESCE(details::text, ''), COALESCE(ip_address, ''), created_at::text \
-         FROM audit_logs WHERE {} ORDER BY {} {}, id LIMIT $5 OFFSET $6", where_sql, sort, direction),
-        &[&q.action, &q.user_id, &q.resource_type, &since, &limit, &offset]).await {
+         FROM audit_logs WHERE {} ORDER BY {} {}, id LIMIT $6 OFFSET $7", where_sql, sort, direction),
+        &[&q.action, &q.user_id, &q.resource_type, &since, &search, &limit, &offset]).await {
         Ok(r) => r, Err(e) => { warn!("audit list: {}", full_error_string(&e)); return HttpResponse::InternalServerError().json(serde_json::json!({"error":"database error"})) }
     };
     let logs: Vec<AuditLogEntry> = rows
@@ -2054,18 +2071,18 @@ pub async fn export_audit(
             .json(serde_json::json!({"error": "admin access required"}));
     }
     let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
-    let since: Option<String> = q
-        .since
-        .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339());
+    let (since, search) = match audit_filters(&q) {
+        Ok(filters) => filters,
+        Err(response) => return response,
+    };
     let where_sql = "($1::text IS NULL OR action = $1) AND ($2::text IS NULL OR CAST(user_id AS varchar) = $2) \
-                     AND ($3::text IS NULL OR resource_type = $3) AND ($4::text IS NULL OR created_at >= $4::text::timestamptz)";
+                     AND ($3::text IS NULL OR resource_type = $3) AND ($4::text IS NULL OR created_at >= $4::text::timestamptz) \
+                     AND ($5::text IS NULL OR strpos(lower(concat_ws(' ', action, resource_type, resource_id, details::text)), lower($5)) > 0)";
     let rows = match data.db.query(&format!(
         "SELECT CAST(id AS varchar), COALESCE(CAST(user_id AS varchar), ''), action, resource_type, \
          COALESCE(resource_id, ''), COALESCE(details::text, ''), COALESCE(ip_address, ''), created_at::text \
-         FROM audit_logs WHERE {} ORDER BY created_at DESC LIMIT $5", where_sql),
-        &[&q.action, &q.user_id, &q.resource_type, &since, &limit]).await {
+         FROM audit_logs WHERE {} ORDER BY created_at DESC LIMIT $6", where_sql),
+        &[&q.action, &q.user_id, &q.resource_type, &since, &search, &limit]).await {
         Ok(rows) => rows,
         Err(e) => {
             warn!("audit export: {}", full_error_string(&e));
