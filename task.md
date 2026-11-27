@@ -2191,3 +2191,7 @@ AUD-001 remains PARTIALLY COMPLETED. `crates/control_api/src/ext.rs` now applies
 ### Phase 11 nameserver route browser regression — 2026-11-27
 
 CUI-003 remains PARTIALLY COMPLETED. Added `web/ui/tests/nameserver-dialog.spec.cjs`: Chromium opens the real admin nameserver route, verifies four labeled controls and initial focus, closes with Escape and restores focus, then submits a nameserver through the UI and checks the outgoing POST payload. The first run failed because the page has two valid Add nameserver buttons; the locator was scoped to the first opener, then the exact Playwright command `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/snap/bin/chromium npx playwright test --config=tests/playwright.config.cjs tests/nameserver-dialog.spec.cjs --workers=1` passed 1/1 with a disposable Vite server at localhost:3000. The server reported local EMFILE watcher warnings but the route and browser assertions passed; the server was stopped. The API response was an HTTP fixture, so this is UI contract coverage, not server persistence coverage.
+
+### Phase 9 audit-export injection edge case — 2026-11-27
+
+The Phase 8 audit CSV export hardening also closes a Phase 9 injection edge case: leading Unicode whitespace and U+FEFF now count as possible formula prefixes in `crates/control_api/src/ext.rs`. The security regression asserts U+FEFF and U+2003 prefixes are neutralized. `cargo fmt --all` and `cargo test -p control_api --bin control_api csv_security_tests -- --nocapture` passed 1/1. This is limited to exported audit CSV; Phase 9 SEC-001–008 statuses remain unchanged.

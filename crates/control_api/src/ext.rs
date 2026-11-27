@@ -2027,7 +2027,7 @@ fn csv_field(value: &str) -> String {
     // Spreadsheet applications evaluate cells beginning with these characters
     // even when the CSV value is quoted. Audit details can contain user input.
     let unsafe_prefix = value
-        .trim_start_matches(' ')
+        .trim_start_matches(|ch: char| ch.is_whitespace() || ch == '\u{feff}')
         .chars()
         .next()
         .is_some_and(|ch| matches!(ch, '=' | '+' | '-' | '@' | '\t' | '\r'));
@@ -2052,6 +2052,8 @@ mod csv_security_tests {
         assert_eq!(csv_field("=1+1"), "\"'=1+1\"");
         assert_eq!(csv_field("  @SUM(A1)"), "\"'  @SUM(A1)\"");
         assert_eq!(csv_field("\t+cmd"), "\"'\t+cmd\"");
+        assert_eq!(csv_field("\u{feff}=1+1"), "\"'\u{feff}=1+1\"");
+        assert_eq!(csv_field("\u{2003}-1+1"), "\"'\u{2003}-1+1\"");
         assert_eq!(csv_field("hello,\"world\""), "\"hello,\"\"world\"\"\"");
         assert_eq!(csv_field("normal"), "normal");
     }
