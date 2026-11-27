@@ -2195,3 +2195,7 @@ CUI-003 remains PARTIALLY COMPLETED. Added `web/ui/tests/nameserver-dialog.spec.
 ### Phase 9 audit-export injection edge case — 2026-11-27
 
 The Phase 8 audit CSV export hardening also closes a Phase 9 injection edge case: leading Unicode whitespace and U+FEFF now count as possible formula prefixes in `crates/control_api/src/ext.rs`. The security regression asserts U+FEFF and U+2003 prefixes are neutralized. `cargo fmt --all` and `cargo test -p control_api --bin control_api csv_security_tests -- --nocapture` passed 1/1. This is limited to exported audit CSV; Phase 9 SEC-001–008 statuses remain unchanged.
+
+### Phase 3 empty key-tree rotation guard — 2026-11-27
+
+DNSSEC-001 remains PARTIALLY COMPLETED. `hickory_key_store::rewrap_directory` now refuses an empty DNSSEC `.pem` source tree before creating a destination, preventing an apparently successful rotation into an unusable key directory. The test asserts failure and absence of the destination. `cargo fmt --all` and `cargo test -p hickory-key-store` passed 8/8, including this regression. Deployed-key cutover, automatic scheduling, KMS/HSM integration, and complete recovery proof remain outstanding.

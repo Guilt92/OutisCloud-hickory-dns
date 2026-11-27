@@ -248,6 +248,11 @@ pub fn rewrap_directory(
     }
     let mut files = Vec::new();
     collect_key_files(&source, &source, &mut files)?;
+    if files.is_empty() {
+        return Err(KeyStoreError::Configuration(
+            "source contains no DNSSEC key files".into(),
+        ));
+    }
     let mut plaintext = Vec::with_capacity(files.len());
     for (path, bytes) in files {
         plaintext.push((path, decrypt_with_key(&bytes, old_key)?));
@@ -719,6 +724,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         fs::create_dir(&source).unwrap();
+        let empty_destination = root.path().join("empty-rotation");
+        assert!(rewrap_directory(&source, &empty_destination, &[0x11; 32], &[0x22; 32]).is_err());
+        assert!(!empty_destination.exists());
         fs::create_dir(source.join("retired")).unwrap();
         let old = [0x11; 32];
         let new = [0x22; 32];
